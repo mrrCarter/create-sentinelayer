@@ -108,6 +108,7 @@ import {
   syncSessionMetadataToApi,
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
+import { runSessionRecall } from "../session/recall/index.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
 import { SESSION_LIVE_SUCCESS_TIPS } from "../session/coordination-guidance.js";
@@ -6052,6 +6053,66 @@ export function registerSessionCommand(program) {
       if (result.hasMore && result.nextBeforeSequence) {
         console.log(pc.gray(`More results before sequence ${result.nextBeforeSequence}.`));
       }
+    });
+
+  session
+    .command("recall <need>")
+    .description(
+      "Hydrate a session by RETRIEVAL, not full-tail replay: return the top-K relevant memories (dense int8 exact-scan + BM25 + RRF + graph diffusion + ACT-R) each with a one-line provenance path (ENGRAM §1)",
+    )
+    .requiredOption("--session <id>", "Session id to recall from")
+    .option("--role <role>", "Optional role lens folded into the query")
+    .option("--k <n>", "Number of memories to return (default 12, max 50)", "12")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--no-remote", "Skip remote hydrate; recall over the local mirror only")
+    .option("--include-control-events", "Index control-plane events as memories too")
+    .option("--json", "Emit machine-readable output")
+    .action(async (need, options, command) => {
+      const normalizedNeed = normalizeString(need);
+      if (normalizedNeed.length < 2) {
+        throw new Error("need must be at least 2 characters.");
+      }
+      const normalizedSessionId = normalizeString(options.session);
+      if (!normalizedSessionId) {
+        throw new Error("--session <id> is required.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const k = Math.min(50, parsePositiveInteger(options.k, "k", 12));
+      const emitJson = shouldEmitJson(options, command);
+
+      const result = await runSessionRecall({
+        sessionId: normalizedSessionId,
+        need: normalizedNeed,
+        targetPath,
+        k,
+        role: normalizeString(options.role),
+        remote: options.remote !== false,
+        includeControlEvents: Boolean(options.includeControlEvents),
+      });
+
+      if (emitJson) {
+        console.log(JSON.stringify({ command: "session recall", targetPath, ...result }, null, 2));
+        return;
+      }
+      if (!result.ok) {
+        throw new Error(`Session recall failed (${result.reason || "unknown"}).`);
+      }
+      if (result.backfill && result.backfill.warning) {
+        console.log(pc.yellow(result.backfill.warning));
+      }
+      console.log(
+        pc.gray(
+          `Recalled top ${result.results.length} of ${result.meta.observationCount} memories · pool ${result.poolSize} · ~${result.tokenCut.reductionRatio}x fewer tokens than full replay (${result.tokenCut.recallPackTokens} vs ${result.tokenCut.fullReplayTokens}).`,
+        ),
+      );
+      result.results.forEach((item, index) => {
+        const sequence = item.sequenceId ? `#${item.sequenceId}` : "";
+        console.log(`${String(index + 1).padStart(2)}. ${sequence} ${item.agentId} ${item.kind} (score ${item.score})`);
+        if (item.snippet) {
+          console.log(`    ${item.snippet}`);
+        }
+        console.log(pc.gray(`    why: ${item.provenance}`));
+      });
     });
 
   session
