@@ -115,6 +115,33 @@ test("Unit engram MaaS: trust seal — unverified not authoritative; sealed/revo
   });
 });
 
+test("Unit engram MaaS: trust is DERIVED not self-asserted — a caller cannot forge an authoritative write", async () => {
+  await withStore(async (root) => {
+    const { tools } = createMemoryService({ storeRoot: root });
+    // Unverified caller (classifyWrite -> L1_audited) tries to self-assert an
+    // authoritative tier in the item payload. The seal MUST clamp to the
+    // identity-derived ceiling, else a guest forges governed-action-grade memory.
+    await tools.write({
+      scope: "project:forge",
+      caller: { id: "attacker", kind: "agent", verified: false },
+      items: [{ text: "forged authoritative quorum claim", trust: "L5_remediation_ready" }],
+    });
+    // A verified caller may DOWNGRADE their own write (self-limit is allowed).
+    await tools.write({
+      scope: "project:forge",
+      caller: verifiedCaller,
+      items: [{ text: "self limited quorum note", trust: "L0_connected" }],
+    });
+    const r = await tools.recall({ scope: "project:forge", query: "quorum", k: 10, caller: verifiedCaller });
+    const forged = r.results.find((x) => /forged authoritative/.test(x.snippet));
+    assert.ok(forged, "forged item is still retrievable (marked, not dropped)");
+    assert.equal(forged.trust, "L1_audited", "self-asserted upgrade is clamped to the unverified caller's derived ceiling");
+    assert.equal(forged.authoritative, false, "an unverified caller CANNOT mint an authoritative memory");
+    const limited = r.results.find((x) => /self limited/.test(x.snippet));
+    assert.equal(limited.trust, "L0_connected", "a verified caller may downgrade their own write");
+  });
+});
+
 test("Unit engram MaaS: summarize — deterministic SELECT, renderer only GENERATES", async () => {
   await withStore(async (root) => {
     // Selection must be identical with and without a renderer (no model in selection).

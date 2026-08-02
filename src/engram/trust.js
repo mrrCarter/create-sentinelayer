@@ -74,7 +74,14 @@ export function classifyObservation(obs = {}) {
  * @returns {object} item with { trust, sealed, revoked }
  */
 export function sealItem(item, { caller } = {}) {
-  const trust = item?.trust && RANK.has(item.trust) ? item.trust : classifyWrite(caller);
+  // Trust is DERIVED from the caller's identity, never self-asserted. A caller
+  // MAY downgrade their own write (mark it less trusted); they may NEVER upgrade
+  // above their identity-derived ceiling — otherwise an unverified/guest caller
+  // could forge an AUTHORITATIVE memory by supplying `trust` in the payload,
+  // defeating the "unverified -> never authoritative" invariant above.
+  const derived = classifyWrite(caller);
+  const asserted = item?.trust && RANK.has(item.trust) ? item.trust : derived;
+  const trust = trustRank(asserted) <= trustRank(derived) ? asserted : derived;
   return {
     ...item,
     trust,
