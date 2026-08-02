@@ -174,7 +174,7 @@ export function buildScatterCorpus({ queries = 60, relevants = 8, distractorsPer
   return { events, scatterQueries, lastSeq: seq };
 }
 
-function evaluateChain(index, chainQueries, { k = 20, now } = {}) {
+export function evaluateChain(index, chainQueries, { k = 20, now } = {}) {
   let completed = 0;
   const misses = [];
   for (const cq of chainQueries) {
@@ -187,7 +187,7 @@ function evaluateChain(index, chainQueries, { k = 20, now } = {}) {
   return { total, completed, rate: total > 0 ? completed / total : 1, misses };
 }
 
-function evaluateScatter(index, scatterQueries, { now } = {}) {
+export function evaluateScatter(index, scatterQueries, { now } = {}) {
   let fractionSum = 0;
   const misses = [];
   for (const sq of scatterQueries) {
@@ -203,7 +203,7 @@ function evaluateScatter(index, scatterQueries, { now } = {}) {
   return { total, rate: total > 0 ? fractionSum / total : 1, misses };
 }
 
-function evaluateRecallAt10(index, scatterQueries, { now } = {}) {
+export function evaluateRecallAt10(index, scatterQueries, { now } = {}) {
   let recallSum = 0;
   for (const sq of scatterQueries) {
     const result = recall(index, { query: sq.query, k: 10, now });

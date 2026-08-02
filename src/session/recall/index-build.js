@@ -69,25 +69,31 @@ function buildDense(observations, embedder) {
 /**
  * Build a full recall index.
  *
+ * Accepts EITHER raw session `events` (builds observations via the session
+ * adapter) OR pre-built `observations` (ENGRAM §2: the namespace store already
+ * mapped items/events to observations). `sessionId` is an opaque namespace id.
+ *
  * @param {object}   params
- * @param {object[]} params.events           Raw session events (local NDJSON shape).
- * @param {object[]} [params.messageActions] Raw actions (ACT-R fuel + reply edges).
- * @param {object}   [params.embedder]       Pluggable embedder (default: hash-projection stub).
- * @param {string}   [params.sessionId]
+ * @param {object[]} [params.events]          Raw session events (local NDJSON shape).
+ * @param {object[]} [params.observations]    Pre-built observations (bypasses buildObservations).
+ * @param {object[]} [params.messageActions]  Raw actions (ACT-R fuel + reply edges).
+ * @param {object}   [params.embedder]        Pluggable embedder (default: hash-projection stub).
+ * @param {string}   [params.sessionId]       Opaque namespace/session id (meta + id-fallback).
  * @param {boolean}  [params.includeControlEvents=false]
  * @returns {object} index
  */
 export function buildRecallIndex({
   events = [],
+  observations: prebuiltObservations = null,
   messageActions = [],
   embedder = createEmbedder(),
   sessionId = "",
   includeControlEvents = false,
 } = {}) {
-  const { observations, droppedControlEvents, materialCount } = buildObservations(events, {
-    sessionId,
-    includeControlEvents,
-  });
+  const built = Array.isArray(prebuiltObservations)
+    ? { observations: prebuiltObservations, droppedControlEvents: 0, materialCount: prebuiltObservations.length }
+    : buildObservations(events, { sessionId, includeControlEvents });
+  const { observations, droppedControlEvents, materialCount } = built;
 
   const byId = new Map();
   for (const obs of observations) byId.set(obs.id, obs);
