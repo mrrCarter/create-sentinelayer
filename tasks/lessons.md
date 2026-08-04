@@ -1,5 +1,16 @@
 # Lessons
 
+## 2026-07-29
+
+- Liveness, read progress, and file ownership are operational projections, not conversation: give each a dedicated state endpoint and reject any compatibility path that appends heartbeat, view, or lock records to the durable transcript.
+- Capability rollout must fail closed without reviving write amplification: a missing, disabled, rate-limited, or degraded presence endpoint means `unknown`, never “scan old heartbeat rows.”
+- Listener backpressure must be credential-scoped on the server and cooperative in every client: preserve a 60-second default floor, add bounded upward jitter, cap exponential retry delay, and let `Retry-After` override that cap.
+- A read operation should advance at most one monotonic cursor for the consumed window; omit placeholder identities so the server can bind human reads to the authenticated principal.
+- Outbound transcript filtering must reuse the canonical control-event classifier; parallel hand-maintained event lists drift as soon as new listener/control types are introduced.
+- Operational controls must travel beside the semantic event stream, not inside it: an addressed `listenerControls` side channel is processed before events and cursor mutation, rejects controls older than the listener start, and never falls back to a durable append.
+- Cross-repository control-plane work needs one exact wire-contract test: match the server's strict request shape and idempotency header, then consume its status/items response envelope instead of approving API and CLI fixtures independently.
+- Transport, circuit-breaker, and payload-contract tests must use semantic `session_message` fixtures. Using coordination events as generic positive-write fixtures makes correct noise suppression look like a transport regression.
+
 ## 2026-07-14
 
 - Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.
@@ -274,3 +285,7 @@
 - SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
 - Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
+
+## 2026-07-30
+
+- A liveness cutover is incomplete if join/leave/status/identity, onboarding briefings, recaps, views, or lock state can still reach the remote transcript. Keep those local or in their authoritative presence/cursor/lease surfaces; the durable remote log is for semantic conversation.

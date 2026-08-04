@@ -19,6 +19,7 @@ import {
   pollSessionEvents,
   pollSessionEventsBefore,
   syncSessionEventToApi,
+  updateSessionReadCursor,
 } from "../session/sync.js";
 
 export const SESSION_MCP_SERVER_NAME = "sentinelayer-session-mcp";
@@ -185,6 +186,27 @@ function summarizeSessionEvent(event = {}) {
     eventId: normalizeString(event.eventId),
     idempotencyToken: normalizeString(event.idempotencyToken),
   });
+}
+
+function latestReadCursorTarget(events = [], fallbackCursor = "") {
+  let targetSequenceId = null;
+  let targetCursor = normalizeString(fallbackCursor);
+  for (const event of Array.isArray(events) ? events : []) {
+    const sequenceId = normalizePositiveInteger(
+      event?.sequenceId ?? event?.sequence_id,
+      null,
+    );
+    if (
+      sequenceId &&
+      (targetSequenceId === null || sequenceId >= targetSequenceId)
+    ) {
+      targetSequenceId = sequenceId;
+      targetCursor = normalizeString(event?.cursor) || targetCursor;
+    }
+  }
+  return targetSequenceId || targetCursor
+    ? { targetSequenceId, targetCursor }
+    : null;
 }
 
 function sessionEventMatchesClientMessageId(event, clientMessageId) {
@@ -838,6 +860,7 @@ export function createSessionMcpToolHandlers({
   pollSessionEventsBeforeFn = pollSessionEventsBefore,
   listSessionMessageActionsFn = listSessionMessageActions,
   createSessionMessageActionFn = createSessionMessageAction,
+  updateSessionReadCursorFn = updateSessionReadCursor,
   lockFileFn = lockFile,
   unlockFileFn = unlockFile,
   listFileLocksFn = listFileLocks,
@@ -916,6 +939,14 @@ export function createSessionMcpToolHandlers({
       const recentHumanActivity = actionResult?.ok
         ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
         : [];
+      const readTarget = latestReadCursorTarget(result.events, result.cursor);
+      const readCursor = readTarget
+        ? await updateSessionReadCursorFn(sessionId, {
+            targetPath,
+            ...readTarget,
+            agentId,
+          })
+        : null;
 
       return {
         ok: true,
@@ -927,6 +958,7 @@ export function createSessionMcpToolHandlers({
         inboxCount: events.length,
         recentHumanActivityCount: recentHumanActivity.length,
         recentHumanActivity,
+        readCursor,
         actionProjection: actionResult
           ? {
               ok: Boolean(actionResult.ok),
@@ -991,6 +1023,21 @@ export function createSessionMcpToolHandlers({
       const recentHumanActivity = actionResult?.ok
         ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
         : [];
+      const readAgentId = normalizeAgentId(
+        input.agentId ||
+        input.agent_id ||
+        input.agent ||
+        process.env.SENTINELAYER_AGENT_ID,
+        "",
+      );
+      const readTarget = latestReadCursorTarget(events, result.cursor);
+      const readCursor = readTarget
+        ? await updateSessionReadCursorFn(sessionId, {
+            targetPath,
+            ...readTarget,
+            agentId: readAgentId,
+          })
+        : null;
 
       return {
         ok: true,
@@ -1004,6 +1051,7 @@ export function createSessionMcpToolHandlers({
         pageCount: normalizePositiveInteger(result.pages, 0),
         recentHumanActivityCount: recentHumanActivity.length,
         recentHumanActivity,
+        readCursor,
         actionProjection: actionResult
           ? {
               ok: Boolean(actionResult.ok),
@@ -1301,7 +1349,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "poll_inbox",
     title: "Poll Senti Inbox",
     description:
-      "Poll durable SentinelLayer session events after an optional cursor and return only events addressed or visible to the agent.",
+      "Poll durable SentinelLayer session events after an optional cursor, return only events addressed or visible to the agent, and advance one monotonic read cursor.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1323,13 +1371,14 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "read_history",
     title: "Read Senti History",
     description:
-      "Hydrate a bounded recent, older, or after-cursor session transcript window without recipient filtering.",
+      "Hydrate a bounded recent, older, or after-cursor session transcript window and advance one monotonic read cursor without appending view events.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["sessionId"],
       properties: {
         sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
         cursor: { type: "string" },
         beforeSequence: { type: "integer", minimum: 1 },
         limit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
@@ -1371,7 +1420,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_action",
     title: "Record Senti Session Action",
     description:
-      "Record a low-noise message action such as ack, working_on, disregard, view, like, dislike, or reply against a target session event.",
+      "Record a low-noise message action such as ack, working_on, disregard, like, dislike, or reply; view advances the monotonic read cursor instead of appending an action.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

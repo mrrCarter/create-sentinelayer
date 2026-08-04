@@ -1,3 +1,43 @@
+# 2026-07-29 - Senti Presence/Cursor Noise Cutover (`fix/session-presence-cursor-cutover-20260729`)
+
+## Plan
+- [x] Inventory every listener, recap, status, CLI read, and MCP read path that can append or reconstruct non-semantic liveness/read events.
+- [x] Replace listener lifecycle event writes with the dedicated fail-closed ephemeral presence contract.
+- [x] Replace event-scanned listener rosters with the membership-gated three-state presence contract; unsupported/degraded presence remains unknown and never falls back to transcript heartbeats.
+- [x] Collapse automatic and explicit view receipts into one monotonic read-cursor upsert per consumed window.
+- [x] Keep join/leave/status/identity, onboarding briefings, and recaps local instead of relaying them into the remote transcript.
+- [x] Add bounded jittered polling, exponential transient backoff, and strict `Retry-After` floors.
+- [x] Prove listener/read/status/recap paths perform zero durable heartbeat/view appends and do not scan durable liveness events.
+- [x] Update CLI/MCP/setup guidance, run focused and full verification, package dry-run, deterministic review, Omar, and audit.
+- [x] Commit locally only and hand off exact SHA plus any server-contract gaps.
+
+## Independent Re-review Correction
+- [x] Reuse the canonical `isSessionControlEvent` classifier at the outbound append boundary instead of maintaining a narrower second list.
+- [x] Add adversarial zero-fetch coverage for every canonical quiet control type, `payload.source=session_listen`, and an unknown future `session_listener_*` lifecycle name.
+- [x] Keep explicit identity/liveness/read aliases fail-closed, including `agent_identity` and `agent_left`.
+- [x] Update all seven hosted unit failures so transport/circuit positive fixtures use semantic `session_message`, while join/onboarding tests require zero durable `/events` POSTs.
+- [x] Make the compatibility JSON field truthful: local agent registration returns `agentJoinRelayed=false`.
+- [x] Move the CLI `listener_stop` path to the dedicated ephemeral listener-control endpoint, consume fresh controls outside the event stream, remove the durable exception, and flip its regression to zero-fetch.
+- [ ] Deploy and live-verify the matching API listener-control endpoint and poll-response contract.
+- [ ] Re-run hosted Quality Gates on the corrected head after the owning agent commits and pushes.
+
+## Review
+- Durable append boundary rejects agent join/leave/status/identity/heartbeat, context briefings, recaps, every canonical quiet control event (including `listener_stop`), arbitrary `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry before auth or fetch. Listener stops use only `POST /api/v1/sessions/:id/listener-controls/stop`; poll responses return `listenerControls` separately and clients process fresh addressed controls before events or cursor writes. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
+- CLI reads, MCP `poll_inbox`/`read_history`, listener batches, and explicit `view` advance at most one `PUT /api/v1/sessions/:id/read-cursor` for the consumed window. There is no action/event compatibility fallback.
+- Regression proof covers three consecutive no-new-event polls at an unchanged transport cursor: zero local cursor persists, zero read-cursor `PUT`s, and `readCursorUpdates=0`. Separate 404/503 presence/read-cursor cases make exactly four operational endpoint calls and zero `/events` or `/actions` fallbacks.
+- Polling defaults to 60 seconds, adds 0-20% upward jitter, exponentially backs off transient failures to a 300-second client cap, and honors a longer `Retry-After` as a hard floor. Default transport is pull-only `poll`.
+- Focused session/MCP/noise matrix passed. Full `npm run verify` passed on the final diff: static checks (`357` files), docs validation, E2E (`121/121`), unit (`1784/1784`), 91.79% statement/line coverage, and package dry-run (`sentinelayer-cli-0.40.0.tgz`, shasum `88ce81bff6fc515e4314a7d5de42272baf84bc47`).
+- `npm audit --audit-level=high` reports one pre-existing dev-only `brace-expansion` advisory through `c8`; `package.json` and `package-lock.json` are unchanged from `origin/main`.
+- Final deterministic diff review scanned 25 files with `P1=0`, `P2=0`, `blocking=false` (`review-scan-diff-20260729-072535.md`).
+- Final exact-diff deterministic Omar passed with `P0/P1/P2/P3=0`, `blocking=false` (`review-20260729-072537-76c5c5c5`).
+- Live Omar scanned the same 24-file diff with `P0=0`, `P1=0`, five non-blocking generic P2s, and no deterministic findings (`omargate-1785309452607-d08af708`). The P2s are contradicted by existing architecture/incident/onboarding sections in `README.md` and `docs/ENGINEERING_ONBOARDING.md`, the 121-case E2E suite (including lifecycle and transient-recovery files), and explicit malformed/duplicate/abort/fault/429 listener tests.
+- Repository audit passed (`P1=0`); its two P2 baseline notices cite untouched `tasks/evals/2026-04-17-pr-335-spec-session-integration.md` and `src/scan/generator.js` (`audit-20260729-072544.md`).
+- Activation depends on the API implementing the exact fail-closed contracts: membership-gated `GET`/`PUT /sessions/:id/presence` backed by TTL state, monotonic `PUT /sessions/:id/read-cursor` backed by one actor row, and Redis-backed `POST /sessions/:id/listener-controls/stop` plus `listenerControls` in agent-scoped event polls. Until those endpoints deploy, clients report unsupported/degraded and intentionally do not revive durable events/actions.
+- Independent correction proof passed: the seven previously failing hosted contract files plus outbound sync coverage passed `95/95`; `npm run check` passed all `357` files; and the complete local unit suite passed `1785/1785`.
+- Listener-control cutover proof passed: focused unit/noise coverage `115/115`; focused lifecycle E2E `2/2`; `npm run check` `357` files; full unit `1788/1788`; full E2E `121/121`. Fresh addressed controls run before semantic events and cursor writes, stale controls are ignored, stop-triggered aborts still publish final `stopped` presence, and neither success nor unsupported endpoints fall back to `/events`.
+- Cross-repository review corrected the exact API wire contract before commit: the CLI now sends only `targetAgentId` or `broadcast`, supplies a unique `Idempotency-Key`, accepts the API's `listenerControls: {status, items}` envelope, and evaluates numeric `issuedAtMs`. The post-correction focused suite passed `77/77`, static check passed all `357` files, and the complete `npm test` gate passed.
+- Local only: no push, deployment, npm publication, or Senti coordination write was performed from this worktree.
+
 # 2026-07-14 - Hosted Action Live-LLM Evidence Contract (`roadmap/pr-0i-action-evidence-contract`)
 
 ## Plan

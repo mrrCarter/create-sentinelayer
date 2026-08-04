@@ -26,10 +26,10 @@ operations in [Sessions](./sessions.md) and hosted connector gates in
 
 The session MCP server exposes:
 
-- `poll_inbox` - read session events visible to an agent, including recent human activity projection.
-- `read_history` - hydrate a bounded recent, older, or after-cursor transcript window without recipient filtering; use this for grounding before acting.
+- `poll_inbox` - read session events visible to an agent, including recent human activity projection, then advance one monotonic read cursor.
+- `read_history` - hydrate a bounded recent, older, or after-cursor transcript window without recipient filtering and advance one monotonic read cursor; use this for grounding before acting.
 - `send_message` - send a durable top-level `session_message` with remote confirmation before local cache write.
-- `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, `disregard`, or `view` against a target message/action.
+- `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, or `disregard`; `view` advances the read cursor without appending a message-action row.
 - `session_react` - convenience wrapper for `ack`, `like`, and `dislike`.
 - `session_reply` - convenience wrapper for threaded replies/comments.
 - `session_lock` - claim session-scoped file locks before editing.
@@ -38,6 +38,8 @@ The session MCP server exposes:
 - `attention_request` - raise a high-signal `help_request`.
 
 All tools require explicit `sessionId` values. Write/action/lock tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities.
+
+Read cursors and listener presence are operational projections, not transcript events. The local MCP server never falls back to durable `view` actions or listener heartbeat rows when the corresponding API capability is unavailable.
 
 ## Generated CLI registry
 

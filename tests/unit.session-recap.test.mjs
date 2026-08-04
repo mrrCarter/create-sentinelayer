@@ -134,7 +134,7 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /sl session recap now <id> --remote --agent <your-name> --json/);
     assert.match(message, /sl session react <id> ack --target-sequence <n>/);
     assert.match(message, /sl session read <id> --remote --agent <your-name>/);
-    assert.match(message, /reserve `sl session view <id> <sequence>` for repair\/backfill/);
+    assert.match(message, /`sl session view <id> <sequence>` repairs that same cursor/);
     assert.match(message, /sl session reply <id> <sequence>/);
     assert.match(message, /sl session comment <id> <sequence>/);
     assert.match(message, /sl session actions/);
@@ -144,7 +144,7 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(rules, /Reading the room/);
     assert.match(rules, /sl session read --remote --tail/);
     assert.match(rules, /join or recap before acting/);
-    assert.match(rules, /Read receipts are automatic/);
+    assert.match(rules, /one monotonic per-agent read cursor/);
     assert.match(rules, /sl session action <id> working_on --target-sequence <n>/);
     // Recap text is preserved separately for clients that want just the activity summary.
     assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);
@@ -734,7 +734,7 @@ test("Unit session recap: estimates non-human message usage when no provider led
   }
 });
 
-test("Unit session recap: separates live listeners from recent transcript actors", async () => {
+test("Unit session recap: uses authoritative presence instead of transcript heartbeats", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-listeners-"));
   try {
     await seedWorkspace(tempRoot);
@@ -806,6 +806,16 @@ test("Unit session recap: separates live listeners from recent transcript actors
       maxEvents: 20,
       targetPath: tempRoot,
       nowIso: "2026-05-19T08:03:00.000Z",
+      listenerPresence: {
+        authoritative: true,
+        presenceStatus: "ok",
+        listeners: [
+          {
+            agentId: "codex-a1",
+            status: "present",
+          },
+        ],
+      },
     });
 
     assert.match(recap.text, /1 live listener \(codex-a1\)/);
@@ -816,7 +826,9 @@ test("Unit session recap: separates live listeners from recent transcript actors
     assert.deepEqual(recap.summary.recentActorIds, ["claude-b2", "codex-a1"]);
     assert.equal(recap.summary.liveListeners, 1);
     assert.deepEqual(recap.summary.liveListenerIds, ["codex-a1"]);
-    assert.equal(recap.summary.listenerCount, 2);
+    assert.equal(recap.summary.listenerCount, 1);
+    assert.equal(recap.summary.listenerPresenceAuthoritative, true);
+    assert.equal(recap.summary.listenerPresenceStatus, "ok");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -1,6 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 
-import { pollSessionEvents, pollSessionEventsBefore, streamSessionEvents } from "./sync.js";
+import {
+  pollSessionEvents,
+  pollSessionEventsBefore,
+  streamSessionEvents,
+  updateSessionReadCursor,
+} from "./sync.js";
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 import { isSessionListenerLifecycleEvent } from "./control-events.js";
 
@@ -14,8 +19,10 @@ const BROADCAST_RECIPIENTS = new Set([
   "all-agents",
 ]);
 
-const DEFAULT_ACTIVE_INTERVAL_SECONDS = 5;
+const DEFAULT_ACTIVE_INTERVAL_SECONDS = 60;
 const DEFAULT_ACTIVE_WINDOW_SECONDS = 300;
+const DEFAULT_POLL_JITTER_RATIO = 0.2;
+const DEFAULT_MAX_POLL_BACKOFF_SECONDS = 300;
 const MAX_CLOCK_SKEW_MS = 60_000;
 
 function normalizeString(value) {
@@ -36,10 +43,6 @@ function normalizePositiveInteger(value, fallbackValue) {
   const normalized = Number(value);
   if (!Number.isFinite(normalized) || normalized <= 0) return fallbackValue;
   return Math.floor(normalized);
-}
-
-function isListenerStopDirective(event = {}) {
-  return normalizeString(event?.event) === "listener_stop";
 }
 
 function isPlainObject(value) {
@@ -128,6 +131,46 @@ function cursorFromEvents(events = [], fallbackCursor = null) {
   return cursor;
 }
 
+function latestSequenceTarget(events = [], fallbackCursor = null) {
+  let targetSequenceId = null;
+  let targetCursor = normalizeString(fallbackCursor) || "";
+  for (const event of Array.isArray(events) ? events : []) {
+    const sequence = Number(event?.sequenceId ?? event?.sequence_id ?? event?.sequence);
+    if (Number.isFinite(sequence) && sequence > 0) {
+      if (targetSequenceId === null || sequence > targetSequenceId) {
+        targetSequenceId = Math.floor(sequence);
+        targetCursor = normalizeString(event?.cursor) || targetCursor;
+      }
+      continue;
+    }
+    const cursor = normalizeString(event?.cursor);
+    if (cursor) targetCursor = cursor;
+  }
+  return { targetSequenceId, targetCursor };
+}
+
+export function computeListenerPollDelay({
+  baseDelayMs,
+  consecutiveFailures = 0,
+  retryAfterMs = null,
+  jitterRatio = DEFAULT_POLL_JITTER_RATIO,
+  maxBackoffMs = DEFAULT_MAX_POLL_BACKOFF_SECONDS * 1000,
+  randomValue = Math.random(),
+} = {}) {
+  const base = Math.max(1, Math.floor(Number(baseDelayMs) || 1));
+  const failures = Math.max(0, Math.floor(Number(consecutiveFailures) || 0));
+  const maxBackoff = Math.max(base, Math.floor(Number(maxBackoffMs) || base));
+  const exponential = failures > 0
+    ? Math.min(maxBackoff, base * (2 ** Math.min(failures - 1, 20)))
+    : base;
+  const retryFloor = Math.max(0, Math.ceil(Number(retryAfterMs) || 0));
+  const boundedJitterRatio = Math.max(0, Math.min(0.5, Number(jitterRatio) || 0));
+  const boundedRandom = Math.max(0, Math.min(1, Number(randomValue) || 0));
+  const jitter = Math.floor(exponential * boundedJitterRatio * boundedRandom);
+  const jitteredBackoff = Math.min(maxBackoff, exponential + jitter);
+  return Math.max(retryFloor, jitteredBackoff);
+}
+
 function eventIdentityKey(event = {}) {
   const cursor = normalizeString(event?.cursor);
   if (cursor) return `cursor:${cursor}`;
@@ -138,6 +181,41 @@ function eventIdentityKey(event = {}) {
     agent: normalizeString(event?.agent?.id || event?.agentId),
     ts: normalizeString(event?.ts || event?.timestamp || event?.createdAt || event?.at),
     message: normalizeString(event?.payload?.message || event?.payload?.text || event?.payload?.detail),
+  });
+}
+
+function listenerControlType(control = {}) {
+  return normalizeLower(control?.type || control?.action || control?.event);
+}
+
+function listenerControlIssuedAtMs(control = {}) {
+  for (const key of ["issuedAtMs", "issued_at_ms"]) {
+    const epoch = Number(control?.[key]);
+    if (Number.isFinite(epoch) && epoch > 0) return epoch;
+  }
+  for (const key of ["issuedAt", "issued_at"]) {
+    const epoch = Date.parse(normalizeString(control?.[key]));
+    if (Number.isFinite(epoch)) return epoch;
+  }
+  return 0;
+}
+
+function listenerControlIdentityKey(control = {}) {
+  const explicitId = normalizeString(
+    control?.controlId || control?.control_id || control?.id,
+  );
+  if (explicitId) return `control:${explicitId}`;
+  return JSON.stringify({
+    type: listenerControlType(control),
+    issuedAt: normalizeString(control?.issuedAt || control?.issued_at),
+    targetAgentId: normalizeComparableId(
+      control?.targetAgentId ||
+        control?.target_agent_id ||
+        control?.payload?.targetAgentId ||
+        control?.payload?.target_agent_id,
+    ),
+    broadcast: Boolean(control?.broadcast || control?.payload?.broadcast),
+    reason: normalizeString(control?.reason || control?.payload?.reason),
   });
 }
 
@@ -241,6 +319,8 @@ export async function listenSessionEvents({
   intervalSeconds = 60,
   activeIntervalSeconds = DEFAULT_ACTIVE_INTERVAL_SECONDS,
   activeWindowSeconds = DEFAULT_ACTIVE_WINDOW_SECONDS,
+  jitterRatio = DEFAULT_POLL_JITTER_RATIO,
+  maxBackoffSeconds = DEFAULT_MAX_POLL_BACKOFF_SECONDS,
   limit = 200,
   since = undefined,
   replay = false,
@@ -249,6 +329,7 @@ export async function listenSessionEvents({
   maxPolls = null,
   signal,
   onEvent = async () => {},
+  onControl = async () => {},
   onError = async () => {},
   onCatchup = async () => {},
   onLifecycle = async () => {},
@@ -256,12 +337,14 @@ export async function listenSessionEvents({
   _poll = pollSessionEvents,
   _pollLatest = pollSessionEventsBefore,
   _stream = streamSessionEvents,
+  _updateReadCursor = updateSessionReadCursor,
   _readCursor = readSyncCursor,
   _writeCursor = writeSyncCursor,
   _sleep = defaultSleep,
   _setInterval = setInterval,
   _clearInterval = clearInterval,
   _nowMs = Date.now,
+  _random = Math.random,
 } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
   const normalizedAgentId = normalizeComparableId(agentId) || "cli-user";
@@ -293,10 +376,16 @@ export async function listenSessionEvents({
   let streamAttempted = false;
   let streamFallbackReason = "";
   let heartbeatCount = 0;
+  let consecutivePollFailures = 0;
+  let readCursorUpdates = 0;
+  let readCursorReason = "";
+  let deliveredControls = 0;
+  let ignoredControls = 0;
   let catchupNotified = false;
   let catchupEventCount = 0;
   let catchupMatchingEventCount = 0;
   const emittedKeys = new Set();
+  const deliveredControlKeys = new Set();
   const maxPollCount = normalizePositiveInteger(maxPolls, 0);
   const pollLimit = normalizePositiveInteger(limit, 200);
   const idleSleepMs = Math.max(1, normalizePositiveInteger(intervalSeconds, 60)) * 1000;
@@ -305,6 +394,9 @@ export async function listenSessionEvents({
     1000;
   const activeWindowMs =
     Math.max(1, normalizePositiveInteger(activeWindowSeconds, DEFAULT_ACTIVE_WINDOW_SECONDS)) *
+    1000;
+  const maxBackoffMs =
+    Math.max(1, normalizePositiveInteger(maxBackoffSeconds, DEFAULT_MAX_POLL_BACKOFF_SECONDS)) *
     1000;
   const autoStreamIdleTimeoutMs =
     normalizedTransport === "auto" ? Math.max(5_000, Math.min(idleSleepMs, 30_000)) : 0;
@@ -354,6 +446,11 @@ export async function listenSessionEvents({
       ? new Date(lastHumanActivityMs).toISOString()
       : null,
     lastSleepMs,
+    consecutivePollFailures,
+    readCursorUpdates,
+    readCursorReason,
+    deliveredControls,
+    ignoredControls,
     reason: lastReason,
     ...extra,
   });
@@ -397,7 +494,7 @@ export async function listenSessionEvents({
         cursor: cursor || null,
         candidateCursor: nextCursor,
       });
-      return false;
+      return { processed: false, retryAfterMs: null };
     }
 
     const observedAtMs = Number(_nowMs()) || Date.now();
@@ -413,7 +510,6 @@ export async function listenSessionEvents({
       if (isRecentActivity(activityMs, observedAtMs, activeWindowMs)) {
         lastHumanActivityMs = Math.max(lastHumanActivityMs, activityMs);
       }
-      if (timestampMs && timestampMs < startedAtMs && isListenerStopDirective(event)) continue;
       if (isSessionListenerLifecycleEvent(event)) continue;
       if (!eventMatchesAgent(event, normalizedAgentId)) continue;
       visibleEvents.push(event);
@@ -471,8 +567,71 @@ export async function listenSessionEvents({
       persistedCursor = Boolean(writeResult?.written) || persistedCursor;
       cursor = nextCursor;
     }
+    // A fetch cursor echoed on an empty page is transport state, not new read
+    // progress. Writing it would recreate one operational write per idle poll.
+    const readTarget = events.length > 0
+      ? latestSequenceTarget(events, nextCursor)
+      : { targetSequenceId: null, targetCursor: "" };
+    let readCursorResult = null;
+    if (readTarget.targetSequenceId || readTarget.targetCursor) {
+      readCursorResult = await _updateReadCursor(normalizedSessionId, {
+        targetPath,
+        targetSequenceId: readTarget.targetSequenceId,
+        targetCursor: readTarget.targetCursor,
+        agentId: normalizedAgentId,
+      }).catch((error) => ({
+        ok: false,
+        reason: normalizeString(error?.message) || "read_cursor_write_failed",
+      }));
+      if (readCursorResult?.ok) {
+        readCursorUpdates += 1;
+        readCursorReason = "";
+      } else {
+        readCursorReason = normalizeString(readCursorResult?.reason) || "read_cursor_write_failed";
+      }
+    }
     primed = true;
-    return true;
+    return {
+      processed: true,
+      retryAfterMs: Number(readCursorResult?.retryAfterMs) || null,
+    };
+  }
+
+  async function processControlBatch(controlsInput = []) {
+    const controls = Array.isArray(controlsInput) ? controlsInput : [];
+    const observedAtMs = Number(_nowMs()) || Date.now();
+    for (const control of controls) {
+      if (!isPlainObject(control)) {
+        ignoredControls += 1;
+        continue;
+      }
+      const issuedAtMs = listenerControlIssuedAtMs(control);
+      const fresh =
+        issuedAtMs >= startedAtMs &&
+        issuedAtMs <= observedAtMs + MAX_CLOCK_SKEW_MS;
+      if (
+        !listenerControlType(control) ||
+        !fresh ||
+        !eventMatchesAgent(control, normalizedAgentId)
+      ) {
+        ignoredControls += 1;
+        continue;
+      }
+      const key = listenerControlIdentityKey(control);
+      if (deliveredControlKeys.has(key)) {
+        ignoredControls += 1;
+        continue;
+      }
+      deliveredControlKeys.add(key);
+      try {
+        await onControl(control);
+        deliveredControls += 1;
+      } catch (error) {
+        deliveredControlKeys.delete(key);
+        throw error;
+      }
+      if (signal?.aborted) break;
+    }
   }
 
   async function notifyHeartbeat({ stopping = false, nextPollMs = null } = {}) {
@@ -567,24 +726,44 @@ export async function listenSessionEvents({
         targetPath,
         since: cursor,
         limit: pollLimit,
+        listenerAgentId: normalizedAgentId,
       });
 
+      let cursorRetryAfterMs = null;
       if (result?.ok) {
         lastReason = "";
-        await processEventBatch(result.events, result.cursor);
+        consecutivePollFailures = 0;
+        await processControlBatch(result.listenerControls);
+        if (signal?.aborted) break;
+        const processed = await processEventBatch(result.events, result.cursor);
+        cursorRetryAfterMs = Number(processed?.retryAfterMs) || null;
       } else {
         lastReason = normalizeString(result?.reason) || "poll_failed";
+        consecutivePollFailures += 1;
         await onError({
           ok: false,
           reason: lastReason,
           cursor: result?.cursor || cursor || null,
+          retryAfterMs: Number(result?.retryAfterMs) || null,
+          status: Number(result?.status) || null,
         });
       }
 
       const willStop = maxPollCount > 0 && pollCount >= maxPollCount;
       const heartbeatAtMs = Number(_nowMs()) || Date.now();
       const humanActive = isRecentActivity(lastHumanActivityMs, heartbeatAtMs, activeWindowMs);
-      const nextSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
+      const baseSleepMs = humanActive ? Math.min(idleSleepMs, activeSleepMs) : idleSleepMs;
+      const nextSleepMs = computeListenerPollDelay({
+        baseDelayMs: baseSleepMs,
+        consecutiveFailures: consecutivePollFailures,
+        retryAfterMs: Math.max(
+          Number(result?.retryAfterMs) || 0,
+          Number(cursorRetryAfterMs) || 0,
+        ),
+        jitterRatio,
+        maxBackoffMs,
+        randomValue: _random(),
+      });
       await notifyHeartbeat({ nextPollMs: willStop ? null : nextSleepMs, stopping: willStop });
 
       if (willStop) break;
@@ -619,6 +798,11 @@ export async function listenSessionEvents({
     matched,
     emitted,
     persistedCursor,
+    readCursorUpdates,
+    readCursorReason,
+    deliveredControls,
+    ignoredControls,
+    consecutivePollFailures,
     catchupNotified,
     catchupEventCount,
     catchupMatchingEventCount,

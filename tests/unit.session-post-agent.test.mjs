@@ -1160,7 +1160,7 @@ test("Unit session post-agent: accepted remote write must be canonically visible
   }
 });
 
-test("Unit session listen: publishes bounded listener presence for real agent ids", async () => {
+test("Unit session listen: renews bounded ephemeral presence for real agent ids", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-"));
   const restoreEnv = installAuthEnv();
@@ -1207,24 +1207,105 @@ test("Unit session listen: publishes bounded listener presence for real agent id
     assert.equal(output, "");
     const pollCalls = calls.filter((call) => call.options.method === "GET");
     assert.equal(pollCalls.length, 1);
-    const postCalls = calls.filter((call) => call.options.method === "POST");
-    assert.equal(postCalls.length, 3);
-    const events = postCalls.map((call) => JSON.parse(call.options.body).event);
-    assert.deepEqual(
-      events.map((event) => event.event),
-      ["session_listener_started", "session_listener_heartbeat", "session_listener_stopped"],
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 3);
+    assert.ok(
+      presenceCalls.every((call) =>
+        call.url.endsWith("/api/v1/sessions/remote-listen/presence")
+      ),
     );
-    assert.ok(events.every((event) => event.agent.id === "codex"));
-    assert.ok(events.every((event) => event.agent.model === "gpt-5.3-codex"));
-    assert.ok(events.every((event) => event.agent.displayName === "Codex Listener"));
-    assert.ok(events.every((event) => event.agent.provider === "openai"));
-    assert.ok(events.every((event) => event.agent.role === "listener"));
-    assert.ok(events.every((event) => event.agent.clientKind === "cli"));
-    assert.ok(events.every((event) => event.payload.listenerId.startsWith("listener-codex-")));
-    assert.equal(events[1].payload.lifecycle, "heartbeat");
-    assert.equal(events[1].payload.state, "idle");
-    assert.equal(events[1].payload.stopping, true);
-    assert.equal(events[1].payload.nextPollMs, null);
+    const presence = presenceCalls.map((call) => JSON.parse(call.options.body));
+    assert.ok(presence.every((entry) => entry.agentId === "codex"));
+    assert.ok(presence.every((entry) => entry.model === "gpt-5.3-codex"));
+    assert.ok(presence.every((entry) => entry.displayName === "Codex Listener"));
+    assert.ok(presence.every((entry) => entry.provider === "openai"));
+    assert.ok(presence.every((entry) => entry.clientKind === "cli"));
+    assert.ok(presence.every((entry) => entry.listenerId.startsWith("listener-codex-")));
+    assert.equal(presence.at(-1).state, "stopped");
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session listen: fresh stop control exits before events and publishes stopped presence", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-stop-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  try {
+    await seedWorkspace(tempRoot);
+    globalThis.fetch = async (url, options = {}) => {
+      calls.push({ url: String(url), options });
+      if (options.method === "PUT") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: "ok", recorded: true, ttlSeconds: 90 }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          listenerControls: [
+            {
+              controlId: "control-stop-listen",
+              type: "stop",
+              issuedAt: new Date(Date.now() + 30_000).toISOString(),
+              targetAgentId: "codex",
+              reason: "operator_stop",
+            },
+          ],
+          events: [
+            {
+              event: "session_message",
+              cursor: "cursor-must-not-advance",
+              ts: new Date(Date.now() + 30_000).toISOString(),
+              payload: { message: "must not emit", to: "codex" },
+            },
+          ],
+          cursor: "cursor-must-not-advance",
+        }),
+      };
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "listen",
+      "--session",
+      "remote-listen-stop",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--max-polls",
+      "2",
+      "--emit",
+      "text",
+    ]);
+
+    assert.match(output, /Listener stop requested for codex; exiting\./);
+    assert.doesNotMatch(output, /must not emit/);
+    const pollCalls = calls.filter((call) => call.options.method === "GET");
+    assert.equal(pollCalls.length, 1);
+    assert.match(pollCalls[0].url, /listenerAgentId=codex/);
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 2);
+    const presence = presenceCalls.map((call) => JSON.parse(call.options.body));
+    assert.deepEqual(presence.map((entry) => entry.state), ["started", "stopped"]);
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+    assert.equal(
+      await readSyncCursor("remote-listen-stop", {
+        targetPath: tempRoot,
+        suffix: listenCursorSuffix("codex"),
+      }),
+      null,
+    );
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -1392,7 +1473,7 @@ test("Unit session listen: --log-file writes and rotates listener output", async
   }
 });
 
-test("Unit session listen: advertised presence keepalive covers the idle poll interval", async () => {
+test("Unit session listen: idle lifecycle renewals stay outside the durable log", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-presence-keepalive-"));
   const restoreEnv = installAuthEnv();
@@ -1436,14 +1517,15 @@ test("Unit session listen: advertised presence keepalive covers the idle poll in
       "180",
     ]);
 
-    const events = calls
-      .filter((call) => call.options.method === "POST")
-      .map((call) => JSON.parse(call.options.body).event);
-    const heartbeat = events.find((event) => event.event === "session_listener_heartbeat");
-    assert.ok(heartbeat, "expected listener heartbeat presence event");
-    assert.equal(heartbeat.payload.idleIntervalSeconds, 240);
-    assert.equal(heartbeat.payload.presenceIntervalSeconds, 60);
-    assert.equal(heartbeat.payload.presenceKeepaliveSeconds, 240);
+    const presenceCalls = calls.filter((call) => call.options.method === "PUT");
+    assert.equal(presenceCalls.length, 3);
+    assert.ok(
+      presenceCalls.every((call) =>
+        call.url.endsWith("/api/v1/sessions/remote-listen/presence")
+      ),
+    );
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 0);
+    assert.equal(JSON.parse(presenceCalls.at(-1).options.body).state, "stopped");
   } finally {
     globalThis.fetch = originalFetch;
     resetSessionSyncStateForTests();
@@ -1578,7 +1660,10 @@ test("Unit session listen: emits a bounded catch-up status before stored-cursor 
           json: async () => ({}),
         };
       }
-      assert.match(String(url), /\/api\/v1\/sessions\/remote-listen-catchup\/events\?after=1779364717000%3A000026d3&limit=200$/);
+      assert.match(
+        String(url),
+        /\/api\/v1\/sessions\/remote-listen-catchup\/events\?after=1779364717000%3A000026d3&listenerAgentId=codex&limit=200$/,
+      );
       return {
         ok: true,
         status: 200,
@@ -1666,7 +1751,10 @@ test("Unit session listen: --from-now primes and persists latest cursor without 
           json: async () => ({ events: [latestEvent] }),
         };
       }
-      assert.match(rawUrl, /\/api\/v1\/sessions\/remote-listen-from-now\/events\?after=1779369999000%3A000026d9&limit=200$/);
+      assert.match(
+        rawUrl,
+        /\/api\/v1\/sessions\/remote-listen-from-now\/events\?after=1779369999000%3A000026d9&listenerAgentId=codex&limit=200$/,
+      );
       return {
         ok: true,
         status: 200,
@@ -1997,9 +2085,17 @@ test("Unit session join: refreshes expired local cache after remote verification
         (call) =>
           call.options.method === "GET" &&
           call.url.endsWith(`/api/v1/sessions/${session.sessionId}`),
-      ),
+        ),
     );
-    assert.ok(calls.filter((call) => call.options.method === "POST").length >= 1);
+    assert.equal(
+      calls.filter(
+        (call) =>
+          call.options.method === "POST" &&
+          call.url.endsWith(`/api/v1/sessions/${session.sessionId}/events`),
+      ).length,
+      0,
+    );
+    assert.equal(payload.agentJoinRelayed, false);
 
     const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
     const joinEvent = events.find((event) => event.event === "agent_join");

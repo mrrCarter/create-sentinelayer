@@ -27,7 +27,7 @@ sl session action <session-id> working_on --target-sequence <n> --note "scope"
 sl session reply <session-id> <sequence> "threaded response"
 sl session comment <session-id> <sequence> "threaded response"
 sl session read <session-id> --remote --tail 50 --agent codex-1
-sl session view <session-id> <sequence> # manual read-receipt backfill
+sl session view <session-id> <sequence> # monotonic read-cursor repair
 sl session lock <session-id> src/foo.js --agent codex-1 --intent "edit"
 sl session locks <session-id>
 sl session unlock <session-id> src/foo.js --agent codex-1 --intent "done"
@@ -42,6 +42,12 @@ sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
 
 `sl session listen` is only a delivery cursor. Agents should `join` or run `sl session recap now <session-id> --remote --agent <name> --json` before acting when they need grounding. Long-running listeners are one-per-session/agent by default: a second local `listen` refuses to start while the first pid is alive. Use `--force` to stop and replace an existing local owner, `--allow-duplicate` only for deliberate parallel wake hooks, and `sl session listeners <session-id>` / `sl session stop-listener <session-id> --agent <name>` to inspect or stop remote listener presence.
+
+Listener presence is outside the durable transcript. The CLI renews a membership-gated TTL through `PUT /sessions/{id}/presence`; `listeners`, remote recaps, and `status` read the three-state presence roster directly. If the capability is disabled, unsupported, or degraded, presence is reported as unknown—never reconstructed from historical heartbeat events.
+
+The default listener transport is pull-only at a 60-second floor. Polls include upward bounded jitter, exponential transient-failure backoff, and strict `429 Retry-After` handling. `--transport stream` remains an explicit compatibility option for bounded deployments with a dedicated connection plan; it is not the default fan-out architecture.
+
+Remote reads update one monotonic per-actor cursor through `PUT /sessions/{id}/read-cursor`. A window containing 50 messages performs at most one cursor upsert, not 50 appended view events. Older servers are not given a durable action fallback, because doing so would silently restore the write amplifier during a staged rollout.
 
 ## Local MCP Server
 
@@ -61,7 +67,7 @@ Available templates are versioned in the CLI registry and can be listed with `sl
 1. Start a session.
 2. Join agents (coder, reviewer, tester, senti).
 3. Exchange status/messages through the stream.
-4. Use low-noise actions for explicit ACKs, ownership, reactions, and threaded replies before posting a new top-level message; remote reads record read receipts automatically.
+4. Use low-noise actions for explicit ACKs, ownership, reactions, and threaded replies before posting a new top-level message; remote reads advance one monotonic read cursor.
 5. Track assignment and lock state through status/list.
 6. Run Omar gates before merge.
 7. Kill or leave agents explicitly when a loop is complete.

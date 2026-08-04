@@ -2527,7 +2527,7 @@ test("CLI guide generate creates BUILD_GUIDE.md with phases, dependencies, and a
     assert.match(guideText, /- Dependencies: none \(entry phase\)/);
     assert.match(guideText, /#### Acceptance Criteria/);
     assert.match(guideText, /## Multi-Agent Coordination Protocol/);
-    assert.match(guideText, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson --no-presence/);
+    assert.match(guideText, /sl session listen --session <id> --agent <your-name> --transport poll --interval 60 --active-interval 60 --emit ndjson --no-presence/);
     assert.match(guideText, /sl session sync <id> --json/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -7795,12 +7795,15 @@ test("CLI session commands: start/list/join/say/read/status/kill/leave flow with
     assert.equal(statusPayload.activeAgents.some((agent) => agent.agentId === "agent-alpha"), true);
     assert.equal(statusPayload.activeAgents.some((agent) => agent.agentId === "agent-stale"), false);
     assert.equal(statusPayload.staleAgents.some((agent) => agent.agentId === "agent-stale"), true);
-    assert.equal(statusPayload.listenerPresence.source, "local_recent_events");
-    assert.equal(statusPayload.listenerPresence.liveCount, 1);
+    assert.equal(statusPayload.listenerPresence.source, "remote_presence");
+    assert.equal(statusPayload.listenerPresence.authoritative, false);
+    assert.equal(statusPayload.listenerPresence.liveCount, 0);
+    assert.deepEqual(statusPayload.listenerPresence.listeners, []);
     assert.equal(
-      statusPayload.listenerPresence.listeners.some((listener) => listener.agentId === "agent-listener"),
-      true,
+      statusPayload.recentEvents.some((event) => event.event === "session_listener_heartbeat"),
+      false,
     );
+    assert.equal(statusPayload.hiddenControlEventCount >= 1, true);
 
     const workItemId = await seedDaemonWorkItem(tempRoot, "/v1/session/lease", "SESSION_LEASE_E2E");
     const leased = await leaseWorkItem({

@@ -101,7 +101,13 @@ test("contract: syncSessionEventToApi body matches SessionEventPayload schema", 
   const { calls, fetchImpl } = makeFetchRecorder();
   await syncSessionEventToApi(
     "sess_contract_1",
-    { event: "agent_join", agentId: "test-agent", sessionId: "sess_contract_1", ts: new Date().toISOString() },
+    {
+      event: "session_message",
+      agentId: "test-agent",
+      sessionId: "sess_contract_1",
+      payload: { message: "contract fixture" },
+      ts: new Date().toISOString(),
+    },
     {
       targetPath: process.cwd(),
       resolveAuthSession: async () => FAKE_SESSION,
@@ -182,16 +188,16 @@ test("contract: pollHumanMessages issues GET with limit and optional since param
 
 test("contract: event payload always wraps the canonical event under the 'event' key", async () => {
   // Regression fence: previous versions of sync.js flattened the event into
-  // the top-level body (e.g. {event: "agent_join", agentId: "x", sessionId: "..."})
+  // the top-level body (e.g. {event: "session_message", agentId: "x", sessionId: "..."})
   // which would silently fail against SessionEventPayload's {event: dict}.
   const { calls, fetchImpl } = makeFetchRecorder();
   await syncSessionEventToApi(
     "sess_contract_5",
     {
-      event: "agent_say",
+      event: "session_message",
       agentId: "a1",
       sessionId: "sess_contract_5",
-      payload: { body: "hello" },
+      payload: { message: "hello" },
       ts: new Date().toISOString(),
     },
     {

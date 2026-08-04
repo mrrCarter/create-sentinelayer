@@ -525,7 +525,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "poll_inbox",
         title: "Poll Senti Inbox",
         description:
-          "Poll durable SentinelLayer session events after an optional cursor and return events visible to one agent.",
+          "Poll durable SentinelLayer session events after an optional cursor, return events visible to one agent, and advance one monotonic read cursor.",
         input_schema: {
           type: "object",
           additionalProperties: false,
@@ -567,13 +567,14 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "read_history",
         title: "Read Senti History",
         description:
-          "Hydrate a bounded recent, older, or after-cursor SentinelLayer session transcript window without recipient filtering.",
+          "Hydrate a bounded recent, older, or after-cursor SentinelLayer session transcript window and advance one monotonic read cursor without appending view events.",
         input_schema: {
           type: "object",
           additionalProperties: false,
           required: ["sessionId"],
           properties: {
             sessionId: { type: "string" },
+            agentId: { type: "string" },
             cursor: { type: "string" },
             beforeSequence: { type: "integer", minimum: 1 },
             limit: { type: "integer", minimum: 1, maximum: 200 },
@@ -654,7 +655,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_action",
         title: "Record Senti Session Action",
         description:
-          "Record a low-noise message action such as ack, working_on, disregard, view, like, dislike, or reply against a target session event.",
+          "Record a low-noise message action such as ack, working_on, disregard, like, dislike, or reply; view advances the monotonic read cursor instead of appending an action.",
         input_schema: {
           type: "object",
           additionalProperties: false,

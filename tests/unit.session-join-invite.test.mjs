@@ -134,14 +134,13 @@ test("Unit session join invite: accepts reserved seat before verifying membershi
     const verifyIndex = calls.findIndex(
       (call) => call.method === "GET" && call.endpoint.endsWith("/api/v1/sessions/sess-web"),
     );
-    const joinEventIndex = calls.findIndex(
+    const eventPosts = calls.filter(
       (call) => call.method === "POST" && call.endpoint.endsWith("/api/v1/sessions/sess-web/events"),
     );
     assert.ok(acceptIndex >= 0, "invite accept call should be made");
     assert.ok(verifyIndex >= 0, "session verification call should be made");
-    assert.ok(joinEventIndex >= 0, "accepted onboarding agent id should relay agent_join");
     assert.ok(acceptIndex < verifyIndex, "invite accept must happen before membership verification");
-    assert.ok(verifyIndex < joinEventIndex, "agent_join should relay only after membership verification");
+    assert.equal(eventPosts.length, 0, "accepted onboarding identity must not append transcript rows");
 
     const acceptCall = calls[acceptIndex];
     assert.equal(acceptCall.body.token, "invite-token-1234567890");
@@ -157,7 +156,7 @@ test("Unit session join invite: accepts reserved seat before verifying membershi
     assert.equal(payload.invitationAccepted, true);
     assert.equal(payload.agentId, "codex");
     assert.equal(payload.role, "reviewer");
-    assert.equal(payload.agentJoinRelayed, true);
+    assert.equal(payload.agentJoinRelayed, false);
     assert.equal(payload.invitationAccept.claimedSeat.seatKey, "codex-seat");
     assert.equal(payload.invitationAccept.onboarding.instructions, "Read the room, then review the API diff.");
     assert.ok(payload.onboardingGuide.markdownPath.endsWith(path.join("onboarding", "codex.md")));
