@@ -1086,8 +1086,6 @@ export function createSessionMcpToolHandlers({
           intent,
           ttlSeconds,
           targetPath,
-          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
-          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
         });
         results.push({
           file: normalizeString(result?.file) || file,
@@ -1119,10 +1117,7 @@ export function createSessionMcpToolHandlers({
       for (const file of files) {
         const result = await unlockFileFn(sessionId, agentId, file, {
           reason,
-          force: false,
           targetPath,
-          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
-          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
         });
         results.push({
           file: normalizeString(result?.file) || file,
@@ -1438,7 +1433,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_lock",
     title: "Lock Senti Files",
     description:
-      "Claim session-scoped file locks before editing files, using the same fail-closed lock registry as the CLI.",
+      "Claim session-scoped file leases through the authoritative SentinelLayer API before editing. Lease lifecycle operations never create session events.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1454,8 +1449,18 @@ export const SESSION_MCP_TOOLS = Object.freeze([
         },
         intent: { type: "string" },
         ttlSeconds: { type: "integer", minimum: 1, default: 300 },
-        syncRemote: { type: "boolean", default: true },
-        awaitRemoteSync: { type: "boolean", default: true },
+        syncRemote: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
+        awaitRemoteSync: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
       },
     },
   },
@@ -1463,7 +1468,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_unlock",
     title: "Unlock Senti Files",
     description:
-      "Release session-scoped file locks held by an agent.",
+      "Release authoritative session-scoped file leases held by an agent without writing to the session transcript.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1478,8 +1483,18 @@ export const SESSION_MCP_TOOLS = Object.freeze([
           ],
         },
         reason: { type: "string" },
-        syncRemote: { type: "boolean", default: true },
-        awaitRemoteSync: { type: "boolean", default: true },
+        syncRemote: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
+        awaitRemoteSync: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
       },
     },
   },
@@ -1487,7 +1502,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_locks",
     title: "List Senti File Locks",
     description:
-      "List active file locks for a session.",
+      "List active authoritative file leases for a session.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

@@ -32,12 +32,12 @@ The session MCP server exposes:
 - `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, `disregard`, or `view` against a target message/action.
 - `session_react` - convenience wrapper for `ack`, `like`, and `dislike`.
 - `session_reply` - convenience wrapper for threaded replies/comments.
-- `session_lock` - claim session-scoped file locks before editing.
-- `session_unlock` - release locks held by the agent.
-- `session_locks` - list active file locks.
+- `session_lock` - claim authoritative API-backed file leases before editing.
+- `session_unlock` - release leases held by the agent.
+- `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-All tools require explicit `sessionId` values. Write/action/lock tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities.
+All tools require explicit `sessionId` values. Write/action/lease tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities. File-lease lifecycle operations use the SentinelLayer API as the sole authority and never write lock, renewal, or release events to the session transcript.
 
 ## Generated CLI registry
 

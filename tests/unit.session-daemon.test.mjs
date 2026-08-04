@@ -524,7 +524,7 @@ test("Unit session daemon: unanswered help_request gets auto-response within tim
   }
 });
 
-test("Unit session daemon: lock/unlock directives from session messages enforce exclusive file ownership", async () => {
+test("Unit session daemon: legacy lock/unlock chat directives emit zero file lifecycle noise", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-lock-directives-"));
   let sessionId = "";
   try {
@@ -572,24 +572,6 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    const lockEvent = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "file_lock" && event.payload?.file === "src/routes/auth.js",
-      { targetPath: tempRoot }
-    );
-    assert.ok(lockEvent);
-    assert.equal(lockEvent.agent.id, "codex-c3d4");
-    assert.equal(lockEvent.payload.file, "src/routes/auth.js");
-
-    const denied = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "daemon_alert" && event.payload?.alert === "file_lock_denied",
-      { targetPath: tempRoot }
-    );
-    assert.ok(denied);
-    assert.equal(denied.payload.file, "src/routes/auth.js");
-    assert.equal(denied.payload.heldBy, "codex-c3d4");
-
     await appendToStream(
       session.sessionId,
       createAgentEvent({
@@ -602,13 +584,24 @@ test("Unit session daemon: lock/unlock directives from session messages enforce 
       }),
       { targetPath: tempRoot }
     );
-    const unlockEvent = await waitForStreamEvent(
-      session.sessionId,
-      (event) => event.event === "file_unlock" && event.payload?.file === "src/routes/auth.js",
-      { targetPath: tempRoot }
+
+    await sleep(300);
+    const stream = await readStream(session.sessionId, { tail: 0, targetPath: tempRoot });
+    const lifecycleNoise = stream.filter((event) => (
+      ["file_lock", "file_unlock", "file_lock_expired"].includes(event.event)
+      || (
+        event.event === "daemon_alert"
+        && ["file_lock_denied", "file_unlock_denied"].includes(event.payload?.alert)
+      )
+    ));
+    assert.deepEqual(lifecycleNoise, []);
+    assert.equal(
+      stream.filter((event) => (
+        event.event === "session_message"
+        && /^(?:lock|unlock):\s*src\/routes\/auth\.js\b/i.test(event.payload?.message || "")
+      )).length,
+      3
     );
-    assert.ok(unlockEvent);
-    assert.equal(unlockEvent.payload.file, "src/routes/auth.js");
   } finally {
     if (sessionId) {
       await stopSenti(sessionId, { targetPath: tempRoot }).catch(() => {});

@@ -1,61 +1,210 @@
+import { randomBytes } from "node:crypto";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { createAgentEvent } from "../events/schema.js";
+import {
+  SentinelayerApiError,
+  requestJson,
+  requestJsonMutation,
+} from "../auth/http.js";
+import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveSessionPaths } from "./paths.js";
-import { appendToStream } from "./stream.js";
 
-const FILE_LOCK_SCHEMA_VERSION = "1.0.0";
+const FILE_LEASE_CAPABILITY_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_FILE_LOCK_TTL_SECONDS = 300;
-const DEFAULT_LOCK_TIMEOUT_MS = 10_000;
-const DEFAULT_LOCK_STALE_MS = 30_000;
-const DEFAULT_LOCK_POLL_MS = 25;
-const SENTI_AGENT_ID = "senti";
+const MIN_FILE_LOCK_TTL_SECONDS = 15;
+const MAX_FILE_LOCK_TTL_SECONDS = 3_600;
+const DEFAULT_CAPABILITY_LOCK_TIMEOUT_MS = 10_000;
+const DEFAULT_CAPABILITY_LOCK_STALE_MS = 30_000;
+const DEFAULT_CAPABILITY_LOCK_POLL_MS = 25;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$/;
+const LEASE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,128}$/;
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[/\\]/;
 
 function normalizeString(value) {
   return String(value || "").trim();
 }
 
-function normalizeIsoTimestamp(value, fallbackIso = new Date().toISOString()) {
+function normalizeSessionId(value) {
   const normalized = normalizeString(value);
+  if (!SESSION_ID_PATTERN.test(normalized)) {
+    throw new Error(
+      "sessionId must be 1-64 repository-safe letters, numbers, dots, underscores, or hyphens.",
+    );
+  }
+  return normalized;
+}
+
+function normalizeAgentId(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  if (!AGENT_ID_PATTERN.test(normalized)) {
+    throw new Error("agentId must match ^[A-Za-z0-9][A-Za-z0-9._:-]{0,31}$.");
+  }
+  return normalized;
+}
+
+function normalizeTtlSeconds(value) {
+  const normalized =
+    value === undefined || value === null || normalizeString(value) === ""
+      ? DEFAULT_FILE_LOCK_TTL_SECONDS
+      : Number(value);
+  if (
+    !Number.isInteger(normalized) ||
+    normalized < MIN_FILE_LOCK_TTL_SECONDS ||
+    normalized > MAX_FILE_LOCK_TTL_SECONDS
+  ) {
+    throw new Error(
+      `ttlSeconds must be an integer between ${MIN_FILE_LOCK_TTL_SECONDS} and ${MAX_FILE_LOCK_TTL_SECONDS}.`,
+    );
+  }
+  return normalized;
+}
+
+function normalizeBoundedText(value, { field, maxLength }) {
+  const normalized = normalizeString(value);
+  if (normalized.length > maxLength) {
+    throw new Error(`${field} must be ${maxLength} characters or fewer.`);
+  }
+  if (/[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new Error(`${field} must not contain control characters.`);
+  }
+  return normalized;
+}
+
+function normalizeApiUrl(value) {
+  const normalized = normalizeString(value).replace(/\/+$/u, "");
   if (!normalized) {
-    return fallbackIso;
+    throw new Error("Sentinelayer API URL is unavailable.");
   }
-  const epoch = Date.parse(normalized);
-  if (!Number.isFinite(epoch)) {
-    return fallbackIso;
-  }
-  return new Date(epoch).toISOString();
+  return normalized;
 }
 
-function normalizePositiveInteger(value, fallbackValue) {
-  if (value === undefined || value === null || normalizeString(value) === "") {
-    return fallbackValue;
+function normalizeFilePath(filePath, { targetPath = process.cwd() } = {}) {
+  const raw = normalizeString(filePath).normalize("NFC");
+  if (!raw) {
+    throw new Error("filePath is required.");
   }
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized) || normalized <= 0) {
-    throw new Error("Value must be a positive integer.");
+  if (raw.length > 1_024) {
+    throw new Error("filePath must be 1024 characters or fewer.");
   }
-  return Math.floor(normalized);
+  if (/[\u0000-\u001f\u007f]/u.test(raw)) {
+    throw new Error("filePath must not contain control characters.");
+  }
+
+  const workspaceRoot = path.resolve(String(targetPath || "."));
+  let candidate = raw;
+  if (path.isAbsolute(raw)) {
+    const relative = path.relative(workspaceRoot, path.resolve(raw));
+    if (
+      !relative ||
+      path.isAbsolute(relative) ||
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`)
+    ) {
+      throw new Error("filePath must resolve to a file inside the workspace.");
+    }
+    candidate = relative;
+  } else if (raw.startsWith(("/", "\\")) || WINDOWS_ABSOLUTE_PATH_PATTERN.test(raw)) {
+    throw new Error("filePath must be repository-relative.");
+  }
+
+  const segments = [];
+  for (const segment of candidate.replace(/\\/gu, "/").split("/")) {
+    const normalizedSegment = segment.normalize("NFC");
+    if (!normalizedSegment || normalizedSegment === ".") {
+      continue;
+    }
+    if (normalizedSegment === "..") {
+      throw new Error("filePath must not traverse outside the workspace.");
+    }
+    segments.push(normalizedSegment);
+  }
+  const normalized = segments.join("/");
+  if (!normalized) {
+    throw new Error("filePath is required.");
+  }
+  if (normalized.length > 1_024) {
+    throw new Error("normalized filePath must be 1024 characters or fewer.");
+  }
+  return normalized;
 }
 
-function toIsoAfterSeconds(nowIso, seconds) {
-  const nowEpoch = Date.parse(normalizeIsoTimestamp(nowIso, nowIso));
-  return new Date(nowEpoch + Math.max(1, Math.floor(Number(seconds) || 0)) * 1000).toISOString();
+async function resolveRealPathThroughNearestAncestor(absolutePath) {
+  let cursor = path.resolve(absolutePath);
+  const missingSegments = [];
+  while (true) {
+    try {
+      const realAncestor = await fsp.realpath(cursor);
+      return path.join(realAncestor, ...missingSegments);
+    } catch (error) {
+      if (
+        !error ||
+        typeof error !== "object" ||
+        !["ENOENT", "ENOTDIR"].includes(error.code)
+      ) {
+        throw error;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) {
+        throw new Error("Unable to resolve filePath through an existing workspace ancestor.", {
+          cause: error,
+        });
+      }
+      missingSegments.unshift(path.basename(cursor));
+      cursor = parent;
+    }
+  }
 }
 
-function parseEpoch(value, fallbackIso = new Date().toISOString()) {
-  return Date.parse(normalizeIsoTimestamp(value, fallbackIso)) || 0;
+async function canonicalizeFilePath(
+  filePath,
+  { targetPath = process.cwd() } = {},
+) {
+  const workspaceRoot = path.resolve(String(targetPath || "."));
+  const realWorkspaceRoot = await fsp.realpath(workspaceRoot);
+  const lexicalPath = normalizeFilePath(filePath, { targetPath: workspaceRoot });
+  const realCandidate = await resolveRealPathThroughNearestAncestor(
+    path.join(workspaceRoot, ...lexicalPath.split("/")),
+  );
+  const relative = path.relative(realWorkspaceRoot, realCandidate);
+  if (
+    !relative ||
+    path.isAbsolute(relative) ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error(
+      "filePath resolves through a symlink or junction outside the workspace.",
+    );
+  }
+  return normalizeFilePath(relative, { targetPath: realWorkspaceRoot });
 }
 
-function formatSince(fromIso, nowIso = new Date().toISOString()) {
-  const nowEpoch = parseEpoch(nowIso, nowIso);
-  const fromEpoch = parseEpoch(fromIso, nowIso);
-  const deltaMs = Math.max(0, nowEpoch - fromEpoch);
-  const deltaSeconds = Math.max(0, Math.floor(deltaMs / 1000));
+function pathKey(value) {
+  return normalizeString(value).normalize("NFC").toLowerCase().replace(/\/+$/u, "");
+}
+
+function fileLeasePathCovers(leasePath, targetPath) {
+  const lease = pathKey(leasePath);
+  const target = pathKey(targetPath);
+  return Boolean(lease && target && (target === lease || target.startsWith(`${lease}/`)));
+}
+
+function fileLeasePathsOverlap(leftPath, rightPath) {
+  return fileLeasePathCovers(leftPath, rightPath) || fileLeasePathCovers(rightPath, leftPath);
+}
+
+function parseEpoch(value) {
+  const parsed = Date.parse(normalizeString(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatSince(fromIso, nowMs = Date.now()) {
+  const fromMs = parseEpoch(fromIso);
+  const deltaSeconds = Math.max(0, Math.floor((nowMs - fromMs) / 1_000));
   if (deltaSeconds < 60) {
     return `${deltaSeconds}s ago`;
   }
@@ -67,303 +216,388 @@ function formatSince(fromIso, nowIso = new Date().toISOString()) {
   if (deltaHours < 24) {
     return `${deltaHours}h ago`;
   }
-  const deltaDays = Math.floor(deltaHours / 24);
-  return `${deltaDays}d ago`;
+  return `${Math.floor(deltaHours / 24)}d ago`;
 }
 
-function normalizeFilePath(filePath, { targetPath = process.cwd() } = {}) {
-  const raw = normalizeString(filePath);
-  if (!raw) {
-    throw new Error("filePath is required.");
-  }
-
-  let normalized = raw;
-  if (path.isAbsolute(raw)) {
-    normalized = path.relative(path.resolve(String(targetPath || ".")), path.resolve(raw));
-  }
-  normalized = normalizeString(normalized).replace(/\\/g, "/");
-  normalized = normalized.replace(/^\.\/+/, "");
-  if (!normalized || normalized === ".") {
-    throw new Error("filePath is required.");
-  }
-  return normalized;
-}
-
-function normalizeAgentId(agentId) {
-  const normalized = normalizeString(agentId).toLowerCase();
-  if (!normalized) {
-    throw new Error("agentId is required.");
-  }
-  return normalized;
-}
-
-function isLockExpired(lockRecord, nowIso = new Date().toISOString()) {
-  const nowEpoch = parseEpoch(nowIso, nowIso);
-  const expiresAtEpoch = parseEpoch(lockRecord?.expiresAt, nowIso);
-  if (!Number.isFinite(nowEpoch) || !Number.isFinite(expiresAtEpoch)) {
-    return false;
-  }
-  return nowEpoch >= expiresAtEpoch;
-}
-
-function normalizeLockRecord(filePath, raw = {}, { nowIso = new Date().toISOString() } = {}) {
-  const normalizedFile = normalizeString(filePath);
-  if (!normalizedFile) {
-    return null;
-  }
-  const agentId = normalizeString(raw.agentId).toLowerCase();
-  if (!agentId) {
-    return null;
-  }
-  const ttlSeconds = normalizePositiveInteger(raw.ttlSeconds, DEFAULT_FILE_LOCK_TTL_SECONDS);
-  const lockedAt = normalizeIsoTimestamp(raw.lockedAt, nowIso);
-  const expiresAt = normalizeIsoTimestamp(raw.expiresAt, toIsoAfterSeconds(lockedAt, ttlSeconds));
+function presentLease(rawLease = {}) {
+  const source = rawLease && typeof rawLease === "object" ? rawLease : {};
+  const file = normalizeString(source.path || source.file || source.filePath);
+  const agentId = normalizeString(source.holderId || source.agentId).toLowerCase();
+  const lockedAt = normalizeString(source.acquiredAt || source.lockedAt);
+  const ttlSeconds = Number(source.ttlSeconds);
+  const revision = Number(source.revision);
   return {
-    file: normalizedFile,
+    leaseId: normalizeString(source.leaseId || source.id) || null,
+    sessionId: normalizeString(source.sessionId) || null,
+    file,
+    path: file,
     agentId,
-    intent: normalizeString(raw.intent),
-    lockedAt,
-    expiresAt,
-    ttlSeconds,
+    heldBy: agentId,
+    intent: normalizeString(source.intent),
+    status: normalizeString(source.status) || "active",
+    lockedAt: lockedAt || null,
+    acquiredAt: lockedAt || null,
+    renewedAt: normalizeString(source.renewedAt) || null,
+    expiresAt: normalizeString(source.expiresAt) || null,
+    releasedAt: normalizeString(source.releasedAt) || null,
+    releaseReason: normalizeString(source.releaseReason) || null,
+    ttlSeconds: Number.isInteger(ttlSeconds) ? ttlSeconds : DEFAULT_FILE_LOCK_TTL_SECONDS,
+    revision: Number.isInteger(revision) ? revision : 1,
+    since: lockedAt ? formatSince(lockedAt) : null,
   };
 }
 
-function normalizeRegistry(raw = {}, { sessionId, nowIso = new Date().toISOString() } = {}) {
+function newCapabilityToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function normalizeCapabilityClaim(raw, { sessionId } = {}) {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-  const inputLocks = source.locks && typeof source.locks === "object" ? source.locks : {};
-  const locks = {};
-  for (const [filePath, value] of Object.entries(inputLocks)) {
-    const normalizedFilePath = normalizeString(filePath);
-    if (!normalizedFilePath) {
-      continue;
-    }
-    const record = normalizeLockRecord(normalizedFilePath, value, { nowIso });
-    if (!record) {
-      continue;
-    }
-    locks[normalizedFilePath] = record;
+  const leaseId = normalizeString(source.leaseId);
+  const claimSessionId = normalizeSessionId(source.sessionId || sessionId);
+  const holderId = normalizeAgentId(source.holderId);
+  const claimPath = normalizeFilePath(source.path, { targetPath: "." });
+  const leaseToken = normalizeString(source.leaseToken);
+  if (!leaseId || !/^[0-9a-f-]{36}$/iu.test(leaseId)) {
+    throw new Error("File-lease capability cache contains an invalid lease id.");
   }
-
+  if (!LEASE_TOKEN_PATTERN.test(leaseToken)) {
+    throw new Error("File-lease capability cache contains an invalid capability token.");
+  }
   return {
-    schemaVersion: FILE_LOCK_SCHEMA_VERSION,
-    sessionId: normalizeString(source.sessionId) || normalizeString(sessionId),
-    updatedAt: normalizeIsoTimestamp(source.updatedAt, nowIso),
-    locks,
+    leaseId,
+    sessionId: claimSessionId,
+    path: claimPath,
+    holderId,
+    leaseToken,
+    expiresAt: normalizeString(source.expiresAt) || null,
+    ttlSeconds: normalizeTtlSeconds(source.ttlSeconds),
+    revision: Math.max(1, Math.floor(Number(source.revision) || 1)),
+    updatedAt: normalizeString(source.updatedAt) || new Date().toISOString(),
   };
 }
 
-async function readJsonFile(filePath, { allowMissing = true } = {}) {
-  try {
-    const raw = await fsp.readFile(filePath, "utf-8");
-    return JSON.parse(raw);
-  } catch (error) {
-    if (allowMissing && error && typeof error === "object" && error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
+function emptyCapabilityStore(sessionId) {
+  return {
+    schemaVersion: FILE_LEASE_CAPABILITY_SCHEMA_VERSION,
+    authoritative: false,
+    sessionId,
+    updatedAt: new Date().toISOString(),
+    claims: [],
+  };
 }
 
-async function writeJsonFile(filePath, payload) {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
-  await fsp.rename(tmpPath, filePath);
-}
-
-async function ensureSessionExists(paths) {
+async function readCapabilityStore(sessionId, { targetPath = process.cwd() } = {}) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const paths = resolveSessionPaths(normalizedSessionId, { targetPath });
+  let parsed;
   try {
-    await fsp.access(paths.metadataPath);
+    parsed = JSON.parse(await fsp.readFile(paths.fileLeaseCapabilitiesPath, "utf-8"));
   } catch (error) {
     if (error && typeof error === "object" && error.code === "ENOENT") {
-      throw new Error(`Session '${paths.sessionId}' was not found.`);
+      return emptyCapabilityStore(normalizedSessionId);
     }
+    if (error instanceof SyntaxError) {
+      throw new Error(
+        "File-lease capability cache is corrupt; refusing to bypass the authoritative guard.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("File-lease capability cache has an invalid root object.");
+  }
+  if (parsed.authoritative !== false) {
+    throw new Error("File-lease capability cache must be explicitly non-authoritative.");
+  }
+  if (normalizeSessionId(parsed.sessionId) !== normalizedSessionId) {
+    throw new Error("File-lease capability cache belongs to a different session.");
+  }
+  if (!Array.isArray(parsed.claims)) {
+    throw new Error("File-lease capability cache claims must be an array.");
+  }
+  return {
+    schemaVersion: FILE_LEASE_CAPABILITY_SCHEMA_VERSION,
+    authoritative: false,
+    sessionId: normalizedSessionId,
+    updatedAt: normalizeString(parsed.updatedAt) || new Date().toISOString(),
+    claims: parsed.claims.map((claim) =>
+      normalizeCapabilityClaim(claim, { sessionId: normalizedSessionId }),
+    ),
+  };
+}
+
+async function writeCapabilityStore(paths, store) {
+  await fsp.mkdir(paths.sessionDir, { recursive: true, mode: 0o700 });
+  const tmpPath = `${paths.fileLeaseCapabilitiesPath}.${process.pid}.${Date.now()}.tmp`;
+  const payload = {
+    schemaVersion: FILE_LEASE_CAPABILITY_SCHEMA_VERSION,
+    authoritative: false,
+    sessionId: paths.sessionId,
+    updatedAt: new Date().toISOString(),
+    claims: store.claims,
+  };
+  try {
+    await fsp.writeFile(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+    await fsp.chmod(tmpPath, 0o600).catch(() => {});
+    await fsp.rename(tmpPath, paths.fileLeaseCapabilitiesPath);
+    await fsp.chmod(paths.fileLeaseCapabilitiesPath, 0o600).catch(() => {});
+  } catch (error) {
+    await fsp.rm(tmpPath, { force: true }).catch(() => {});
     throw error;
   }
 }
 
-async function acquireLock(lockPath, {
-  timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
-  staleMs = DEFAULT_LOCK_STALE_MS,
-  pollMs = DEFAULT_LOCK_POLL_MS,
-} = {}) {
-  const start = Date.now();
+async function acquireCapabilityMutex(
+  lockPath,
+  {
+    timeoutMs = DEFAULT_CAPABILITY_LOCK_TIMEOUT_MS,
+    staleMs = DEFAULT_CAPABILITY_LOCK_STALE_MS,
+    pollMs = DEFAULT_CAPABILITY_LOCK_POLL_MS,
+  } = {},
+) {
+  const startedAt = Date.now();
   while (true) {
     try {
-      await fsp.mkdir(lockPath);
+      await fsp.mkdir(lockPath, { recursive: false, mode: 0o700 });
       return;
     } catch (error) {
-      const code = error && typeof error === "object" ? error.code : "";
-      if (!(code === "EEXIST" || code === "EPERM" || code === "EACCES")) {
+      if (!error || typeof error !== "object" || error.code !== "EEXIST") {
         throw error;
       }
-
       try {
         const stat = await fsp.stat(lockPath);
-        const ageMs = Date.now() - Number(stat.mtimeMs || 0);
-        if (Number.isFinite(ageMs) && ageMs > staleMs) {
+        if (Date.now() - Number(stat.mtimeMs || 0) > staleMs) {
           await fsp.rm(lockPath, { recursive: true, force: true });
           continue;
         }
       } catch {
-        // Continue waiting.
+        continue;
       }
-
-      if (Date.now() - start >= timeoutMs) {
-        throw new Error("Timed out waiting for session file lock registry.");
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new Error("Timed out waiting for the local file-lease capability cache.");
       }
       await sleep(pollMs);
     }
   }
 }
 
-async function releaseLock(lockPath) {
-  await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
-}
-
-function pruneExpiredLocks(registry, { nowIso = new Date().toISOString() } = {}) {
-  const expired = [];
-  for (const [filePath, lockRecord] of Object.entries(registry.locks || {})) {
-    if (!isLockExpired(lockRecord, nowIso)) {
-      continue;
-    }
-    expired.push({
-      ...lockRecord,
-      file: filePath,
-      expiredAt: normalizeIsoTimestamp(nowIso, new Date().toISOString()),
-    });
-    delete registry.locks[filePath];
-  }
-  return expired;
-}
-
-function presentLock(lockRecord, { nowIso = new Date().toISOString() } = {}) {
-  if (!lockRecord) {
-    return null;
-  }
-  return {
-    file: normalizeString(lockRecord.file),
-    agentId: normalizeString(lockRecord.agentId),
-    intent: normalizeString(lockRecord.intent),
-    lockedAt: normalizeIsoTimestamp(lockRecord.lockedAt, nowIso),
-    expiresAt: normalizeIsoTimestamp(lockRecord.expiresAt, nowIso),
-    ttlSeconds: normalizePositiveInteger(lockRecord.ttlSeconds, DEFAULT_FILE_LOCK_TTL_SECONDS),
-    since: formatSince(lockRecord.lockedAt, nowIso),
-  };
-}
-
-async function appendLockEvent(
+async function mutateCapabilityStore(
   sessionId,
-  event,
-  agentId,
-  payload,
-  {
-    targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    syncRemote = true,
-    awaitRemoteSync = false,
-  } = {}
+  { targetPath = process.cwd() } = {},
+  mutator = async () => {},
 ) {
-  return appendToStream(
-    sessionId,
-    createAgentEvent({
-      event,
-      agentId: normalizeAgentId(agentId),
-      sessionId,
-      ts: normalizeIsoTimestamp(nowIso, new Date().toISOString()),
-      payload,
-    }),
-    {
-      targetPath,
-      syncRemote,
-      awaitRemoteSync,
-    }
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const paths = resolveSessionPaths(normalizedSessionId, { targetPath });
+  await fsp.mkdir(paths.sessionDir, { recursive: true, mode: 0o700 });
+  await acquireCapabilityMutex(paths.fileLeaseCapabilitiesLockPath);
+  try {
+    const store = await readCapabilityStore(normalizedSessionId, { targetPath });
+    const result = await mutator(store);
+    await writeCapabilityStore(paths, store);
+    return result;
+  } finally {
+    await fsp.rm(paths.fileLeaseCapabilitiesLockPath, {
+      recursive: true,
+      force: true,
+    }).catch(() => {});
+  }
+}
+
+function findExactClaim(claims, holderId, filePath) {
+  const holder = normalizeAgentId(holderId);
+  const targetKey = pathKey(filePath);
+  return (
+    claims.find(
+      (claim) =>
+        normalizeAgentId(claim.holderId) === holder && pathKey(claim.path) === targetKey,
+    ) || null
   );
 }
 
-async function emitExpiredLockEvents(
-  sessionId,
-  expiredLocks = [],
-  {
-    targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    actorAgentId = SENTI_AGENT_ID,
-  } = {}
-) {
-  const events = [];
-  for (const lockRecord of expiredLocks) {
-    const payload = {
-      file: normalizeString(lockRecord.file),
-      heldBy: normalizeString(lockRecord.agentId),
-      intent: normalizeString(lockRecord.intent),
-      lockedAt: normalizeIsoTimestamp(lockRecord.lockedAt, nowIso),
-      expiresAt: normalizeIsoTimestamp(lockRecord.expiresAt, nowIso),
-      expiredAt: normalizeIsoTimestamp(nowIso, new Date().toISOString()),
-    };
-    const event = await appendLockEvent(
-      sessionId,
-      "file_lock_expired",
-      actorAgentId,
-      payload,
-      {
-        targetPath,
-        nowIso,
-      }
-    );
-    events.push(event);
-  }
-  return events;
+function findCoveringClaim(claims, holderId, filePath) {
+  const holder = normalizeAgentId(holderId);
+  return (
+    claims
+      .filter(
+        (claim) =>
+          normalizeAgentId(claim.holderId) === holder &&
+          fileLeasePathCovers(claim.path, filePath),
+      )
+      .sort((left, right) => pathKey(right.path).length - pathKey(left.path).length)[0] || null
+  );
 }
 
-async function mutateRegistry(
+async function saveCapabilityClaim(sessionId, claim, { targetPath = process.cwd() } = {}) {
+  const normalized = normalizeCapabilityClaim(claim, { sessionId });
+  await mutateCapabilityStore(
+    sessionId,
+    { targetPath },
+    async (store) => {
+      store.claims = store.claims.filter(
+        (existing) =>
+          existing.leaseId !== normalized.leaseId &&
+          !(
+            normalizeAgentId(existing.holderId) === normalized.holderId &&
+            pathKey(existing.path) === pathKey(normalized.path)
+          ),
+      );
+      store.claims.push(normalized);
+    },
+  );
+  return normalized;
+}
+
+async function removeCapabilityClaims(
+  sessionId,
+  predicate,
+  { targetPath = process.cwd() } = {},
+) {
+  return mutateCapabilityStore(
+    sessionId,
+    { targetPath },
+    async (store) => {
+      const removed = store.claims.filter(predicate);
+      store.claims = store.claims.filter((claim) => !predicate(claim));
+      return removed;
+    },
+  );
+}
+
+async function resolveLeaseApi({
+  targetPath = process.cwd(),
+  resolveAuthSession = resolveActiveAuthSession,
+} = {}) {
+  const auth = await resolveAuthSession({
+    cwd: targetPath,
+    env: process.env,
+    autoRotate: false,
+  });
+  if (!auth?.token || !auth?.apiUrl) {
+    throw new Error(
+      "Authoritative session file leases require Sentinelayer auth. Run `sl auth login` first.",
+    );
+  }
+  return {
+    apiUrl: normalizeApiUrl(auth.apiUrl),
+    headers: { Authorization: `Bearer ${auth.token}` },
+  };
+}
+
+function leaseCollectionUrl(apiUrl, sessionId) {
+  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/file-leases`;
+}
+
+function leaseMemberUrl(apiUrl, sessionId, leaseId, action) {
+  return `${leaseCollectionUrl(apiUrl, sessionId)}/${encodeURIComponent(leaseId)}/${action}`;
+}
+
+async function listRemoteLeases(
   sessionId,
   {
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    emitExpiredEvents = true,
-    expiredEventAgentId = SENTI_AGENT_ID,
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
   } = {},
-  mutator = async () => ({})
 ) {
-  const paths = resolveSessionPaths(sessionId, { targetPath });
-  await ensureSessionExists(paths);
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-
-  await acquireLock(paths.fileLocksLockPath);
-  let result = null;
-  let expiredLocks = [];
-  try {
-    const rawRegistry = await readJsonFile(paths.fileLocksPath, { allowMissing: true });
-    const registry = normalizeRegistry(rawRegistry || {}, {
-      sessionId: paths.sessionId,
-      nowIso: normalizedNow,
-    });
-    expiredLocks = pruneExpiredLocks(registry, {
-      nowIso: normalizedNow,
-    });
-    result = await mutator(registry, {
-      nowIso: normalizedNow,
-      paths,
-    });
-    registry.updatedAt = normalizedNow;
-    await writeJsonFile(paths.fileLocksPath, registry);
-  } finally {
-    await releaseLock(paths.fileLocksLockPath);
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const response = await request(leaseCollectionUrl(apiUrl, normalizedSessionId), {
+    method: "GET",
+    headers,
+  });
+  if (response?.authoritative !== true || !Array.isArray(response?.leases)) {
+    throw new Error("File-lease authority returned an invalid list response; refusing local fallback.");
   }
+  return response.leases.map((lease) => presentLease(lease));
+}
 
-  const expiredEvents = emitExpiredEvents
-    ? await emitExpiredLockEvents(sessionId, expiredLocks, {
-        targetPath,
-        nowIso: normalizedNow,
-        actorAgentId: expiredEventAgentId,
-      })
-    : [];
-
+async function guardRemoteClaims(
+  sessionId,
+  holderId,
+  paths,
+  claims,
+  {
+    targetPath = process.cwd(),
+    resolveAuthSession = resolveActiveAuthSession,
+    requestMutation = requestJsonMutation,
+  } = {},
+) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedHolderId = normalizeAgentId(holderId);
+  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const response = await requestMutation(
+    `${leaseCollectionUrl(apiUrl, normalizedSessionId)}/guard`,
+    {
+      method: "POST",
+      operationName: "session-file-lease-guard",
+      headers,
+      body: {
+        holderId: normalizedHolderId,
+        claims: paths.map((file, index) => ({
+          path: file,
+          leaseId: claims[index]?.leaseId || null,
+          leaseToken: claims[index]?.leaseToken || null,
+        })),
+      },
+      maxRetries: 1,
+    },
+  );
+  if (
+    response?.authoritative !== true ||
+    typeof response?.allowed !== "boolean" ||
+    normalizeString(response?.sessionId) !== normalizedSessionId ||
+    normalizeString(response?.holderId).toLowerCase() !== normalizedHolderId ||
+    !Array.isArray(response?.guarded) ||
+    !Array.isArray(response?.denials)
+  ) {
+    throw new Error("File-lease authority returned an invalid guard response; edit blocked.");
+  }
+  if (
+    response.allowed &&
+    (response.denials.length > 0 || response.guarded.length !== paths.length)
+  ) {
+    throw new Error("File-lease authority returned an inconsistent allow decision; edit blocked.");
+  }
   return {
-    result,
-    expiredLocks,
-    expiredEvents,
+    ...response,
+    files: paths,
   };
+}
+
+export async function guardFileLeases(
+  sessionId,
+  agentId,
+  filePaths,
+  {
+    targetPath = process.cwd(),
+    resolveAuthSession = resolveActiveAuthSession,
+    requestMutation = requestJsonMutation,
+  } = {},
+) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const files = await Promise.all(
+    (Array.isArray(filePaths) ? filePaths : [filePaths]).map((file) =>
+      canonicalizeFilePath(file, { targetPath }),
+    ),
+  );
+  if (files.length === 0) {
+    throw new Error("At least one file path is required for the file-lease guard.");
+  }
+  const store = await readCapabilityStore(normalizedSessionId, { targetPath });
+  const claims = files.map((file) =>
+    findCoveringClaim(store.claims, normalizedAgentId, file),
+  );
+  return guardRemoteClaims(normalizedSessionId, normalizedAgentId, files, claims, {
+    targetPath,
+    resolveAuthSession,
+    requestMutation,
+  });
 }
 
 export async function lockFile(
@@ -374,90 +608,226 @@ export async function lockFile(
     intent = "",
     ttlSeconds = DEFAULT_FILE_LOCK_TTL_SECONDS,
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    syncRemote = true,
-    awaitRemoteSync = false,
-  } = {}
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
+    requestMutation = requestJsonMutation,
+  } = {},
 ) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
-  const normalizedIntent = normalizeString(intent);
-  const normalizedTtlSeconds = normalizePositiveInteger(ttlSeconds, DEFAULT_FILE_LOCK_TTL_SECONDS);
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-
-  const mutation = await mutateRegistry(
-    sessionId,
-    {
-      targetPath,
-      nowIso: normalizedNow,
-      emitExpiredEvents: true,
-      expiredEventAgentId: SENTI_AGENT_ID,
-    },
-    async (registry) => {
-      const existing = registry.locks[normalizedFilePath] || null;
-      if (existing && existing.agentId !== normalizedAgentId) {
-        return {
-          locked: false,
-          file: normalizedFilePath,
-          heldBy: normalizeString(existing.agentId),
-          since: formatSince(existing.lockedAt, normalizedNow),
-          lock: presentLock({ ...existing, file: normalizedFilePath }, { nowIso: normalizedNow }),
-        };
-      }
-
-      const lockedAt = normalizedNow;
-      const expiresAt = toIsoAfterSeconds(lockedAt, normalizedTtlSeconds);
-      const lockRecord = {
-        file: normalizedFilePath,
-        agentId: normalizedAgentId,
-        intent: normalizedIntent,
-        lockedAt,
-        expiresAt,
-        ttlSeconds: normalizedTtlSeconds,
-        // Forensic holder metadata. Not used for correctness (TTL-based
-        // reclaim handles liveness), but lets operators see which process
-        // on which host took a lock when debugging stale-lock incidents.
-        holderPid: process.pid,
-        holderHostname: os.hostname(),
-      };
-      registry.locks[normalizedFilePath] = lockRecord;
-      return {
-        locked: true,
-        file: normalizedFilePath,
-        lock: presentLock(lockRecord, { nowIso: normalizedNow }),
-      };
-    }
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
+  const normalizedIntent = normalizeBoundedText(intent, {
+    field: "intent",
+    maxLength: 512,
+  });
+  const normalizedTtlSeconds = normalizeTtlSeconds(ttlSeconds);
+  const store = await readCapabilityStore(normalizedSessionId, { targetPath });
+  const coveringClaim = findCoveringClaim(
+    store.claims,
+    normalizedAgentId,
+    normalizedFilePath,
+  );
+  const exactClaim = findExactClaim(
+    store.claims,
+    normalizedAgentId,
+    normalizedFilePath,
   );
 
-  if (mutation.result?.locked) {
-    const event = await appendLockEvent(
-      sessionId,
-      "file_lock",
+  if (coveringClaim && !exactClaim) {
+    const guard = await guardRemoteClaims(
+      normalizedSessionId,
       normalizedAgentId,
-      {
-        file: normalizedFilePath,
-        intent: normalizedIntent,
-        ttlSeconds: normalizedTtlSeconds,
-        expiresAt: mutation.result.lock?.expiresAt || toIsoAfterSeconds(normalizedNow, normalizedTtlSeconds),
-      },
-      {
-        targetPath,
-        nowIso: normalizedNow,
-        syncRemote,
-        awaitRemoteSync,
-      }
+      [normalizedFilePath],
+      [coveringClaim],
+      { targetPath, resolveAuthSession, requestMutation },
     );
-    return {
-      ...mutation.result,
-      event,
-      expiredEvents: mutation.expiredEvents,
-    };
+    if (guard.allowed) {
+      const lease = presentLease(guard.guarded[0]?.lease || {});
+      return {
+        locked: true,
+        duplicate: true,
+        inheritedScope: true,
+        file: normalizedFilePath,
+        lock: lease,
+        lease,
+      };
+    }
+  }
+
+  const leaseToken = exactClaim?.leaseToken || newCapabilityToken();
+  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  let response;
+  try {
+    response = await requestMutation(
+      leaseCollectionUrl(apiUrl, normalizedSessionId),
+      {
+        method: "POST",
+        operationName: "session-file-lease-acquire",
+        headers,
+        body: {
+          path: normalizedFilePath,
+          holderId: normalizedAgentId,
+          leaseToken,
+          ttlSeconds: normalizedTtlSeconds,
+          intent: normalizedIntent || null,
+        },
+      },
+    );
+  } catch (error) {
+    if (
+      error instanceof SentinelayerApiError &&
+      error.code === "FILE_LEASE_CONFLICT"
+    ) {
+      const leases = await listRemoteLeases(normalizedSessionId, {
+        targetPath,
+        resolveAuthSession,
+        request,
+      });
+      const conflict =
+        leases.find((lease) => fileLeasePathsOverlap(lease.file, normalizedFilePath)) ||
+        null;
+      return {
+        locked: false,
+        file: normalizedFilePath,
+        reason:
+          conflict?.agentId === normalizedAgentId
+            ? "holder_capability_unavailable"
+            : "held_by_other_agent",
+        heldBy: conflict?.agentId || null,
+        since: conflict?.since || null,
+        lock: conflict,
+      };
+    }
+    throw error;
+  }
+  if (
+    response?.ok !== true
+    || response?.authoritative !== true
+    || !response?.lease
+  ) {
+    throw new Error("File-lease authority returned an invalid acquire response.");
+  }
+  const lease = presentLease(response.lease);
+  if (
+    !lease.leaseId ||
+    pathKey(lease.file) !== pathKey(normalizedFilePath) ||
+    lease.agentId !== normalizedAgentId
+  ) {
+    throw new Error("File-lease authority returned a mismatched acquire response.");
+  }
+
+  try {
+    await saveCapabilityClaim(
+      normalizedSessionId,
+      {
+        leaseId: lease.leaseId,
+        sessionId: normalizedSessionId,
+        path: lease.file,
+        holderId: normalizedAgentId,
+        leaseToken,
+        expiresAt: lease.expiresAt,
+        ttlSeconds: lease.ttlSeconds,
+        revision: lease.revision,
+        updatedAt: new Date().toISOString(),
+      },
+      { targetPath },
+    );
+  } catch (cacheError) {
+    let compensated = false;
+    try {
+      const release = await requestMutation(
+        leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "release"),
+        {
+          method: "POST",
+          operationName: "session-file-lease-acquire-compensation",
+          headers,
+          body: {
+            holderId: normalizedAgentId,
+            leaseToken,
+            reason: "capability_cache_write_failed",
+          },
+        },
+      );
+      compensated = Boolean(
+        release?.authoritative === true
+        && (release?.released || release?.alreadyReleased || release?.expired),
+      );
+    } catch {
+      compensated = false;
+    }
+    throw new Error(
+      compensated
+        ? "File lease was released because its local capability could not be stored."
+        : "File-lease capability storage failed; edit blocked and the lease will expire by TTL.",
+      { cause: cacheError },
+    );
   }
 
   return {
-    ...mutation.result,
-    expiredEvents: mutation.expiredEvents,
+    locked: true,
+    duplicate: Boolean(response.duplicate),
+    file: normalizedFilePath,
+    lock: lease,
+    lease,
   };
+}
+
+async function findClaimForRelease(sessionId, agentId, filePath, { targetPath }) {
+  const store = await readCapabilityStore(sessionId, { targetPath });
+  return findExactClaim(store.claims, agentId, filePath);
+}
+
+async function releaseCapabilityClaim(
+  sessionId,
+  agentId,
+  claim,
+  {
+    reason,
+    targetPath,
+    resolveAuthSession,
+    requestMutation,
+  },
+) {
+  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  let response;
+  try {
+    response = await requestMutation(
+      leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "release"),
+      {
+        method: "POST",
+        operationName: "session-file-lease-release",
+        headers,
+        body: {
+          holderId: agentId,
+          leaseToken: claim.leaseToken,
+          reason,
+        },
+      },
+    );
+  } catch (error) {
+    if (
+      error instanceof SentinelayerApiError &&
+      error.code === "FILE_LEASE_NOT_FOUND"
+    ) {
+      response = {
+        ok: true,
+        authoritative: true,
+        released: false,
+        alreadyReleased: true,
+      };
+    } else {
+      throw error;
+    }
+  }
+  if (response?.ok !== true || response?.authoritative !== true) {
+    throw new Error("File-lease authority returned an invalid release response.");
+  }
+  await removeCapabilityClaims(
+    sessionId,
+    (existing) => existing.leaseId === claim.leaseId,
+    { targetPath },
+  );
+  return response;
 }
 
 export async function unlockFile(
@@ -466,86 +836,160 @@ export async function unlockFile(
   filePath,
   {
     reason = "manual_release",
-    force = false,
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    actorAgentId = null,
-    syncRemote = true,
-    awaitRemoteSync = false,
-  } = {}
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
+    requestMutation = requestJsonMutation,
+  } = {},
 ) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-  const normalizedReason = normalizeString(reason) || "manual_release";
-
-  const mutation = await mutateRegistry(
-    sessionId,
-    {
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
+  const normalizedReason =
+    normalizeBoundedText(reason || "manual_release", {
+      field: "reason",
+      maxLength: 128,
+    }) || "manual_release";
+  const claim = await findClaimForRelease(
+    normalizedSessionId,
+    normalizedAgentId,
+    normalizedFilePath,
+    { targetPath },
+  );
+  if (!claim) {
+    const leases = await listRemoteLeases(normalizedSessionId, {
       targetPath,
-      nowIso: normalizedNow,
-      emitExpiredEvents: true,
-      expiredEventAgentId: SENTI_AGENT_ID,
-    },
-    async (registry) => {
-      const existing = registry.locks[normalizedFilePath] || null;
-      if (!existing) {
-        return {
-          unlocked: false,
-          file: normalizedFilePath,
-          reason: "not_locked",
-        };
-      }
-      if (!force && normalizeString(existing.agentId) !== normalizedAgentId) {
-        return {
-          unlocked: false,
-          file: normalizedFilePath,
-          reason: "held_by_other_agent",
-          heldBy: normalizeString(existing.agentId),
-          since: formatSince(existing.lockedAt, normalizedNow),
-          lock: presentLock({ ...existing, file: normalizedFilePath }, { nowIso: normalizedNow }),
-        };
-      }
-
-      delete registry.locks[normalizedFilePath];
+      resolveAuthSession,
+      request,
+    });
+    const exact = leases.find(
+      (lease) => pathKey(lease.file) === pathKey(normalizedFilePath),
+    );
+    const covering = leases.find((lease) =>
+      fileLeasePathCovers(lease.file, normalizedFilePath),
+    );
+    if (covering && pathKey(covering.file) !== pathKey(normalizedFilePath)) {
       return {
-        unlocked: true,
+        unlocked: false,
         file: normalizedFilePath,
-        lock: presentLock({ ...existing, file: normalizedFilePath }, { nowIso: normalizedNow }),
+        reason: "covered_by_parent_scope",
+        heldBy: covering.agentId,
+        lock: covering,
       };
     }
-  );
-
-  if (!mutation.result?.unlocked) {
+    if (!exact) {
+      return {
+        unlocked: false,
+        file: normalizedFilePath,
+        reason: "not_locked",
+      };
+    }
     return {
-      ...mutation.result,
-      expiredEvents: mutation.expiredEvents,
+      unlocked: false,
+      file: normalizedFilePath,
+      reason:
+        exact.agentId === normalizedAgentId
+          ? "holder_capability_unavailable"
+          : "held_by_other_agent",
+      heldBy: exact.agentId,
+      since: exact.since,
+      lock: exact,
     };
   }
 
-  const emittedBy = normalizeAgentId(actorAgentId || (force ? SENTI_AGENT_ID : normalizedAgentId));
-  const event = await appendLockEvent(
-    sessionId,
-    "file_unlock",
-    emittedBy,
+  const response = await releaseCapabilityClaim(
+    normalizedSessionId,
+    normalizedAgentId,
+    claim,
     {
-      file: normalizedFilePath,
-      heldBy: normalizeString(mutation.result.lock?.agentId) || normalizedAgentId,
-      intent: normalizeString(mutation.result.lock?.intent),
       reason: normalizedReason,
-    },
-    {
       targetPath,
-      nowIso: normalizedNow,
-      syncRemote,
-      awaitRemoteSync,
-    }
+      resolveAuthSession,
+      requestMutation,
+    },
   );
-
+  const lease = response.lease ? presentLease(response.lease) : null;
   return {
-    ...mutation.result,
-    event,
-    expiredEvents: mutation.expiredEvents,
+    unlocked: Boolean(response.released),
+    file: normalizedFilePath,
+    reason: response.released
+      ? "unlocked"
+      : response.expired
+        ? "expired"
+        : "already_released",
+    lock: lease,
+  };
+}
+
+export async function renewFileLease(
+  sessionId,
+  agentId,
+  filePath,
+  {
+    ttlSeconds = DEFAULT_FILE_LOCK_TTL_SECONDS,
+    targetPath = process.cwd(),
+    resolveAuthSession = resolveActiveAuthSession,
+    requestMutation = requestJsonMutation,
+  } = {},
+) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const normalizedAgentId = normalizeAgentId(agentId);
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
+  const normalizedTtlSeconds = normalizeTtlSeconds(ttlSeconds);
+  const store = await readCapabilityStore(normalizedSessionId, { targetPath });
+  const claim = findCoveringClaim(
+    store.claims,
+    normalizedAgentId,
+    normalizedFilePath,
+  );
+  if (!claim) {
+    return {
+      renewed: false,
+      file: normalizedFilePath,
+      reason: "holder_capability_unavailable",
+    };
+  }
+
+  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const response = await requestMutation(
+    leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "renew"),
+    {
+      method: "POST",
+      operationName: "session-file-lease-renew",
+      headers,
+      body: {
+        holderId: normalizedAgentId,
+        leaseToken: claim.leaseToken,
+        ttlSeconds: normalizedTtlSeconds,
+      },
+    },
+  );
+  if (
+    response?.ok !== true
+    || response?.authoritative !== true
+    || response?.renewed !== true
+    || !response?.lease
+  ) {
+    throw new Error("File-lease authority returned an invalid renew response.");
+  }
+  const lease = presentLease(response.lease);
+  await saveCapabilityClaim(
+    normalizedSessionId,
+    {
+      ...claim,
+      path: lease.file,
+      expiresAt: lease.expiresAt,
+      ttlSeconds: lease.ttlSeconds,
+      revision: lease.revision,
+      updatedAt: new Date().toISOString(),
+    },
+    { targetPath },
+  );
+  return {
+    renewed: true,
+    file: normalizedFilePath,
+    lease,
+    lock: lease,
   };
 }
 
@@ -554,59 +998,36 @@ export async function checkFileLock(
   filePath,
   {
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    emitExpiredEvents = true,
-  } = {}
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
+  } = {},
 ) {
-  const normalizedFilePath = normalizeFilePath(filePath, { targetPath });
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-
-  const mutation = await mutateRegistry(
-    sessionId,
-    {
-      targetPath,
-      nowIso: normalizedNow,
-      emitExpiredEvents,
-      expiredEventAgentId: SENTI_AGENT_ID,
-    },
-    async (registry) => {
-      const existing = registry.locks[normalizedFilePath] || null;
-      if (!existing) {
-        return null;
-      }
-      return presentLock({ ...existing, file: normalizedFilePath }, { nowIso: normalizedNow });
-    }
+  const normalizedFilePath = await canonicalizeFilePath(filePath, { targetPath });
+  const leases = await listRemoteLeases(sessionId, {
+    targetPath,
+    resolveAuthSession,
+    request,
+  });
+  return (
+    leases.find((lease) => fileLeasePathCovers(lease.file, normalizedFilePath)) ||
+    leases.find((lease) => fileLeasePathsOverlap(lease.file, normalizedFilePath)) ||
+    null
   );
-
-  return mutation.result;
 }
 
 export async function listFileLocks(
   sessionId,
   {
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    emitExpiredEvents = true,
-  } = {}
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
+  } = {},
 ) {
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-
-  const mutation = await mutateRegistry(
-    sessionId,
-    {
-      targetPath,
-      nowIso: normalizedNow,
-      emitExpiredEvents,
-      expiredEventAgentId: SENTI_AGENT_ID,
-    },
-    async (registry) =>
-      Object.entries(registry.locks || {})
-        .map(([file, lockRecord]) => presentLock({ ...lockRecord, file }, { nowIso: normalizedNow }))
-        .filter(Boolean)
-        .sort((left, right) => parseEpoch(left.lockedAt, normalizedNow) - parseEpoch(right.lockedAt, normalizedNow))
-  );
-
-  return mutation.result;
+  return listRemoteLeases(sessionId, {
+    targetPath,
+    resolveAuthSession,
+    request,
+  });
 }
 
 export async function releaseFileLocksForAgent(
@@ -615,64 +1036,89 @@ export async function releaseFileLocksForAgent(
   {
     reason = "agent_killed",
     targetPath = process.cwd(),
-    nowIso = new Date().toISOString(),
-    actorAgentId = SENTI_AGENT_ID,
-  } = {}
+    resolveAuthSession = resolveActiveAuthSession,
+    request = requestJson,
+    requestMutation = requestJsonMutation,
+  } = {},
 ) {
+  const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedAgentId = normalizeAgentId(agentId);
-  const normalizedNow = normalizeIsoTimestamp(nowIso, new Date().toISOString());
-  const normalizedReason = normalizeString(reason) || "agent_killed";
-
-  const mutation = await mutateRegistry(
-    sessionId,
-    {
-      targetPath,
-      nowIso: normalizedNow,
-      emitExpiredEvents: true,
-      expiredEventAgentId: normalizeAgentId(actorAgentId || SENTI_AGENT_ID),
-    },
-    async (registry) => {
-      const released = [];
-      for (const [filePath, lockRecord] of Object.entries(registry.locks || {})) {
-        if (normalizeString(lockRecord.agentId) !== normalizedAgentId) {
-          continue;
-        }
-        released.push(presentLock({ ...lockRecord, file: filePath }, { nowIso: normalizedNow }));
-        delete registry.locks[filePath];
-      }
-      return released;
-    }
+  const normalizedReason =
+    normalizeBoundedText(reason || "agent_killed", {
+      field: "reason",
+      maxLength: 128,
+    }) || "agent_killed";
+  const store = await readCapabilityStore(normalizedSessionId, { targetPath });
+  const claims = store.claims.filter(
+    (claim) => normalizeAgentId(claim.holderId) === normalizedAgentId,
   );
-
-  const events = [];
-  const actor = normalizeAgentId(actorAgentId || SENTI_AGENT_ID);
-  for (const lockRecord of mutation.result || []) {
-    const event = await appendLockEvent(
-      sessionId,
-      "file_unlock",
-      actor,
-      {
-        file: normalizeString(lockRecord.file),
-        heldBy: normalizedAgentId,
-        intent: normalizeString(lockRecord.intent),
-        reason: normalizedReason,
-      },
-      {
-        targetPath,
-        nowIso: normalizedNow,
+  const released = [];
+  const failures = [];
+  for (const claim of claims) {
+    try {
+      const response = await releaseCapabilityClaim(
+        normalizedSessionId,
+        normalizedAgentId,
+        claim,
+        {
+          reason: normalizedReason,
+          targetPath,
+          resolveAuthSession,
+          requestMutation,
+        },
+      );
+      if (response.released) {
+        released.push(presentLease(response.lease || { path: claim.path }));
       }
-    );
-    events.push(event);
+    } catch (error) {
+      failures.push({
+        leaseId: claim.leaseId,
+        file: claim.path,
+        code: normalizeString(error?.code) || "release_failed",
+      });
+    }
   }
 
+  let unresolved = [];
+  let authority = {
+    ok: true,
+    authoritative: true,
+    code: null,
+  };
+  try {
+    const active = await listRemoteLeases(normalizedSessionId, {
+      targetPath,
+      resolveAuthSession,
+      request,
+    });
+    unresolved = active.filter(
+      (lease) => lease.agentId === normalizedAgentId,
+    );
+  } catch (error) {
+    authority = {
+      ok: false,
+      authoritative: false,
+      code: normalizeString(error?.code) || "FILE_LEASE_LIST_FAILED",
+    };
+  }
   return {
-    releasedCount: events.length,
-    released: mutation.result || [],
-    events,
-    expiredEvents: mutation.expiredEvents,
+    releasedCount: released.length,
+    released,
+    failures,
+    unresolved,
+    unresolvedKnown: authority.ok,
+    authority,
+    events: [],
+    expiredEvents: [],
   };
 }
 
 export {
   DEFAULT_FILE_LOCK_TTL_SECONDS,
+  MAX_FILE_LOCK_TTL_SECONDS,
+  MIN_FILE_LOCK_TTL_SECONDS,
+  fileLeasePathCovers,
+  fileLeasePathsOverlap,
+  canonicalizeFilePath,
+  normalizeFilePath,
 };

@@ -73,7 +73,9 @@ test("Unit spec session: session tooling forces coordination phase by default", 
   });
   assert.match(markdown, /Multi-Agent Coordination Protocol/);
   assert.match(markdown, /plan: <scope>; files: <paths>/);
-  assert.match(markdown, /lock: <file> - <intent>/);
+  assert.match(markdown, /sl session lock <id> <file>/);
+  assert.match(markdown, /sl session guard-install <id>/);
+  assert.doesNotMatch(markdown, /["'`]lock:\s*<file>/u);
   assert.match(markdown, /sl review --diff/);
   assert.match(markdown, /sl --help/);
 });
@@ -144,7 +146,8 @@ Ship deterministic coordination.
   const github = renderGuideExport({ format: "github-issues", guide });
 
   assert.match(jira.issues[0].description, /Coordination rules:/);
-  assert.match(linear.issues[0].description, /lock: <file> - <intent>/);
+  assert.match(linear.issues[0].description, /sl session lock <id> <file>/);
+  assert.doesNotMatch(linear.issues[0].description, /["'`]lock:\s*<file>/u);
   assert.match(github, /sl --help/);
 });
 

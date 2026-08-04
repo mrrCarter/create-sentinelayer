@@ -72,8 +72,12 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.equal(countCoordinationMarkers(firstClaude), 1);
     assert.match(firstGuide, /SentinelLayer Session Guide for AI Agents/);
     assert.match(firstAgents, /Find the recent Senti session for this codebase/);
-    assert.match(firstAgents, /sl session post-agent <id> "status: <update>" --agent <your-agent-id>/);
-    assert.match(firstAgents, /lock: <file> - <intent>/);
+    assert.match(firstAgents, /sl session action <id> working_on --target-sequence <n>/);
+    assert.doesNotMatch(firstAgents, /status updates every 5 minutes/u);
+    assert.match(firstAgents, /sl session lock <id> <file>/);
+    assert.match(firstAgents, /sl session guard-install <id>/);
+    assert.doesNotMatch(firstAgents, /["'`]lock:\s*<file>/u);
+    assert.doesNotMatch(firstAgents, /["'`]unlock:\s*<file>/u);
     assert.match(firstAgents, /sl review --diff/);
     assert.match(firstAgents, /sl --help/);
     assert.match(firstAgents, /sl session react <id> ack --target-sequence <n>/);

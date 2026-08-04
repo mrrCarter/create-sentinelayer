@@ -25,6 +25,15 @@ Service repo owns:
 - Rollback workflows
 - Runtime telemetry pipelines that feed dashboard operational metrics
 
+## File-lease release dependency
+
+The API file-lease migration/routes deploy and live no-transcript smoke must
+complete before publishing or activating the compatible CLI integrations.
+Rollback starts on clients: freeze edits and run `sl session guard-uninstall`
+everywhere while the compatible CLI and API are still available, then
+downgrade the CLI. Keep the additive API route/table until no new client
+remains; API rollback and optional schema downgrade come last.
+
 ## Metrics and dashboard note
 
 Workflow checks in this CLI repo validate build/release/security gating. They do not by themselves feed runtime production metrics to the admin dashboard. Dashboard runtime metrics come from deployed service telemetry in `sentinelayer-api` + `sentinelayer-web` integration.

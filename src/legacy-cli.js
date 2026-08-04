@@ -216,7 +216,10 @@ function printUsage() {
   console.log("  sl session templates --json        List available session quick-start templates");
   console.log("  sl session join <id> --name <n>    Join a session as an agent");
   console.log("  sl session say <id> \"msg\" --json  Append a message event to session stream");
-  console.log("  sl session say <id> \"lock: <file> - <intent>\"  Request an exclusive file lock via Senti");
+  console.log("  sl session lock <id> <file> --agent <agent> --intent <text>  Claim an API-backed file lease outside chat");
+  console.log("  sl session guard-install <id> --agent <agent>  Install terminal/editor lease preflights");
+  console.log("  sl session guard-uninstall <id> --agent <agent>  Remove managed preflights before CLI rollback");
+  console.log("  sl session unlock <id> <file> --agent <agent>  Release an API-backed file lease");
   console.log("  sl session say <id> \"assign: @agent <task>\"  Create task assignment + lease");
   console.log("  sl session say <id> \"assign: @*:reviewer <task>\"  Wildcard route to least-busy role");
   console.log("  sl session say <id> \"accepted: task <task-id>\" / \"done: task <task-id>\"  Task transitions");
