@@ -7,10 +7,12 @@ import {
   buildCliCommandMcpTools,
   createCliCommandMcpToolHandlers,
 } from "./cli-command-tools.js";
-import { appendToStream } from "../session/stream.js";
+import { appendToStream, readStream } from "../session/stream.js";
 import { listFileLocks, lockFile, unlockFile } from "../session/file-locks.js";
 import { eventMatchesAgent } from "../session/listener.js";
 import { isSessionControlEvent } from "../session/control-events.js";
+import { buildObservations } from "../session/recall/observations.js";
+import { createMemoryService } from "../engram/index.js";
 import {
   createSessionMessageAction,
   listSessionMessageActions,
@@ -872,6 +874,29 @@ export function createSessionMcpToolHandlers({
   uuidFn = randomUUID,
   now = () => new Date().toISOString(),
 } = {}) {
+  // ENGRAM §2 (Memory-as-a-Service): session is namespace #1. The SL-specific
+  // session adapter maps a session's events to the generic observation model,
+  // which keeps the detachable engram core (src/engram/*) free of any
+  // session-runtime import. Generic namespaces (project:/org:/ns:) prove the
+  // engine is sellable on its own.
+  const memoryService = createMemoryService({
+    storeRoot: targetPath,
+    adapters: {
+      session: async (sessionId) => {
+        const events = await readStream(sessionId, { targetPath, tail: 0 }).catch(() => []);
+        return buildObservations(events, { sessionId }).observations;
+      },
+    },
+  });
+  const memoryCaller = (input = {}) => {
+    const agentId = normalizeString(input.agentId || input.agent_id) || "cli-user";
+    return {
+      id: agentId,
+      kind: agentId.startsWith("guest") ? "guest" : "agent",
+      // AIdenID verification is external (§2.1); P0 writes are non-authoritative.
+      verified: false,
+    };
+  };
   return {
     async poll_inbox(input = {}) {
       const sessionId = requireSessionId(input);
@@ -1217,10 +1242,108 @@ export function createSessionMcpToolHandlers({
         sleepFn,
       });
     },
+    async "memory.write"(input = {}) {
+      return memoryService.tools.write({
+        scope: input.scope,
+        items: input.items,
+        caller: memoryCaller(input),
+      });
+    },
+    async "memory.recall"(input = {}) {
+      return memoryService.tools.recall({
+        scope: input.scope,
+        query: input.query,
+        k: input.k,
+        role: input.role,
+        caller: memoryCaller(input),
+      });
+    },
+    async "memory.summarize"(input = {}) {
+      return memoryService.tools.summarize({
+        scope: input.scope,
+        focus: input.focus,
+        k: input.k,
+        caller: memoryCaller(input),
+      });
+    },
   };
 }
 
 export const SESSION_MCP_TOOLS = Object.freeze([
+  {
+    name: "memory.write",
+    title: "ENGRAM memory.write",
+    description:
+      "Remember facts/decisions/docs/snippets into a scoped namespace. Idempotent (content-hash dedup); every write is trust-sealed (verified -> authoritative; unverified/guest -> retrievable-but-marked, never authoritative).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["scope", "items"],
+      properties: {
+        scope: {
+          type: "string",
+          minLength: 1,
+          description: "Namespace scope: session:<id> | project:<name> | org:<name> | agent:<id> | ns:<name>.",
+        },
+        items: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_TOOL_LIMIT,
+          items: {
+            type: "object",
+            required: ["text"],
+            properties: {
+              text: { type: "string", minLength: 1, maxLength: MAX_MESSAGE_CHARS },
+              kind: { type: "string" },
+              topics: { type: "array", items: { type: "string" } },
+              files: { type: "array", items: { type: "string" } },
+              mentions: { type: "array", items: { type: "string" } },
+              sealed: { type: "boolean" },
+            },
+          },
+        },
+        agentId: { type: "string" },
+      },
+    },
+    security: { scopes: ["memory:write"], requires_human_approval: false, kill_switch: "enabled" },
+  },
+  {
+    name: "memory.recall",
+    title: "ENGRAM memory.recall",
+    description:
+      "Recall the top-K relevant memories from a scoped namespace (dense int8 exact-scan + BM25 + RRF + bounded graph diffusion + ACT-R), each with a one-line provenance path. Deterministic + auditable.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["scope", "query"],
+      properties: {
+        scope: { type: "string", minLength: 1 },
+        query: { type: "string", minLength: 2 },
+        k: { type: "integer", minimum: 1, maximum: 50, default: 12 },
+        role: { type: "string" },
+        agentId: { type: "string" },
+      },
+    },
+    security: { scopes: ["memory:read"], durable_receipt_required: true, requires_human_approval: false, kill_switch: "enabled" },
+  },
+  {
+    name: "memory.summarize",
+    title: "ENGRAM memory.summarize",
+    description:
+      "Summarize a namespace focused on a topic: recall DETERMINISTICALLY selects the relevant subset, then a renderer GENERATES prose over ONLY that subset (never a model in selection).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["scope", "focus"],
+      properties: {
+        scope: { type: "string", minLength: 1 },
+        focus: { type: "string", minLength: 2 },
+        k: { type: "integer", minimum: 1, maximum: 50, default: 12 },
+        agentId: { type: "string" },
+      },
+    },
+    security: { scopes: ["memory:read"], durable_receipt_required: true, requires_human_approval: false, kill_switch: "enabled" },
+  },
   {
     name: "poll_inbox",
     title: "Poll Senti Inbox",
