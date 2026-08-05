@@ -10,13 +10,17 @@
 // daemon and make this untestable. The thin sentid runtime entrypoint adapts
 // the real pollSessionEvents to the contract below; tests inject a fake.
 //
-// At-least-once end to end: the fetch cursor advances only to the cursor of the
-// last COMMITTED event (one whose seq the dispatcher actually advanced past). A
+// At-least-once end to end: when semantic events are present, the fetch cursor
+// advances only to the cursor of the last COMMITTED event (one whose seq the
+// dispatcher actually advanced past). An empty page may advance across a range
+// the server proved contains no visible semantic events; this transport-only
+// progress never advances the persisted committed-sequence cursor. A
 // retryable/uncommitted failure stops the batch, the fetch cursor stays behind
 // it, and the next poll re-delivers that event — so a transient wake failure is
 // retried, never silently skipped.
 
 import { readWakeCursor, writeWakeCursor } from "./cursor-store.js";
+import { cursorAdvances } from "../sync-cursor.js";
 
 function seqOf(event) {
   const raw = event?.sequenceId ?? event?.seq ?? event?.payload?.sequenceId;
@@ -98,7 +102,8 @@ export function createWakePump({
     await ensureSeeded();
     const { events = [], cursor: latestCursor = null } = (await pollEvents(sessionId, { afterCursor: fetchCursor })) || {};
     if (!Array.isArray(events) || events.length === 0) {
-      return { fetchCursor, results: [], idle: true };
+      const next = cursorAdvances(latestCursor, fetchCursor) ? latestCursor : fetchCursor;
+      return { fetchCursor: next, results: [], idle: true };
     }
     const results = await dispatcher.dispatchBatch(events, deps);
     const committedSeq = dispatcher.getCursor();

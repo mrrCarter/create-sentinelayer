@@ -1015,6 +1015,93 @@ test("Unit session post-agent: confirmation pages forward from the pre-send curs
   }
 });
 
+test("Unit session post-agent: confirmation crosses an empty non-exhausted semantic page", async () => {
+  resetSessionSyncStateForTests();
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-hidden-"));
+  const restoreEnv = installAuthEnv();
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  let postedEvent = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    globalThis.fetch = async (url, options = {}) => {
+      const urlText = String(url);
+      calls.push({ url: urlText, options });
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events/before?`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ events: [anchorSessionEvent()] }),
+        };
+      }
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-anchor&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: [],
+            nextCursor: "cursor-scan-9",
+            scannedThroughSequence: 9,
+            scanExhausted: false,
+          }),
+        };
+      }
+      if (options.method === "GET" && urlText.includes(`/api/v1/sessions/${session.sessionId}/events?after=cursor-scan-9&limit=200`)) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            events: postedEvent ? [projectApiSessionEvent(postedEvent, { cursor: "cursor-posted-10" })] : [],
+            nextCursor: "cursor-posted-10",
+            scannedThroughSequence: 10,
+            scanExhausted: true,
+          }),
+        };
+      }
+      if (options.method === "POST") {
+        postedEvent = JSON.parse(options.body).event;
+        return {
+          ok: true,
+          status: 202,
+          text: async () => "",
+          json: async () => ({}),
+        };
+      }
+      assert.fail(`unexpected request ${options.method || "GET"} ${urlText}`);
+    };
+
+    const output = await runSessionCommand([
+      "session",
+      "post-agent",
+      session.sessionId,
+      "status: semantic confirmation follows hidden controls",
+      "--agent",
+      "Codex",
+      "--path",
+      tempRoot,
+      "--json",
+    ]);
+
+    const payload = JSON.parse(output);
+    assert.equal(payload.remoteSync.synced, true);
+    assert.equal(payload.remoteConfirmation.confirmed, true);
+    assert.equal(payload.remoteConfirmation.pages, 2);
+    assert.equal(payload.remoteConfirmation.checked, 1);
+    assert.equal(payload.remoteConfirmation.anchorCursor, "cursor-anchor");
+    assert.equal(calls.filter((call) => call.options.method === "POST").length, 1);
+
+    const events = await readStream(session.sessionId, { targetPath: tempRoot, tail: 20 });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].payload.clientMessageId, payload.event.payload.clientMessageId);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session post-agent: confirmation retries tolerate delayed canonical visibility", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-post-agent-delayed-"));

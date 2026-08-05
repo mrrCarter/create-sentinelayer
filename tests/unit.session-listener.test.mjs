@@ -182,6 +182,45 @@ test("Unit session listener: stream transport emits lifecycle heartbeats without
   assert.equal(result.emitted, 0);
 });
 
+test("Unit session listener: stream cursor-only progress seeds polling without a read receipt", async () => {
+  const writes = [];
+  const readCursorWrites = [];
+  const pollCursors = [];
+  const emitted = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-stream-hidden",
+    agentId: "codex-1",
+    transport: "auto",
+    maxPolls: 1,
+    _readCursor: async () => "1779371147039:00002724",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _updateReadCursor: async (sessionId, options) => {
+      readCursorWrites.push({ sessionId, options });
+      return { ok: true, updated: true };
+    },
+    _stream: async (_sessionId, options) => {
+      await options.onCursor("1779371147039:00002725");
+      return { ok: true, reason: "", cursor: "1779371147039:00002725", eventCount: 0, errorCount: 0 };
+    },
+    _poll: async (_sessionId, options) => {
+      pollCursors.push(options.since);
+      return { ok: true, events: [], cursor: options.since };
+    },
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event),
+  });
+
+  assert.deepEqual(pollCursors, ["1779371147039:00002725"]);
+  assert.deepEqual(writes.map((write) => write.cursor), ["1779371147039:00002725"]);
+  assert.deepEqual(readCursorWrites, []);
+  assert.deepEqual(emitted, []);
+  assert.equal(result.cursor, "1779371147039:00002725");
+});
+
 test("Unit session listener: stream maintenance delivers controls without consuming semantic events", async () => {
   const controller = new AbortController();
   const controls = [];
@@ -891,6 +930,50 @@ test("Unit session listener: repeated empty polls never persist or PUT a read cu
   assert.equal(result.readCursorUpdates, 0);
   assert.equal(result.reason, "");
   assert.equal(result.cursor, "1779371147039:00002724");
+});
+
+test("Unit session listener: an empty semantic page persists only advanced fetch progress", async () => {
+  const writes = [];
+  const readCursorWrites = [];
+  const pollCursors = [];
+  const emitted = [];
+
+  const result = await listenSessionEvents({
+    sessionId: "sess-hidden-range",
+    agentId: "codex-1",
+    intervalSeconds: 1,
+    maxPolls: 2,
+    _readCursor: async () => "1779371147039:00002724",
+    _writeCursor: async (sessionId, cursor, options) => {
+      writes.push({ sessionId, cursor, options });
+      return { written: true };
+    },
+    _poll: async (_sessionId, options) => {
+      pollCursors.push(options.since);
+      return {
+        ok: true,
+        events: [],
+        cursor: "1779371147039:00002725",
+        scannedThroughSequence: 100,
+        scanExhausted: false,
+      };
+    },
+    _updateReadCursor: async (sessionId, options) => {
+      readCursorWrites.push({ sessionId, options });
+      return { ok: true, updated: true };
+    },
+    _sleep: async () => {},
+    onEvent: async (event) => emitted.push(event),
+  });
+
+  assert.deepEqual(pollCursors, [
+    "1779371147039:00002724",
+    "1779371147039:00002725",
+  ]);
+  assert.deepEqual(writes.map((write) => write.cursor), ["1779371147039:00002725"]);
+  assert.deepEqual(readCursorWrites, []);
+  assert.deepEqual(emitted, []);
+  assert.equal(result.cursor, "1779371147039:00002725");
 });
 
 test("Unit session listener: stale cursors are not persisted or re-emitted", async () => {

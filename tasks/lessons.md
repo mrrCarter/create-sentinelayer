@@ -302,3 +302,23 @@
 - Marking an event `ephemeral: true` does not make it ephemeral if the producer still appends it. Derived room-health and daemon-alert projections must bypass the transcript storage path entirely.
 - Read-only hydration, search, join, and recap commands must never mint durable recap or onboarding rows as a side effect; observation cannot be a write.
 - Treat a fast all-PASS experiment verdict as a claim, not evidence. Require receipt completeness, invalid-transition coverage, lease/noise counts, resource usage, and evidence hashes before accepting a proof-class result.
+
+## 2026-08-05
+
+- A semantic event cursor and a durable scan cursor are different contracts.
+  Clients must prefer the server's explicit next-scan cursor and advance it even
+  when filtering exposes no events, while keeping read receipts tied only to
+  semantic rows actually observed.
+- Long-lived SSE cannot wait for stream close to expose transport progress.
+  Parse authenticated `id:` frames, surface an `onCursor` callback immediately,
+  and never manufacture a data/chat event for an id-only scan frame. Invoke the
+  cursor-only callback only when the frame has no `data:`: pre-advancing a
+  paired id+data frame can make the subsequent semantic event look stale and
+  drop it.
+- Every empty-page loop needs three independent stop conditions: durable
+  exhaustion, cursor progress, and a total page budget. Visible row count alone
+  is not proof that the underlying scan is finished.
+- Release proof starts from `npm ci`, not a reused `node_modules`. A stale tree
+  can run the wrong coverage tool and conceal newly patched transitive versions;
+  refresh the lock within existing ranges, reinstall, and rerun the advisory
+  gate before publishing.

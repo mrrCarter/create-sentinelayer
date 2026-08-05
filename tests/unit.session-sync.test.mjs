@@ -725,6 +725,9 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
               payload: { message: "hello" },
             },
           ],
+          nextCursor: "cursor-3",
+          scannedThroughSequence: 3,
+          scanExhausted: false,
           listenerControls: {
             status: "ok",
             items: [
@@ -743,7 +746,9 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.cursor, "cursor-2");
+  assert.equal(result.cursor, "cursor-3");
+  assert.equal(result.scannedThroughSequence, 3);
+  assert.equal(result.scanExhausted, false);
   assert.equal(result.events.length, 1);
   assert.equal(result.listenerControls.length, 1);
   assert.equal(result.listenerControls[0].controlId, "control-1");
@@ -754,6 +759,33 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
+});
+
+test("Unit session sync: pollSessionEvents adopts scan progress without visible events", async () => {
+  resetSessionSyncStateForTests();
+  const result = await pollSessionEvents("sess-hidden-range", {
+    since: "cursor-8",
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: [],
+        next_cursor: "cursor-9",
+        scanned_through_sequence: 9,
+        scan_exhausted: false,
+      }),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.events, []);
+  assert.equal(result.cursor, "cursor-9");
+  assert.equal(result.scannedThroughSequence, 9);
+  assert.equal(result.scanExhausted, false);
 });
 
 test("Unit session sync: pollSessionEvents treats 429 as backoff without opening inbound circuit", async () => {
@@ -813,6 +845,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   resetSessionSyncStateForTests();
   const calls = [];
   const seen = [];
+  const cursors = [];
   let heartbeats = 0;
   const encoder = new TextEncoder();
   const body = new ReadableStream({
@@ -820,7 +853,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
       controller.enqueue(encoder.encode(": keep-alive\n\n"));
       controller.enqueue(
         encoder.encode(
-          'data: {"event":"session_message","cursor":"cursor-2","payload":{"message":"wake"}}\n\n',
+          'id: cursor-2\ndata: {"event":"session_message","cursor":"cursor-2","payload":{"message":"wake"}}\n\n',
         ),
       );
       controller.close();
@@ -844,6 +877,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
     onHeartbeat: async () => {
       heartbeats += 1;
     },
+    onCursor: async (cursor) => cursors.push(cursor),
     onEvent: async (event) => {
       seen.push(event);
     },
@@ -854,6 +888,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   assert.equal(result.eventCount, 1);
   assert.equal(result.errorCount, 0);
   assert.equal(heartbeats, 1);
+  assert.deepEqual(cursors, [], "data-frame ids advance with the semantic event, not a cursor-only callback");
   assert.equal(seen[0].payload.message, "wake");
   assert.equal(
     calls[0].url,
@@ -862,6 +897,41 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Accept, "text/event-stream");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_stream");
+  assert.equal(calls[0].options.headers["Last-Event-ID"], "cursor-1");
+});
+
+test("Unit session sync: streamSessionEvents advances an id-only scan frame without an event", async () => {
+  resetSessionSyncStateForTests();
+  const seen = [];
+  const cursors = [];
+  let heartbeats = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode("id: cursor-control-9\n: scanned-through 9\n\n"));
+      controller.close();
+    },
+  });
+
+  const result = await streamSessionEvents("sess-stream-hidden", {
+    since: "cursor-8",
+    resolveAuthSession: async () => ({
+      token: "tok_stream",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async () => ({ ok: true, status: 200, body }),
+    onCursor: async (cursor) => cursors.push(cursor),
+    onHeartbeat: async () => { heartbeats += 1; },
+    onEvent: async (event) => seen.push(event),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor, "cursor-control-9");
+  assert.equal(result.eventCount, 0);
+  assert.equal(result.errorCount, 0);
+  assert.deepEqual(cursors, ["cursor-control-9"]);
+  assert.equal(heartbeats, 1);
+  assert.deepEqual(seen, []);
 });
 
 test("Unit session sync: streamSessionEvents aborts a silent stream after idle timeout", async () => {

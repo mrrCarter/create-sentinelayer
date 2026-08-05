@@ -454,7 +454,9 @@ async function confirmSessionEventVisible(
       }
       lastReason = "not_visible";
       const nextCursor = normalizeString(result.cursor);
-      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !events.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!events.length && !emptyScanCanContinue)) {
         break;
       }
       pageCursor = nextCursor;

@@ -390,7 +390,9 @@ async function confirmSessionEventVisible(
       }
       lastReason = "not_visible";
       const nextCursor = normalizeString(result.cursor);
-      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !events.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!events.length && !emptyScanCanContinue)) {
         break;
       }
       pageCursor = nextCursor;
@@ -536,7 +538,9 @@ async function readSessionHistoryWindow({
       events.push(...materialEvents);
       const nextCursor = normalizeString(result.cursor) || pageCursor;
       responseCursor = nextCursor || responseCursor;
-      if (!rawEvents.length || !nextCursor || nextCursor === pageCursor) break;
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !rawEvents.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!rawEvents.length && !emptyScanCanContinue)) break;
       pageCursor = nextCursor;
       continue;
     }

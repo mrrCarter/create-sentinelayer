@@ -728,6 +728,9 @@ export async function listenSessionEvents({
         onEvent: async (event) => {
           await processEventBatch([event], normalizeString(event?.cursor) || cursor);
         },
+        onCursor: async (streamCursor) => {
+          await processEventBatch([], streamCursor);
+        },
         onError: async (error) => {
           lastReason = `stream_${normalizeString(error?.reason) || "error"}`;
           await onError({

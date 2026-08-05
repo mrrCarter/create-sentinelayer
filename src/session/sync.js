@@ -735,19 +735,29 @@ async function processSseBlock(block, handlers) {
   if (!normalizedBlock) return;
 
   const dataLines = [];
-  let commentOnly = true;
+  let eventId = "";
+  let hasComment = false;
   for (const rawLine of String(block).split("\n")) {
     const line = rawLine.trimEnd();
     if (!line) continue;
-    if (line.startsWith(":")) continue;
-    commentOnly = false;
+    if (line.startsWith(":")) {
+      hasComment = true;
+      continue;
+    }
+    if (line.startsWith("id:")) {
+      eventId = line.slice(3).trimStart();
+      continue;
+    }
     if (line.startsWith("data:")) {
       dataLines.push(line.slice(5).trimStart());
     }
   }
 
   if (dataLines.length === 0) {
-    if (commentOnly && typeof handlers.onHeartbeat === "function") {
+    if (eventId && typeof handlers.onCursor === "function") {
+      await handlers.onCursor(eventId);
+    }
+    if (hasComment && typeof handlers.onHeartbeat === "function") {
       await handlers.onHeartbeat();
     }
     return;
@@ -1369,7 +1379,7 @@ export async function pollHumanMessages(
  * @param {number} [options.limit]      - default 200 (max from API)
  * @param {string} [options.listenerAgentId] - optional listener control recipient
  * @param {number} [options.timeoutMs]  - per-request deadline
- * @returns {Promise<{ok: boolean, reason: string, events: Array<object>, listenerControls: Array<object>, cursor: string|null}>}
+ * @returns {Promise<{ok: boolean, reason: string, events: Array<object>, listenerControls: Array<object>, cursor: string|null, scannedThroughSequence: number|null, scanExhausted: boolean|null}>}
  */
 export async function pollSessionEvents(
   sessionId,
@@ -1504,13 +1514,23 @@ export async function pollSessionEvents(
       // envelope shape that appendToStream expects.
       acceptedEvents.push(item);
     }
+    const responseCursor =
+      normalizeString(payload?.nextCursor || payload?.next_cursor || payload?.cursor) ||
+      lastCursor;
+    const scannedThroughSequence = normalizePositiveInteger(
+      payload?.scannedThroughSequence ?? payload?.scanned_through_sequence,
+      null,
+    );
+    const rawScanExhausted = payload?.scanExhausted ?? payload?.scan_exhausted;
 
     return {
       ok: true,
       reason: "",
       events: acceptedEvents,
       listenerControls,
-      cursor: lastCursor,
+      cursor: responseCursor,
+      scannedThroughSequence,
+      scanExhausted: typeof rawScanExhausted === "boolean" ? rawScanExhausted : null,
     };
   } catch (error) {
     recordCircuitFailure(inboundCircuit, normalizedNowMs);
@@ -2073,6 +2093,7 @@ export async function updateSessionReadCursor(
  * @param {(event: object) => Promise<void>|void} [options.onEvent]
  * @param {(payload: object) => Promise<void>|void} [options.onError]
  * @param {() => Promise<void>|void} [options.onHeartbeat]
+ * @param {(cursor: string) => Promise<void>|void} [options.onCursor]
  * @returns {Promise<{ok: boolean, reason: string, cursor: string|null, eventCount: number, errorCount: number, status?: number, aborted?: boolean}>}
  */
 export async function streamSessionEvents(
@@ -2088,6 +2109,7 @@ export async function streamSessionEvents(
     onEvent = async () => {},
     onError = async () => {},
     onHeartbeat = async () => {},
+    onCursor = async () => {},
   } = {}
 ) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -2175,6 +2197,7 @@ export async function streamSessionEvents(
         headers: {
           Accept: "text/event-stream",
           Authorization: `Bearer ${session.token}`,
+          ...(normalizedSince ? { "Last-Event-ID": normalizedSince } : {}),
         },
         signal: controller.signal,
       },
@@ -2206,6 +2229,12 @@ export async function streamSessionEvents(
 
   const handlers = {
     cursor: () => cursor,
+    onCursor: async (candidate) => {
+      const normalizedCandidate = normalizeString(candidate);
+      if (!normalizedCandidate) return;
+      cursor = normalizedCandidate;
+      await onCursor(normalizedCandidate);
+    },
     onHeartbeat,
     onError: async (payload) => {
       errorCount += 1;

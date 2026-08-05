@@ -241,6 +241,47 @@ test("Unit MCP session stdio: read_history pages past control-only tails", async
   assert.equal(calls[1].options.limit, 50);
 });
 
+test("Unit MCP session stdio: read_history crosses an empty non-exhausted forward page", async () => {
+  const pollCursors = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsFn: async (_sessionId, options) => {
+      pollCursors.push(options.since);
+      if (options.since === "cursor-0") {
+        return {
+          ok: true,
+          events: [],
+          cursor: "cursor-9",
+          scannedThroughSequence: 9,
+          scanExhausted: false,
+        };
+      }
+      return {
+        ok: true,
+        events: [evt("cursor-10", "claude", { message: "semantic after controls" })],
+        cursor: "cursor-10",
+        scannedThroughSequence: 10,
+        scanExhausted: true,
+      };
+    },
+  });
+
+  const result = await handlers.read_history({
+    sessionId: "sess-1",
+    cursor: "cursor-0",
+    limit: 1,
+    includeActions: false,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source, "after_cursor");
+  assert.deepEqual(pollCursors, ["cursor-0", "cursor-9"]);
+  assert.equal(result.pageCount, 2);
+  assert.equal(result.cursor, "cursor-10");
+  assert.equal(result.eventCount, 1);
+  assert.deepEqual(result.events.map((event) => event.payload.message), ["semantic after controls"]);
+});
+
 test("Unit MCP session stdio: send_message persists remote first and caches local second", async () => {
   const calls = [];
   const synced = [];
@@ -392,6 +433,50 @@ test("Unit MCP session stdio: send_message confirmation forward-paginates in bus
   assert.equal(result.remoteConfirmation.confirmed, true);
   assert.equal(result.remoteConfirmation.pages, 2);
   assert.equal(result.remoteConfirmation.checked, 201);
+  assert.equal(cached.length, 1);
+});
+
+test("Unit MCP session stdio: send_message confirmation crosses an empty non-exhausted page", async () => {
+  const pollCursors = [];
+  const cached = [];
+  const handlers = createSessionMcpToolHandlers({
+    targetPath: "workspace",
+    pollSessionEventsBeforeFn: async () => ({
+      ok: true,
+      cursor: "cursor-anchor",
+      events: [evt("cursor-anchor", "claude", { message: "prior" })],
+    }),
+    syncSessionEventToApiFn: async () => ({ synced: true, status: 202 }),
+    pollSessionEventsFn: async (_sessionId, options) => {
+      pollCursors.push(options.since);
+      if (options.since === "cursor-anchor") {
+        return { ok: true, cursor: "cursor-scan-9", events: [], scanExhausted: false };
+      }
+      return {
+        ok: true,
+        cursor: "cursor-posted-10",
+        events: [evt("cursor-posted-10", "codex", { message: "visible", clientMessageId: "idem-hidden" })],
+        scanExhausted: true,
+      };
+    },
+    appendToStreamFn: async (sessionId, event, options) => {
+      cached.push({ sessionId, event, options });
+      return event;
+    },
+  });
+
+  const result = await handlers.send_message({
+    sessionId: "sess-1",
+    agentId: "codex",
+    message: "visible",
+    idempotencyKey: "idem-hidden",
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(pollCursors, ["cursor-anchor", "cursor-scan-9"]);
+  assert.equal(result.remoteConfirmation.confirmed, true);
+  assert.equal(result.remoteConfirmation.pages, 2);
+  assert.equal(result.remoteConfirmation.checked, 1);
   assert.equal(cached.length, 1);
 });
 

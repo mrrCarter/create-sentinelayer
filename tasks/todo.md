@@ -3820,3 +3820,41 @@ Review:
   `108e06c02917bd25b8055541c4c130a5b2f77ace`; high-severity npm audit reports
   zero vulnerabilities.
 
+# Semantic Scan Cursor Consumer Cutover (2026-08-05)
+
+## Plan
+
+- [x] Prefer the API's `nextCursor` over the last visible event cursor and
+  preserve `scannedThroughSequence` / `scanExhausted` in the CLI transport.
+- [x] Continue remote hydration, CLI/MCP write confirmation, and forward MCP
+  history across empty non-exhausted semantic pages when the cursor advances.
+- [x] Consume SSE `id:` progress frames without manufacturing chat events, and
+  let the wake pump advance its fetch cursor without committing a sequence.
+- [x] Add adversarial regressions for every empty-page consumer and prove no
+  read-receipt or transcript write is created by transport-only progress.
+- [x] Run focused suites, full verification, package/audit checks, freeze an
+  exact SHA, and update PR #795 before the API semantic guard is deployed.
+
+## Review
+
+- Poll transport now prefers `nextCursor` over the last visible event and
+  carries the server's scan watermark/exhaustion metadata. Remote hydration,
+  CLI/MCP confirmation, and forward MCP history cross empty non-exhausted
+  pages only when the cursor advances.
+- SSE consumes authenticated `id:` frames and forwards them immediately to the
+  listener. The listener persists transport progress but emits no event and
+  performs no read-cursor PUT; the wake pump likewise advances only its fetch
+  cursor while leaving the committed sequence untouched.
+- Focused post-clean-install verification passed `136/136`; E2E passed
+  `121/121`; static checks covered `358` files; docs validation covered `5`
+  files / `6` headings. The enumerated unit inventory passed every test in 219
+  files and `15/17` in the pre-existing investor-DD Windows cleanup file. Its
+  two `ENOTEMPTY` failures are the documented file-handle lane tracked by PR
+  #782 and are unchanged by this diff. Aggregate coverage remained
+  statements/branches/functions/lines `91.81% / 70.60% / 93.53% / 91.81%`.
+- A fresh advisory check found newly vulnerable transitive lock entries. The
+  lockfile now resolves `brace-expansion@5.0.9` and `ip-address@10.4.0`; clean
+  `npm ci` installs `c8@11.0.0`, and `npm audit --audit-level=high` reports zero
+  vulnerabilities. Package dry-run remains `356` files. No API deployment or
+  production feature-flag mutation occurred in this lane.
+
