@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.41.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.40.0...v0.41.0) (2026-08-05)
+
+
+### Features
+
+* **engram:** §2 Memory-as-a-Service — 3 MCP tools over scoped namespaces (stacked on [#790](https://github.com/mrrCarter/create-sentinelayer/issues/790)) ([#791](https://github.com/mrrCarter/create-sentinelayer/issues/791)) ([ba23852](https://github.com/mrrCarter/create-sentinelayer/commit/ba238525e945f4a160400245047ebe3e6296a06e))
+
+
+### Bug Fixes
+
+* **sessions:** keep coordination noise out of chat and enforce file leases ([#795](https://github.com/mrrCarter/create-sentinelayer/issues/795)) ([a504d3a](https://github.com/mrrCarter/create-sentinelayer/commit/a504d3adcde1c11c20b0856eeba96de2d64097eb))
+
 ## [0.40.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.39.2...v0.40.0) (2026-07-28)
 
 
