@@ -51,3 +51,15 @@ test("package provenance builds and attestation rebuild use the immutable PR hea
     "the package manifest must name the same canonical source commit"
   );
 });
+
+test("required-check polling retries transient GitHub API failures within bounded requests", async () => {
+  const gate = await readFile(".github/scripts/require-check-runs.sh", "utf8");
+
+  assert.match(gate, /github_api_get\(\)/);
+  assert.match(gate, /--connect-timeout "\$\{GITHUB_API_CONNECT_TIMEOUT_SECONDS\}"/);
+  assert.match(gate, /--max-time "\$\{GITHUB_API_REQUEST_TIMEOUT_SECONDS\}"/);
+  assert.match(gate, /--retry "\$\{GITHUB_API_RETRY_COUNT\}"/);
+  assert.match(gate, /--retry-max-time "\$\{GITHUB_API_RETRY_MAX_SECONDS\}"/);
+  assert.match(gate, /--retry-all-errors/);
+  assert.doesNotMatch(gate, /curl -fsSL/);
+});

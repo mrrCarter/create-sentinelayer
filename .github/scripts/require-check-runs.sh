@@ -19,19 +19,36 @@ fi
 REQUIRED_CHECKS_JSON="${REQUIRED_CHECKS_JSON:-[]}"
 MAX_WAIT_SECONDS="${MAX_WAIT_SECONDS:-900}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-10}"
+GITHUB_API_CONNECT_TIMEOUT_SECONDS="${GITHUB_API_CONNECT_TIMEOUT_SECONDS:-10}"
+GITHUB_API_REQUEST_TIMEOUT_SECONDS="${GITHUB_API_REQUEST_TIMEOUT_SECONDS:-30}"
+GITHUB_API_RETRY_COUNT="${GITHUB_API_RETRY_COUNT:-5}"
+GITHUB_API_RETRY_DELAY_SECONDS="${GITHUB_API_RETRY_DELAY_SECONDS:-2}"
+GITHUB_API_RETRY_MAX_SECONDS="${GITHUB_API_RETRY_MAX_SECONDS:-90}"
 
 if ! echo "${REQUIRED_CHECKS_JSON}" | jq -e 'type == "array"' >/dev/null 2>&1; then
   echo "::error::REQUIRED_CHECKS_JSON must be a JSON array."
   exit 1
 fi
 
+github_api_get() {
+  local url="$1"
+  curl --fail --silent --show-error --location \
+    --connect-timeout "${GITHUB_API_CONNECT_TIMEOUT_SECONDS}" \
+    --max-time "${GITHUB_API_REQUEST_TIMEOUT_SECONDS}" \
+    --retry "${GITHUB_API_RETRY_COUNT}" \
+    --retry-delay "${GITHUB_API_RETRY_DELAY_SECONDS}" \
+    --retry-max-time "${GITHUB_API_RETRY_MAX_SECONDS}" \
+    --retry-all-errors \
+    -H "Authorization: Bearer ${GH_TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    "${url}"
+}
+
 fetch_check_runs_json() {
   local page=1
   local all_runs='[]'
   while true; do
-    page_json="$(curl -fsSL \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "Accept: application/vnd.github+json" \
+    page_json="$(github_api_get \
       "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${TARGET_SHA}/check-runs?per_page=100&page=${page}")"
 
     page_runs="$(echo "${page_json}" | jq '.check_runs // []')"
@@ -60,9 +77,7 @@ fetch_workflow_run_json() {
     echo "::error::Invalid workflow run id: ${run_id}"
     exit 1
   fi
-  curl -fsSL \
-    -H "Authorization: Bearer ${GH_TOKEN}" \
-    -H "Accept: application/vnd.github+json" \
+  github_api_get \
     "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}"
 }
 

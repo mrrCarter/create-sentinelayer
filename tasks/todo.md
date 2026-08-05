@@ -3885,4 +3885,8 @@ Review:
   of merely changing metadata or weakening the digest comparison.
 - Focused workflow-source regression passes `1/1`; static checks pass all
   `358` files; `git diff --check` is clean.
+- The next exact-head attestation reached the required-check waiter but a
+  one-off GitHub API `503` aborted the job after nine minutes. Required-check
+  API reads now use bounded connect/request timeouts and bounded retries for
+  transient transport/HTTP failures; terminal failures still fail closed.
 

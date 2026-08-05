@@ -327,3 +327,7 @@
   receive a different or regenerated synthetic merge ref; recording the PR head
   in a manifest does not make a tarball built from the merge checkout an
   artifact of that head.
+- A long-lived required-check waiter must not discard nine minutes of valid
+  upstream progress because one GitHub API request returns a transient `503`.
+  Centralize bounded connect/request timeouts and retry transient API failures,
+  then fail closed only after the retry budget is exhausted.
