@@ -322,3 +322,8 @@
   can run the wrong coverage tool and conceal newly patched transitive versions;
   refresh the lock within existing ranges, reinstall, and rerun the advisory
   gate before publishing.
+- Cross-workflow package provenance must bind every producing and rebuilding
+  checkout to one immutable source SHA. Two `pull_request` workflows can each
+  receive a different or regenerated synthetic merge ref; recording the PR head
+  in a manifest does not make a tarball built from the merge checkout an
+  artifact of that head.

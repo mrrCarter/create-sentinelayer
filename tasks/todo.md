@@ -3858,3 +3858,31 @@ Review:
   vulnerabilities. Package dry-run remains `356` files. No API deployment or
   production feature-flag mutation occurred in this lane.
 
+# Immutable Package Provenance Binding (2026-08-05)
+
+## Plan
+
+- [x] Reproduce PR #795's sole hosted failure and distinguish package
+  nondeterminism from source-ref drift.
+- [x] Bind the reproducibility and canonical-package jobs to the same immutable
+  PR-head source already used by the attestation rebuild and manifests.
+- [x] Add a regression that fails if any package/provenance checkout returns to
+  a workflow-local synthetic merge ref.
+- [x] Prepare the corrected exact head with local workflow-contract and static
+  verification.
+- [ ] Require Quality Gates, Build Attestation, Omar Gate, and independent
+  exact-SHA review to pass after push.
+
+## Review
+
+- Quality Gates run `30986588515` proved same-job reproducibility, but built
+  the tarball from its default synthetic merge checkout. Build Attestation run
+  `30986588399` correctly checked out the immutable PR head, so its rebuild
+  rejected the artifact with expected digest
+  `7d109e49...` versus actual `3bc13bc...`.
+- The package manifest already claimed the PR-head SHA. The fix makes the
+  reproducibility and canonical-package working trees match that claim instead
+  of merely changing metadata or weakening the digest comparison.
+- Focused workflow-source regression passes `1/1`; static checks pass all
+  `358` files; `git diff --check` is clean.
+
