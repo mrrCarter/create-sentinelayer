@@ -90,7 +90,7 @@ test("Unit wake pump: a retryable failure stops the batch and the fetch cursor s
   assert.ok(tick.results.some((r) => r.retryable));
 });
 
-test("Unit wake pump: empty poll is idle, leaves fetch cursor and persisted seq unchanged", async () => {
+test("Unit wake pump: empty poll advances only the fetch cursor", async () => {
   const dispatcher = makeDispatcher();
   const cur = memCursor(5);
   let writes = 0;
@@ -103,7 +103,9 @@ test("Unit wake pump: empty poll is idle, leaves fetch cursor and persisted seq 
   });
   const tick = await pump.tickOnce({ fetchCursor: "c9" });
   assert.equal(tick.idle, true);
-  assert.equal(tick.fetchCursor, "c9");
+  assert.equal(tick.fetchCursor, "LATEST");
+  assert.equal(dispatcher.getCursor(), 5);
+  assert.equal(cur.get(), 5);
   assert.equal(writes, 0, "no cursor write when there is nothing to commit");
 });
 

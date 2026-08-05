@@ -65,9 +65,10 @@ test("circuit persistence: three consecutive failures open the circuit and write
       await syncSessionEventToApi(
         "sess_persist_1",
         {
-          event: "agent_join",
+          event: "session_message",
           agentId: "a",
           sessionId: "sess_persist_1",
+          payload: { message: "circuit failure fixture" },
           ts: new Date().toISOString(),
         },
         {
@@ -96,9 +97,10 @@ test("circuit persistence: fresh process hydrates an open circuit from disk", as
       await syncSessionEventToApi(
         "sess_persist_2",
         {
-          event: "agent_join",
+          event: "session_message",
           agentId: "a",
           sessionId: "sess_persist_2",
+          payload: { message: "circuit hydration fixture" },
           ts: new Date().toISOString(),
         },
         {
@@ -136,9 +138,10 @@ test("circuit persistence: fresh process hydrates an open circuit from disk", as
     await syncSessionEventToApi(
       "sess_persist_2",
       {
-        event: "agent_join",
+        event: "session_message",
         agentId: "a",
         sessionId: "sess_persist_2",
+        payload: { message: "hydrated open-circuit fixture" },
         ts: new Date().toISOString(),
       },
       {
@@ -180,9 +183,10 @@ test("circuit persistence: entries older than CIRCUIT_RESET_MS hydrate as closed
     await syncSessionEventToApi(
       "sess_persist_3",
       {
-        event: "agent_join",
+        event: "session_message",
         agentId: "a",
         sessionId: "sess_persist_3",
+        payload: { message: "stale circuit fixture" },
         ts: new Date().toISOString(),
       },
       {
@@ -207,9 +211,10 @@ test("circuit persistence: success clears in-memory state and persists closed ci
       await syncSessionEventToApi(
         "sess_persist_4",
         {
-          event: "agent_join",
+          event: "session_message",
           agentId: "a",
           sessionId: "sess_persist_4",
+          payload: { message: "circuit recovery failure fixture" },
           ts: new Date().toISOString(),
         },
         {
@@ -230,9 +235,10 @@ test("circuit persistence: success clears in-memory state and persists closed ci
     await syncSessionEventToApi(
       "sess_persist_4",
       {
-        event: "agent_join",
+        event: "session_message",
         agentId: "a",
         sessionId: "sess_persist_4",
+        payload: { message: "circuit recovery success fixture" },
         ts: new Date().toISOString(),
       },
       {

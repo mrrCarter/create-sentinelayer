@@ -57,7 +57,7 @@ async function runCli({ cwd, env, args = [] }) {
   });
 }
 
-async function withMockSessionEvents(events, callback) {
+async function withMockSessionEvents(payload, callback) {
   const sessionId = "listen-lifecycle-e2e";
   const requests = [];
   const server = createServer(async (req, res) => {
@@ -66,14 +66,15 @@ async function withMockSessionEvents(events, callback) {
       if (req.method === "GET" && url.pathname === `/api/v1/sessions/${sessionId}/events`) {
         requests.push({
           after: url.searchParams.get("after"),
+          listenerAgentId: url.searchParams.get("listenerAgentId"),
           limit: url.searchParams.get("limit"),
           authorization: String(req.headers.authorization || ""),
         });
-        if (typeof events === "function") {
-          const response = events({ requestCount: requests.length, url });
+        if (typeof payload === "function") {
+          const response = payload({ requestCount: requests.length, url });
           return jsonResponse(res, response?.status || 200, response?.body || { events: response?.events || [] });
         }
-        return jsonResponse(res, 200, { events });
+        return jsonResponse(res, 200, payload);
       }
       return jsonResponse(res, 404, {});
     } catch (error) {
@@ -126,23 +127,26 @@ test("E2E session listener lifecycle: stale stop does not abort a restarted list
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listen-stale-stop-e2e-"));
   try {
     await withMockSessionEvents(
-      [
-        {
-          event: "listener_stop",
-          cursor: "cursor-2",
-          ts: "2000-01-01T00:00:00.000Z",
-          agent: { id: "session-control" },
-          payload: { targetAgentId: "codex-e2e", reason: "old_operator_stop" },
-        },
-        {
+      {
+        listenerControls: [
+          {
+            controlId: "stale-stop",
+            type: "stop",
+            issuedAt: "2000-01-01T00:00:00.000Z",
+            targetAgentId: "codex-e2e",
+            reason: "old_operator_stop",
+          },
+        ],
+        events: [{
           stream: "sl_event",
           event: "session_message",
           cursor: "cursor-3",
           ts: "2999-01-01T00:00:00.000Z",
           agent: { id: "claude-e2e" },
           payload: { message: "listener survived stale stop", to: "codex-e2e" },
-        },
-      ],
+        }],
+        cursor: "cursor-3",
+      },
       async ({ apiUrl, sessionId, requests }) => {
         const result = await runCli({
           cwd: tempRoot,
@@ -155,6 +159,7 @@ test("E2E session listener lifecycle: stale stop does not abort a restarted list
 
         assert.equal(result.code, 0, result.stderr || result.stdout);
         assert.equal(requests[0]?.after, "cursor-1");
+        assert.equal(requests[0]?.listenerAgentId, "codex-e2e");
         assert.equal(requests[0]?.limit, "200");
         assert.match(requests[0]?.authorization || "", /^Bearer /);
 
@@ -193,15 +198,28 @@ test("E2E session listener lifecycle: fresh stop still terminates rapid restart 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-listen-fresh-stop-e2e-"));
   try {
     await withMockSessionEvents(
-      [
-        {
-          event: "listener_stop",
-          cursor: "cursor-2",
-          ts: "2999-01-01T00:00:00.000Z",
-          agent: { id: "session-control" },
-          payload: { targetAgentId: "codex-e2e", reason: "operator_stop" },
-        },
-      ],
+      {
+        listenerControls: [
+          {
+            controlId: "fresh-stop",
+            type: "stop",
+            issuedAt: new Date(Date.now() + 30_000).toISOString(),
+            targetAgentId: "codex-e2e",
+            reason: "operator_stop",
+          },
+        ],
+        events: [
+          {
+            stream: "sl_event",
+            event: "session_message",
+            cursor: "cursor-2",
+            ts: new Date(Date.now() + 30_000).toISOString(),
+            agent: { id: "claude-e2e" },
+            payload: { message: "must not emit", to: "codex-e2e" },
+          },
+        ],
+        cursor: "cursor-2",
+      },
       async ({ apiUrl, sessionId, requests }) => {
         const result = await runCli({
           cwd: tempRoot,
@@ -214,8 +232,9 @@ test("E2E session listener lifecycle: fresh stop still terminates rapid restart 
 
         assert.equal(result.code, 0, result.stderr || result.stdout);
         assert.equal(requests[0]?.after, "cursor-1");
+        assert.equal(requests[0]?.listenerAgentId, "codex-e2e");
         assert.match(result.stdout, /Listener stop requested for codex-e2e; exiting\./);
-        assert.doesNotMatch(result.stdout, /listener survived stale stop/);
+        assert.doesNotMatch(result.stdout, /must not emit/);
       },
     );
   } finally {

@@ -72,14 +72,18 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.equal(countCoordinationMarkers(firstClaude), 1);
     assert.match(firstGuide, /SentinelLayer Session Guide for AI Agents/);
     assert.match(firstAgents, /Find the recent Senti session for this codebase/);
-    assert.match(firstAgents, /sl session post-agent <id> "status: <update>" --agent <your-agent-id>/);
-    assert.match(firstAgents, /lock: <file> - <intent>/);
+    assert.match(firstAgents, /sl session action <id> working_on --target-sequence <n>/);
+    assert.doesNotMatch(firstAgents, /status updates every 5 minutes/u);
+    assert.match(firstAgents, /sl session lock <id> <file>/);
+    assert.match(firstAgents, /sl session guard-install <id>/);
+    assert.doesNotMatch(firstAgents, /["'`]lock:\s*<file>/u);
+    assert.doesNotMatch(firstAgents, /["'`]unlock:\s*<file>/u);
     assert.match(firstAgents, /sl review --diff/);
     assert.match(firstAgents, /sl --help/);
     assert.match(firstAgents, /sl session react <id> ack --target-sequence <n>/);
     assert.match(firstAgents, /sl session reply <id> <sequence>/);
     assert.match(firstAgents, /sl session search <id> "<topic>" --limit 10/);
-    assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --interval 60 --active-interval 5 --emit ndjson --no-presence/);
+    assert.match(firstGuide, /sl session listen --session <id> --agent <your-name> --transport poll --interval 60 --active-interval 60 --emit ndjson --no-presence/);
     assert.match(firstGuide, /session listen` is only a delivery cursor, not a grounding command/);
     assert.match(firstGuide, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
     assert.match(firstGuide, /sl session recap now <id> --remote --agent <your-name> --json/);
@@ -236,7 +240,7 @@ test("Unit session setup-guides: `session inject-guide` only mutates existing in
 
     const agentsText = await readFile(path.join(tempRoot, "AGENTS.md"), "utf-8");
     assert.match(agentsText, /Keep this file and append coordination section only\./);
-    assert.match(agentsText, /plan: <scope>; files: <paths>/);
+    assert.match(agentsText, /post a short semantic plan only when peers need it/);
     assert.equal(countCoordinationMarkers(agentsText), 1);
 
     const claudeText = await readOptionalFile(path.join(tempRoot, "CLAUDE.md"));

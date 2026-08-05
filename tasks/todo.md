@@ -1,3 +1,43 @@
+# 2026-07-29 - Senti Presence/Cursor Noise Cutover (`fix/session-presence-cursor-cutover-20260729`)
+
+## Plan
+- [x] Inventory every listener, recap, status, CLI read, and MCP read path that can append or reconstruct non-semantic liveness/read events.
+- [x] Replace listener lifecycle event writes with the dedicated fail-closed ephemeral presence contract.
+- [x] Replace event-scanned listener rosters with the membership-gated three-state presence contract; unsupported/degraded presence remains unknown and never falls back to transcript heartbeats.
+- [x] Collapse automatic and explicit view receipts into one monotonic read-cursor upsert per consumed window.
+- [x] Keep join/leave/status/identity, onboarding briefings, and recaps local instead of relaying them into the remote transcript.
+- [x] Add bounded jittered polling, exponential transient backoff, and strict `Retry-After` floors.
+- [x] Prove listener/read/status/recap paths perform zero durable heartbeat/view appends and do not scan durable liveness events.
+- [x] Update CLI/MCP/setup guidance, run focused and full verification, package dry-run, deterministic review, Omar, and audit.
+- [x] Commit locally only and hand off exact SHA plus any server-contract gaps.
+
+## Independent Re-review Correction
+- [x] Reuse the canonical `isSessionControlEvent` classifier at the outbound append boundary instead of maintaining a narrower second list.
+- [x] Add adversarial zero-fetch coverage for every canonical quiet control type, `payload.source=session_listen`, and an unknown future `session_listener_*` lifecycle name.
+- [x] Keep explicit identity/liveness/read aliases fail-closed, including `agent_identity` and `agent_left`.
+- [x] Update all seven hosted unit failures so transport/circuit positive fixtures use semantic `session_message`, while join/onboarding tests require zero durable `/events` POSTs.
+- [x] Make the compatibility JSON field truthful: local agent registration returns `agentJoinRelayed=false`.
+- [x] Move the CLI `listener_stop` path to the dedicated ephemeral listener-control endpoint, consume fresh controls outside the event stream, remove the durable exception, and flip its regression to zero-fetch.
+- [ ] Deploy and live-verify the matching API listener-control endpoint and poll-response contract.
+- [ ] Re-run hosted Quality Gates on the corrected head after the owning agent commits and pushes.
+
+## Review
+- Durable append boundary rejects agent join/leave/status/identity/heartbeat, context briefings, recaps, every canonical quiet control event (including `listener_stop`), arbitrary `session_listener_*`, `session_view`/`view`, and `file_lock`/`file_unlock`/expiry before auth or fetch. Listener stops use only `POST /api/v1/sessions/:id/listener-controls/stop`; poll responses return `listenerControls` separately and clients process fresh addressed controls before events or cursor writes. Listener presence uses only membership-gated `GET`/`PUT /api/v1/sessions/:id/presence`; status, listeners, and recap never reconstruct liveness from durable history.
+- CLI reads, MCP `poll_inbox`/`read_history`, listener batches, and explicit `view` advance at most one `PUT /api/v1/sessions/:id/read-cursor` for the consumed window. There is no action/event compatibility fallback.
+- Regression proof covers three consecutive no-new-event polls at an unchanged transport cursor: zero local cursor persists, zero read-cursor `PUT`s, and `readCursorUpdates=0`. Separate 404/503 presence/read-cursor cases make exactly four operational endpoint calls and zero `/events` or `/actions` fallbacks.
+- Polling defaults to 60 seconds, adds 0-20% upward jitter, exponentially backs off transient failures to a 300-second client cap, and honors a longer `Retry-After` as a hard floor. Default transport is pull-only `poll`.
+- Focused session/MCP/noise matrix passed. Full `npm run verify` passed on the final diff: static checks (`357` files), docs validation, E2E (`121/121`), unit (`1784/1784`), 91.79% statement/line coverage, and package dry-run (`sentinelayer-cli-0.40.0.tgz`, shasum `88ce81bff6fc515e4314a7d5de42272baf84bc47`).
+- `npm audit --audit-level=high` reports one pre-existing dev-only `brace-expansion` advisory through `c8`; `package.json` and `package-lock.json` are unchanged from `origin/main`.
+- Final deterministic diff review scanned 25 files with `P1=0`, `P2=0`, `blocking=false` (`review-scan-diff-20260729-072535.md`).
+- Final exact-diff deterministic Omar passed with `P0/P1/P2/P3=0`, `blocking=false` (`review-20260729-072537-76c5c5c5`).
+- Live Omar scanned the same 24-file diff with `P0=0`, `P1=0`, five non-blocking generic P2s, and no deterministic findings (`omargate-1785309452607-d08af708`). The P2s are contradicted by existing architecture/incident/onboarding sections in `README.md` and `docs/ENGINEERING_ONBOARDING.md`, the 121-case E2E suite (including lifecycle and transient-recovery files), and explicit malformed/duplicate/abort/fault/429 listener tests.
+- Repository audit passed (`P1=0`); its two P2 baseline notices cite untouched `tasks/evals/2026-04-17-pr-335-spec-session-integration.md` and `src/scan/generator.js` (`audit-20260729-072544.md`).
+- Activation depends on the API implementing the exact fail-closed contracts: membership-gated `GET`/`PUT /sessions/:id/presence` backed by TTL state, monotonic `PUT /sessions/:id/read-cursor` backed by one actor row, and Redis-backed `POST /sessions/:id/listener-controls/stop` plus `listenerControls` in agent-scoped event polls. Until those endpoints deploy, clients report unsupported/degraded and intentionally do not revive durable events/actions.
+- Independent correction proof passed: the seven previously failing hosted contract files plus outbound sync coverage passed `95/95`; `npm run check` passed all `357` files; and the complete local unit suite passed `1785/1785`.
+- Listener-control cutover proof passed: focused unit/noise coverage `115/115`; focused lifecycle E2E `2/2`; `npm run check` `357` files; full unit `1788/1788`; full E2E `121/121`. Fresh addressed controls run before semantic events and cursor writes, stale controls are ignored, stop-triggered aborts still publish final `stopped` presence, and neither success nor unsupported endpoints fall back to `/events`.
+- Cross-repository review corrected the exact API wire contract before commit: the CLI now sends only `targetAgentId` or `broadcast`, supplies a unique `Idempotency-Key`, accepts the API's `listenerControls: {status, items}` envelope, and evaluates numeric `issuedAtMs`. The post-correction focused suite passed `77/77`, static check passed all `357` files, and the complete `npm test` gate passed.
+- Local only: no push, deployment, npm publication, or Senti coordination write was performed from this worktree.
+
 # 2026-07-14 - Hosted Action Live-LLM Evidence Contract (`roadmap/pr-0i-action-evidence-contract`)
 
 ## Plan
@@ -3691,4 +3731,175 @@ Review:
 - Initial PR #781 hosted runs Omar `29688621481`, Quality `29688621493`, and Attestation `29688621480` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
 - PR #782 implements the separate stream lifecycle fix and has an independent exact-head source key; it remains unmerged under the same hosted billing hold.
 - Independent review reproduced false `SL-SPEC-001` drift for both dot-relative slash forms. The unchanged implementation failed the expanded KAV `4/5` (log SHA256 `0EFAE86A5773D60CBE1086EECC9A69D6FE8F71AB1A245904E6BE56CEAD1F11C1`); the bounded optional-prefix fix passes `5/5` (log SHA256 `6980AE8292415606104E2243BFF01AF502A2B3C9D59664413EBBD788A19D0C44`) while retaining the suffix-confusion negative.
+
+# Authoritative Session File Leases + Edit Guard (2026-07-29)
+
+## Plan
+- [x] Replace local JSON/transcript-backed `session lock` authority with the authenticated session file-lease API.
+- [x] Persist only holder capability tokens locally; keep lease ownership, TTL, conflicts, and lifecycle server-authoritative.
+- [x] Add holder-bound renew/release and a fail-closed, machine-readable `session guard` command.
+- [x] Add a Claude pre-tool edit hook and terminal/VS Code preflight setup that invokes the guard and never posts lock/heartbeat events to chat.
+- [x] Preserve legacy command/MCP compatibility while removing lock/unlock/expiry event emission.
+- [x] Add API-client, path, token-store, guard, hook, CLI, and no-chat-event regression coverage.
+- [x] Surface denied terminal/editor edits with path, holder, and expiry; keep
+  successful guarded commands quiet.
+- [x] Remove every first-party instruction that tells agents to post
+  `lock:`/`unlock:` chat directives.
+- [x] Add API-probed, fingerprint-owned install metadata plus a fail-closed,
+  idempotent `guard-uninstall` required before CLI rollback.
+- [x] Run focused tests, `npm run verify`, local review/Omar/audit, and record exact evidence.
+
+## Scope Notes
+- Repo/base: `create-sentinelayer` at `origin/main` `d8adcec8a1b2d6ee90b0dff4c95b1810ce50dd3f`.
+- Same-OS-user/raw-shell bypass remains possible without separate OS identities, container isolation, or a privileged filesystem broker. Supported hooks and guarded commands fail closed; they are not a kernel security boundary.
+
+## Review Results
+- File ownership, TTL, conflicts, and lifecycle now come only from authenticated API file-lease endpoints. The local `file-lease-capabilities.json` is mode-`0600`, explicitly non-authoritative, and stores only holder capability material required for renew/release.
+- Acquire, renew, release, list, and guard reject responses without `authoritative: true`; an authority outage or malformed/forged allow response denies the edit. The read-only `session status` and best-effort process cleanup report authority degradation without manufacturing local ownership.
+- Paths are normalized with segment-aware workspace containment and filesystem realpath resolution through the nearest existing ancestor. Adversarial coverage proves traversal/outside-workspace rejection, symlink/junction alias convergence, and symlink escape rejection.
+- Holder/user/capability binding is covered for conflict denial, expiry and reacquisition, and forged renew/release. Cross-workspace tests prove a second holder is denied by shared API state and that stale local cache cannot override the server.
+- Lock lifecycle operations no longer import or append session events. Regression coverage proves acquire/renew/release/expiry and the machine guard create zero transcript changes; the daemon ignores historical `lock:`/`unlock:` chat directives.
+- `session guard-install` idempotently merges Claude `PreToolUse` enforcement, fail-closed terminal wrappers, and VS Code preflight tasks without replacing unrelated settings. Real PowerShell process tests prove denial prevents mutation and allow permits it; real CLI/server tests prove a forged non-authoritative allow exits `2` as machine JSON.
+- MCP lock/unlock/list compatibility now delegates to the same API-authoritative core. Legacy `syncRemote`/`awaitRemoteSync` inputs are accepted but explicitly ignored and cannot enable a fallback.
+- Focused file-lease/daemon/MCP/integration verification passed `55/55`; the final bearer-fixture cleanup rerun passed `7/7`.
+- Full `npm run verify` passed after dependency hardening: static check `358` files; docs validation `5` files / `6` headings; E2E `121/121`; unit coverage `1,788/1,788` across `64` suites; coverage statements/branches/functions/lines `91.81% / 70.60% / 93.53% / 91.81%`; package dry-run `356` files with SHA-1 `8357b5313a892bbfd349f9ecc1ed0ed7c8423ce3`.
+- Supply-chain verification uses a clean `npm ci`. `npm audit --audit-level=high` reports `0` vulnerabilities after upgrading the Node-20-compatible coverage tool to `c8@11` and removing the unused vulnerable license-checker dependency.
+- Full review report `.sentinelayer/reports/review-scan-full-20260729-072834.md` scanned `724` files with `P1=0`, `P2=1`, nonblocking; the sole finding is the pre-existing work-item marker in `tasks/evals/2026-04-17-pr-335-spec-session-integration.md`.
+- Full no-AI Omar Gate run `review-20260729-072841-5ee5a3b0` scanned `724` files with `P0=0`, `P1=0`, `P2=6`, nonblocking. All six are pre-existing repository-wide heuristics (four config key-name literals, one live-source loop, and one historical redact-test bearer fixture); the new file-lease lane contributes none.
+- Local audit report `.sentinelayer/reports/audit-20260729-072854.md` is `PASS`, scanned `725` files, and reports `P1=0`, `P2=2`; both findings are pre-existing and outside this lane.
+- Enforcement coverage is intentionally explicit in `docs/file-leases.md`: Claude edits and guarded terminal invocations are preflighted; VS Code tasks provide an opt-in preflight but the native save API cannot reliably cancel all saves; MCP hosts and other file-mutating tools must call guard separately.
+- This is an application-level coordination control, not a kernel security boundary. A same-OS user can bypass it with an unguarded raw process or tamper with same-user integration files. Hard prevention requires separate OS identities, container isolation, or a privileged/mediated filesystem.
+- Changes are local-only on `roadmap/pr-tbd-session-file-leases-cli-20260729`; no push, deployment, listener, or Senti post was performed.
+- Independent review of PR `#794` blocked the prior exact head because terminal
+  wrappers discarded conflict output, denial paths omitted expiry, `--json`
+  lock conflicts threw before producing JSON, stale first-party guidance still
+  prescribed chat directives, and persistent hooks lacked safe rollback.
+  The follow-up preserves the no-transcript architecture while closing those
+  terminal UX and rollback gaps. API migration/routes must still deploy and
+  pass live no-event smoke before this CLI candidate can merge/publish.
+- Follow-up adversarial review approved the corrected lane after independently
+  reproducing and closing manifest file/hook/task injection, unowned
+  script/manifest collisions, partial activation, and junction escape. Current
+  proof: focused combined suite `66/66`, static check `358` files, docs
+  validation, diff integrity, and a successful full-unit rerun. Release remains
+  API-first and does not claim raw-shell or native VS Code save mediation.
+
+# Semantic Transcript + Authoritative Lease Integration (2026-07-31)
+
+## Plan
+- [x] Merge the presence/cursor cutover and authoritative file-lease lines into one release branch.
+- [x] Resolve guidance and test conflicts in favor of 60-second backpressured polling, monotonic cursors, and API-authoritative leases.
+- [x] Keep join/onboarding/recap/daemon-health projections out of durable conversation storage.
+- [x] Include file, holder, intent, and expiry in editor/terminal lease denials.
+- [x] Prove the focused daemon, lease, MCP, guide, and spec suite.
+- [x] Bind every authoritative allow decision to the exact unique requested
+  paths and submitted lease capabilities.
+- [x] Deliver Redis-backed listener controls to explicit stream listeners
+  without consuming semantic tail events or advancing cursors.
+- [x] Make `session view` a cursor-only projection locally as well as remotely.
+- [x] Run full static/unit/E2E/package gates and independent diff review.
+- [ ] Push the integration branch and update the release PR only after the exact head is green.
+
+## Review Results
+- Merge conflicts were resolved without restoring the stale five-second active polling cadence or chat-based lock directives.
+- `daemon_alert` events now return as `ephemeral` `session_health` projections and bypass `appendToStream`; durable help responses and explicit administrative events remain semantic.
+- Guard denials report the blocked path, holder, lease intent, and expiry while preserving fail-closed behavior and redaction.
+- Focused combined verification passed `66/66`.
+- Independent review found and closed three final fail-closed gaps: malformed
+  allow responses can no longer substitute duplicate/unrelated paths, stream
+  listeners probe only the control projection at the capped maintenance
+  cadence, and `view` no longer synthesizes a local durable action event.
+- Stream control probes permit one in-flight request, tolerate bounded
+  client/server clock skew, ignore returned semantic events/cursors, and treat
+  listener abort as quiet cancellation rather than an operational error.
+- Full `npm run verify` passes: static checks cover `358` files; docs validation
+  covers `5` files / `6` headings; E2E passes `121/121`; unit coverage passes
+  `1,812/1,812` across `64` suites; coverage remains
+  `91.81% / 70.60% / 93.53% / 91.81%`.
+- `npm pack --dry-run` contains `356` files with SHA-1
+  `108e06c02917bd25b8055541c4c130a5b2f77ace`; high-severity npm audit reports
+  zero vulnerabilities.
+
+# Semantic Scan Cursor Consumer Cutover (2026-08-05)
+
+## Plan
+
+- [x] Prefer the API's `nextCursor` over the last visible event cursor and
+  preserve `scannedThroughSequence` / `scanExhausted` in the CLI transport.
+- [x] Continue remote hydration, CLI/MCP write confirmation, and forward MCP
+  history across empty non-exhausted semantic pages when the cursor advances.
+- [x] Consume SSE `id:` progress frames without manufacturing chat events, and
+  let the wake pump advance its fetch cursor without committing a sequence.
+- [x] Add adversarial regressions for every empty-page consumer and prove no
+  read-receipt or transcript write is created by transport-only progress.
+- [x] Run focused suites, full verification, package/audit checks, freeze an
+  exact SHA, and update PR #795 before the API semantic guard is deployed.
+
+## Review
+
+- Poll transport now prefers `nextCursor` over the last visible event and
+  carries the server's scan watermark/exhaustion metadata. Remote hydration,
+  CLI/MCP confirmation, and forward MCP history cross empty non-exhausted
+  pages only when the cursor advances.
+- SSE consumes authenticated `id:` frames and forwards them immediately to the
+  listener. The listener persists transport progress but emits no event and
+  performs no read-cursor PUT; the wake pump likewise advances only its fetch
+  cursor while leaving the committed sequence untouched.
+- Focused post-clean-install verification passed `136/136`; E2E passed
+  `121/121`; static checks covered `358` files; docs validation covered `5`
+  files / `6` headings. The enumerated unit inventory passed every test in 219
+  files and `15/17` in the pre-existing investor-DD Windows cleanup file. Its
+  two `ENOTEMPTY` failures are the documented file-handle lane tracked by PR
+  #782 and are unchanged by this diff. Aggregate coverage remained
+  statements/branches/functions/lines `91.81% / 70.60% / 93.53% / 91.81%`.
+- A fresh advisory check found newly vulnerable transitive lock entries. The
+  lockfile now resolves `brace-expansion@5.0.9` and `ip-address@10.4.0`; clean
+  `npm ci` installs `c8@11.0.0`, and `npm audit --audit-level=high` reports zero
+  vulnerabilities. Package dry-run remains `356` files. No API deployment or
+  production feature-flag mutation occurred in this lane.
+
+# Immutable Package Provenance Binding (2026-08-05)
+
+## Plan
+
+- [x] Reproduce PR #795's sole hosted failure and distinguish package
+  nondeterminism from source-ref drift.
+- [x] Bind the reproducibility and canonical-package jobs to the same immutable
+  PR-head source already used by the attestation rebuild and manifests.
+- [x] Add a regression that fails if any package/provenance checkout returns to
+  a workflow-local synthetic merge ref.
+- [x] Prepare the corrected exact head with local workflow-contract and static
+  verification.
+- [ ] Require Quality Gates, Build Attestation, Omar Gate, and independent
+  exact-SHA review to pass after push.
+
+## Review
+
+- Quality Gates run `30986588515` proved same-job reproducibility, but built
+  the tarball from its default synthetic merge checkout. Build Attestation run
+  `30986588399` correctly checked out the immutable PR head, so its rebuild
+  rejected the artifact with expected digest
+  `7d109e49...` versus actual `3bc13bc...`.
+- The package manifest already claimed the PR-head SHA. The fix makes the
+  reproducibility and canonical-package working trees match that claim instead
+  of merely changing metadata or weakening the digest comparison.
+- Focused workflow-source regression passes `1/1`; static checks pass all
+  `358` files; `git diff --check` is clean.
+- The next exact-head attestation reached the required-check waiter but a
+  one-off GitHub API `503` aborted the job after nine minutes. Required-check
+  API reads now use bounded connect/request timeouts and bounded retries for
+  transient transport/HTTP failures; terminal failures still fail closed.
+- Independent review blocked exact SHA `2968287` because ENGRAM's shallow
+  detachability test allowed `session/recall/*` without walking its imports;
+  `index-build -> observations -> control-events` therefore pulled session
+  runtime into the advertised standalone product.
+- The retrieval index is now split into a pure observation-only core and a
+  SentinelLayer session adapter. Generic item normalization is a sibling
+  ENGRAM adapter over a pure observation core. The replacement test walks the
+  complete import closure and includes a negative transitive-escape fixture.
+- Post-refactor ENGRAM + MCP verification passes `39/39`; the combined
+  cursor/noise/lease/MCP/ENGRAM/provenance suite passes `123/123`; static
+  checks cover `378` files. The broader import-affected sweep passed every
+  retrieval test and reproduced only the two pre-existing Windows investor-DD
+  `ENOTEMPTY` cleanup failures already tracked by PR #782.
 

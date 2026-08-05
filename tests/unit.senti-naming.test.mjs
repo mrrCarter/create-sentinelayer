@@ -181,9 +181,8 @@ test("registerAgent: empty agentId + claude model => Senti renames to claude-1",
     });
     assert.equal(result.agentId, "claude-1");
     const events = await readStream(created.sessionId, { targetPath: root, tail: 0 });
-    const identified = events.filter((e) => e.event === "agent_identified");
-    assert.equal(identified.length, 1, "Senti must emit one welcome event");
-    assert.equal(identified[0].payload.wasAnonymous, true);
+    assert.equal(events.length, 0, "identity belongs in roster state, not transcript");
+    assert.equal(result.onboarding.welcome.wasAnonymous, true);
   } finally {
     await fsp.rm(root, { recursive: true, force: true });
   }

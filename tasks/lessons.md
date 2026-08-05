@@ -1,5 +1,16 @@
 # Lessons
 
+## 2026-07-29
+
+- Liveness, read progress, and file ownership are operational projections, not conversation: give each a dedicated state endpoint and reject any compatibility path that appends heartbeat, view, or lock records to the durable transcript.
+- Capability rollout must fail closed without reviving write amplification: a missing, disabled, rate-limited, or degraded presence endpoint means `unknown`, never “scan old heartbeat rows.”
+- Listener backpressure must be credential-scoped on the server and cooperative in every client: preserve a 60-second default floor, add bounded upward jitter, cap exponential retry delay, and let `Retry-After` override that cap.
+- A read operation should advance at most one monotonic cursor for the consumed window; omit placeholder identities so the server can bind human reads to the authenticated principal.
+- Outbound transcript filtering must reuse the canonical control-event classifier; parallel hand-maintained event lists drift as soon as new listener/control types are introduced.
+- Operational controls must travel beside the semantic event stream, not inside it: an addressed `listenerControls` side channel is processed before events and cursor mutation, rejects controls older than the listener start, and never falls back to a durable append.
+- Cross-repository control-plane work needs one exact wire-contract test: match the server's strict request shape and idempotency header, then consume its status/items response envelope instead of approving API and CLI fixtures independently.
+- Transport, circuit-breaker, and payload-contract tests must use semantic `session_message` fixtures. Using coordination events as generic positive-write fixtures makes correct noise suppression look like a transport regression.
+
 ## 2026-07-14
 
 - Review-gate health must distinguish customer price from provider-call proof: require token-bearing usage, a successful token/provider-cost ledger, or a legacy priced-call signal, and still fail closed when all are absent.
@@ -273,4 +284,54 @@
 - On Windows, Node's `--test` does not expand npm-script globs. When a repository script assumes POSIX expansion, run the same sorted file set explicitly for local evidence and still require the canonical script on hosted Linux CI.
 - SQL-concatenation heuristics should anchor on a quoted SQL string followed by `+`, not any nearby SQL verb and plus sign. Endpoint-extraction regexes legitimately contain `DELETE` and quantifier `+` tokens and otherwise create self-inflicted P2 noise.
 - Any `FileHandle` opened before a governed operation must close in `finally`, especially when fail-closed budget or usage guards intentionally reject. Test cleanup retries can conceal leaked descriptors; immediate recursive cleanup is useful evidence of lifecycle correctness.
+- A file-lease denial is useful only if the exact editor/terminal mutation sees
+  the locked path, holder, and expiry. Never discard a fail-closed guard's
+  output merely to keep successful preflights quiet.
+- Removing chat-based lock parsing also requires removing every generated,
+  legacy, and documentation instruction that teaches `lock:`/`unlock:` chat
+  messages; otherwise noise persists while the messages stop acquiring locks.
+- Any persistent hook installed by a CLI needs a compatible, fingerprint-owned
+  uninstall path and explicit API-first upgrade/client-first rollback order
+  before publication. Package rollback alone can strand an unavailable hook
+  that blocks every edit or split authority across client versions.
 - Normalize documented exact paths for both slash direction and one optional dot-relative prefix before matching, while keeping two-sided path boundaries so parent or suffix paths cannot over-cover a file.
+
+## 2026-07-30
+
+- A liveness cutover is incomplete if join/leave/status/identity, onboarding briefings, recaps, views, or lock state can still reach the remote transcript. Keep those local or in their authoritative presence/cursor/lease surfaces; the durable remote log is for semantic conversation.
+- Marking an event `ephemeral: true` does not make it ephemeral if the producer still appends it. Derived room-health and daemon-alert projections must bypass the transcript storage path entirely.
+- Read-only hydration, search, join, and recap commands must never mint durable recap or onboarding rows as a side effect; observation cannot be a write.
+- Treat a fast all-PASS experiment verdict as a claim, not evidence. Require receipt completeness, invalid-transition coverage, lease/noise counts, resource usage, and evidence hashes before accepting a proof-class result.
+
+## 2026-08-05
+
+- A semantic event cursor and a durable scan cursor are different contracts.
+  Clients must prefer the server's explicit next-scan cursor and advance it even
+  when filtering exposes no events, while keeping read receipts tied only to
+  semantic rows actually observed.
+- Long-lived SSE cannot wait for stream close to expose transport progress.
+  Parse authenticated `id:` frames, surface an `onCursor` callback immediately,
+  and never manufacture a data/chat event for an id-only scan frame. Invoke the
+  cursor-only callback only when the frame has no `data:`: pre-advancing a
+  paired id+data frame can make the subsequent semantic event look stale and
+  drop it.
+- Every empty-page loop needs three independent stop conditions: durable
+  exhaustion, cursor progress, and a total page budget. Visible row count alone
+  is not proof that the underlying scan is finished.
+- Release proof starts from `npm ci`, not a reused `node_modules`. A stale tree
+  can run the wrong coverage tool and conceal newly patched transitive versions;
+  refresh the lock within existing ranges, reinstall, and rerun the advisory
+  gate before publishing.
+- Cross-workflow package provenance must bind every producing and rebuilding
+  checkout to one immutable source SHA. Two `pull_request` workflows can each
+  receive a different or regenerated synthetic merge ref; recording the PR head
+  in a manifest does not make a tarball built from the merge checkout an
+  artifact of that head.
+- A long-lived required-check waiter must not discard nine minutes of valid
+  upstream progress because one GitHub API request returns a transient `503`.
+  Centralize bounded connect/request timeouts and retry transient API failures,
+  then fail closed only after the retry budget is exhausted.
+- Detachability is a transitive property. A test that allowlists direct imports
+  into a nominally pure directory can miss a runtime dependency one edge later;
+  walk the complete module closure and prove the test rejects a synthetic
+  transitive escape.

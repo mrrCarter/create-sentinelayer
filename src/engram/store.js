@@ -18,7 +18,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-import { buildObservationsFromItems } from "../session/recall/observations.js";
+import { buildObservationsFromItems } from "./observations.js";
 import { contentHash, normalizeString } from "../session/recall/text.js";
 
 function namespaceDir(root, namespace) {

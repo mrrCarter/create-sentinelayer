@@ -56,7 +56,7 @@ async function captureConsoleLog(fn) {
   return lines.join("\n");
 }
 
-test("Unit session recap: joining agent receives context briefing within 2 seconds", async () => {
+test("Unit session recap: joining agent receives context briefing directly within 2 seconds", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-"));
   try {
     await seedWorkspace(tempRoot);
@@ -79,12 +79,7 @@ test("Unit session recap: joining agent receives context briefing within 2 secon
       tail: 50,
       targetPath: tempRoot,
     });
-    const briefing = events.find(
-      (event) =>
-        event.event === "context_briefing" &&
-        event.agent?.id === "senti" &&
-        event.payload?.forAgent === joined.agentId
-    );
+    const briefing = joined.onboarding.contextBriefing.event;
     assert.ok(briefing);
     assert.equal(validateAgentEvent(briefing, { allowLegacy: false }), true);
     assert.equal(briefing.payload.ephemeral, true);
@@ -92,6 +87,10 @@ test("Unit session recap: joining agent receives context briefing within 2 secon
     assert.match(String(briefing.payload.recap || ""), /While you were away:/);
     const deltaMs = Date.parse(String(briefing.ts || "")) - Date.parse(String(joined.joinedAt || ""));
     assert.equal(deltaMs >= 0 && deltaMs <= 2_000, true);
+    assert.equal(
+      events.some((event) => ["agent_join", "agent_identified", "context_briefing"].includes(event.event)),
+      false,
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -110,13 +109,9 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     });
 
     const events = await readStream(session.sessionId, { tail: 50, targetPath: tempRoot });
-    const briefing = events.find(
-      (event) =>
-        event.event === "context_briefing" &&
-        event.agent?.id === "senti" &&
-        event.payload?.forAgent === joined.agentId,
-    );
+    const briefing = joined.onboarding.contextBriefing.event;
     assert.ok(briefing);
+    assert.equal(events.length, 0);
 
     const message = String(briefing.payload.message || "");
     const rules = String(briefing.payload.rules || "");
@@ -130,11 +125,11 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /Writing back/);
     assert.match(message, /Actions and threading/);
     assert.match(message, /Session grounding/);
-    assert.match(message, /sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60/);
+    assert.match(message, /Routine room health is a derived status projection/);
     assert.match(message, /sl session recap now <id> --remote --agent <your-name> --json/);
     assert.match(message, /sl session react <id> ack --target-sequence <n>/);
     assert.match(message, /sl session read <id> --remote --agent <your-name>/);
-    assert.match(message, /reserve `sl session view <id> <sequence>` for repair\/backfill/);
+    assert.match(message, /`sl session view <id> <sequence>` repairs that same cursor/);
     assert.match(message, /sl session reply <id> <sequence>/);
     assert.match(message, /sl session comment <id> <sequence>/);
     assert.match(message, /sl session actions/);
@@ -144,7 +139,7 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(rules, /Reading the room/);
     assert.match(rules, /sl session read --remote --tail/);
     assert.match(rules, /join or recap before acting/);
-    assert.match(rules, /Read receipts are automatic/);
+    assert.match(rules, /one monotonic per-agent read cursor/);
     assert.match(rules, /sl session action <id> working_on --target-sequence <n>/);
     // Recap text is preserved separately for clients that want just the activity summary.
     assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);
@@ -734,7 +729,7 @@ test("Unit session recap: estimates non-human message usage when no provider led
   }
 });
 
-test("Unit session recap: separates live listeners from recent transcript actors", async () => {
+test("Unit session recap: uses authoritative presence instead of transcript heartbeats", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-listeners-"));
   try {
     await seedWorkspace(tempRoot);
@@ -806,6 +801,16 @@ test("Unit session recap: separates live listeners from recent transcript actors
       maxEvents: 20,
       targetPath: tempRoot,
       nowIso: "2026-05-19T08:03:00.000Z",
+      listenerPresence: {
+        authoritative: true,
+        presenceStatus: "ok",
+        listeners: [
+          {
+            agentId: "codex-a1",
+            status: "present",
+          },
+        ],
+      },
     });
 
     assert.match(recap.text, /1 live listener \(codex-a1\)/);
@@ -816,7 +821,9 @@ test("Unit session recap: separates live listeners from recent transcript actors
     assert.deepEqual(recap.summary.recentActorIds, ["claude-b2", "codex-a1"]);
     assert.equal(recap.summary.liveListeners, 1);
     assert.deepEqual(recap.summary.liveListenerIds, ["codex-a1"]);
-    assert.equal(recap.summary.listenerCount, 2);
+    assert.equal(recap.summary.listenerCount, 1);
+    assert.equal(recap.summary.listenerPresenceAuthoritative, true);
+    assert.equal(recap.summary.listenerPresenceStatus, "ok");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1113,12 +1120,14 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       { targetPath: tempRoot },
     );
 
+    const projected = [];
     emitter = emitPeriodicRecap(session.sessionId, {
       targetPath: tempRoot,
       intervalMs: 10_000,
       inactivityMs: 140,
       maxEvents: 50,
       nowProvider,
+      onEmit: (event) => projected.push(event),
     });
     await emitter.tickNow();
 
@@ -1126,8 +1135,8 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       tail: 50,
       targetPath: tempRoot,
     });
-    const recaps = firstPass.filter((event) => event.event === "session_recap");
-    assert.equal(recaps.length >= 1, true);
+    const recaps = projected;
+    assert.equal(recaps.length, 1);
     assert.equal(recaps[0].payload.mode, "initial");
     assert.equal(recaps[0].payload.ephemeral, true);
     assert.equal(recaps[0].payload.style, "italic-grey");
@@ -1144,7 +1153,8 @@ test("Unit session recap: periodic recap emits while active and stops after inac
       targetPath: tempRoot,
     });
     const recapCount = secondPass.filter((event) => event.event === "session_recap").length;
-    assert.equal(recapCount, 1);
+    assert.equal(recapCount, 0);
+    assert.equal(projected.length, 1);
   } finally {
     if (emitter && emitter.isRunning()) {
       emitter.stop("test_cleanup");
@@ -1173,6 +1183,7 @@ test("Unit session recap: periodic emitter ignores interval when activity thresh
       { targetPath: tempRoot },
     );
 
+    const projected = [];
     emitter = emitPeriodicRecap(session.sessionId, {
       targetPath: tempRoot,
       intervalMs: 60_000,
@@ -1180,6 +1191,7 @@ test("Unit session recap: periodic emitter ignores interval when activity thresh
       newEventThreshold: 2,
       maxEvents: 50,
       nowProvider,
+      onEmit: (event) => projected.push(event),
     });
     await emitter.tickNow();
 
@@ -1203,7 +1215,8 @@ test("Unit session recap: periodic emitter ignores interval when activity thresh
       tail: 50,
       targetPath: tempRoot,
     });
-    const recaps = events.filter((event) => event.event === "session_recap");
+    const recaps = projected;
+    assert.equal(events.some((event) => event.event === "session_recap"), false);
     assert.equal(recaps.length, 2);
     assert.equal(recaps[1].payload.mode, "activity_threshold");
     assert.equal(recaps[1].payload.sourceEventCount, 2);
@@ -1216,7 +1229,7 @@ test("Unit session recap: periodic emitter ignores interval when activity thresh
   }
 });
 
-test("Unit session recap: periodic emitter writes inactivity closeout before stopping", async () => {
+test("Unit session recap: periodic emitter projects inactivity closeout before stopping", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-recap-closeout-"));
   let emitter = null;
   try {
@@ -1236,6 +1249,7 @@ test("Unit session recap: periodic emitter writes inactivity closeout before sto
       { targetPath: tempRoot },
     );
 
+    const projected = [];
     emitter = emitPeriodicRecap(session.sessionId, {
       targetPath: tempRoot,
       intervalMs: 60_000,
@@ -1243,6 +1257,7 @@ test("Unit session recap: periodic emitter writes inactivity closeout before sto
       newEventThreshold: 5,
       maxEvents: 50,
       nowProvider,
+      onEmit: (event) => projected.push(event),
     });
     await emitter.tickNow();
 
@@ -1264,7 +1279,8 @@ test("Unit session recap: periodic emitter writes inactivity closeout before sto
       tail: 50,
       targetPath: tempRoot,
     });
-    const recaps = events.filter((event) => event.event === "session_recap");
+    const recaps = projected;
+    assert.equal(events.some((event) => event.event === "session_recap"), false);
     assert.equal(recaps.length, 2);
     assert.equal(recaps[1].payload.mode, "inactivity");
     assert.equal(recaps[1].payload.sourceEventCount, 1);

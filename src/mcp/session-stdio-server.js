@@ -19,6 +19,7 @@ import {
   pollSessionEvents,
   pollSessionEventsBefore,
   syncSessionEventToApi,
+  updateSessionReadCursor,
 } from "../session/sync.js";
 
 export const SESSION_MCP_SERVER_NAME = "sentinelayer-session-mcp";
@@ -185,6 +186,27 @@ function summarizeSessionEvent(event = {}) {
     eventId: normalizeString(event.eventId),
     idempotencyToken: normalizeString(event.idempotencyToken),
   });
+}
+
+function latestReadCursorTarget(events = [], fallbackCursor = "") {
+  let targetSequenceId = null;
+  let targetCursor = normalizeString(fallbackCursor);
+  for (const event of Array.isArray(events) ? events : []) {
+    const sequenceId = normalizePositiveInteger(
+      event?.sequenceId ?? event?.sequence_id,
+      null,
+    );
+    if (
+      sequenceId &&
+      (targetSequenceId === null || sequenceId >= targetSequenceId)
+    ) {
+      targetSequenceId = sequenceId;
+      targetCursor = normalizeString(event?.cursor) || targetCursor;
+    }
+  }
+  return targetSequenceId || targetCursor
+    ? { targetSequenceId, targetCursor }
+    : null;
 }
 
 function sessionEventMatchesClientMessageId(event, clientMessageId) {
@@ -370,7 +392,9 @@ async function confirmSessionEventVisible(
       }
       lastReason = "not_visible";
       const nextCursor = normalizeString(result.cursor);
-      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !events.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!events.length && !emptyScanCanContinue)) {
         break;
       }
       pageCursor = nextCursor;
@@ -516,7 +540,9 @@ async function readSessionHistoryWindow({
       events.push(...materialEvents);
       const nextCursor = normalizeString(result.cursor) || pageCursor;
       responseCursor = nextCursor || responseCursor;
-      if (!rawEvents.length || !nextCursor || nextCursor === pageCursor) break;
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !rawEvents.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!rawEvents.length && !emptyScanCanContinue)) break;
       pageCursor = nextCursor;
       continue;
     }
@@ -838,6 +864,7 @@ export function createSessionMcpToolHandlers({
   pollSessionEventsBeforeFn = pollSessionEventsBefore,
   listSessionMessageActionsFn = listSessionMessageActions,
   createSessionMessageActionFn = createSessionMessageAction,
+  updateSessionReadCursorFn = updateSessionReadCursor,
   lockFileFn = lockFile,
   unlockFileFn = unlockFile,
   listFileLocksFn = listFileLocks,
@@ -916,6 +943,14 @@ export function createSessionMcpToolHandlers({
       const recentHumanActivity = actionResult?.ok
         ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
         : [];
+      const readTarget = latestReadCursorTarget(result.events, result.cursor);
+      const readCursor = readTarget
+        ? await updateSessionReadCursorFn(sessionId, {
+            targetPath,
+            ...readTarget,
+            agentId,
+          })
+        : null;
 
       return {
         ok: true,
@@ -927,6 +962,7 @@ export function createSessionMcpToolHandlers({
         inboxCount: events.length,
         recentHumanActivityCount: recentHumanActivity.length,
         recentHumanActivity,
+        readCursor,
         actionProjection: actionResult
           ? {
               ok: Boolean(actionResult.ok),
@@ -991,6 +1027,21 @@ export function createSessionMcpToolHandlers({
       const recentHumanActivity = actionResult?.ok
         ? recentHumanActivityFromActions(actionResult, { limit: actionLimit })
         : [];
+      const readAgentId = normalizeAgentId(
+        input.agentId ||
+        input.agent_id ||
+        input.agent ||
+        process.env.SENTINELAYER_AGENT_ID,
+        "",
+      );
+      const readTarget = latestReadCursorTarget(events, result.cursor);
+      const readCursor = readTarget
+        ? await updateSessionReadCursorFn(sessionId, {
+            targetPath,
+            ...readTarget,
+            agentId: readAgentId,
+          })
+        : null;
 
       return {
         ok: true,
@@ -1004,6 +1055,7 @@ export function createSessionMcpToolHandlers({
         pageCount: normalizePositiveInteger(result.pages, 0),
         recentHumanActivityCount: recentHumanActivity.length,
         recentHumanActivity,
+        readCursor,
         actionProjection: actionResult
           ? {
               ok: Boolean(actionResult.ok),
@@ -1086,8 +1138,6 @@ export function createSessionMcpToolHandlers({
           intent,
           ttlSeconds,
           targetPath,
-          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
-          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
         });
         results.push({
           file: normalizeString(result?.file) || file,
@@ -1119,10 +1169,7 @@ export function createSessionMcpToolHandlers({
       for (const file of files) {
         const result = await unlockFileFn(sessionId, agentId, file, {
           reason,
-          force: false,
           targetPath,
-          syncRemote: input.syncRemote !== false && input.sync_remote !== false,
-          awaitRemoteSync: input.awaitRemoteSync !== false && input.await_remote_sync !== false,
         });
         results.push({
           file: normalizeString(result?.file) || file,
@@ -1301,7 +1348,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "poll_inbox",
     title: "Poll Senti Inbox",
     description:
-      "Poll durable SentinelLayer session events after an optional cursor and return only events addressed or visible to the agent.",
+      "Poll durable SentinelLayer session events after an optional cursor, return only events addressed or visible to the agent, and advance one monotonic read cursor.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1323,13 +1370,14 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "read_history",
     title: "Read Senti History",
     description:
-      "Hydrate a bounded recent, older, or after-cursor session transcript window without recipient filtering.",
+      "Hydrate a bounded recent, older, or after-cursor session transcript window and advance one monotonic read cursor without appending view events.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["sessionId"],
       properties: {
         sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
         cursor: { type: "string" },
         beforeSequence: { type: "integer", minimum: 1 },
         limit: { type: "integer", minimum: 1, maximum: MAX_TOOL_LIMIT, default: DEFAULT_TOOL_LIMIT },
@@ -1371,7 +1419,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_action",
     title: "Record Senti Session Action",
     description:
-      "Record a low-noise message action such as ack, working_on, disregard, view, like, dislike, or reply against a target session event.",
+      "Record a low-noise message action such as ack, working_on, disregard, like, dislike, or reply; view advances the monotonic read cursor instead of appending an action.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1438,7 +1486,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_lock",
     title: "Lock Senti Files",
     description:
-      "Claim session-scoped file locks before editing files, using the same fail-closed lock registry as the CLI.",
+      "Claim session-scoped file leases through the authoritative SentinelLayer API before editing. Lease lifecycle operations never create session events.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1454,8 +1502,18 @@ export const SESSION_MCP_TOOLS = Object.freeze([
         },
         intent: { type: "string" },
         ttlSeconds: { type: "integer", minimum: 1, default: 300 },
-        syncRemote: { type: "boolean", default: true },
-        awaitRemoteSync: { type: "boolean", default: true },
+        syncRemote: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
+        awaitRemoteSync: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
       },
     },
   },
@@ -1463,7 +1521,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_unlock",
     title: "Unlock Senti Files",
     description:
-      "Release session-scoped file locks held by an agent.",
+      "Release authoritative session-scoped file leases held by an agent without writing to the session transcript.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1478,8 +1536,18 @@ export const SESSION_MCP_TOOLS = Object.freeze([
           ],
         },
         reason: { type: "string" },
-        syncRemote: { type: "boolean", default: true },
-        awaitRemoteSync: { type: "boolean", default: true },
+        syncRemote: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
+        awaitRemoteSync: {
+          type: "boolean",
+          default: true,
+          description:
+            "Deprecated compatibility input; ignored because the authenticated API is always authoritative.",
+        },
       },
     },
   },
@@ -1487,7 +1555,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_locks",
     title: "List Senti File Locks",
     description:
-      "List active file locks for a session.",
+      "List active authoritative file leases for a session.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

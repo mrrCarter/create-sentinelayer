@@ -58,6 +58,9 @@ async function startActionMockApi({ actions = [], hangActionResponseBody = false
     actionPayload: null,
     actionPayloads: [],
     actionAuthHeader: "",
+    readCursorPayload: null,
+    readCursorPayloads: [],
+    readCursorAuthHeader: "",
   };
 
   const server = createServer(async (req, res) => {
@@ -121,6 +124,21 @@ async function startActionMockApi({ actions = [], hangActionResponseBody = false
             metadata: state.actionPayload.metadata || {},
             idempotencyKey: state.actionPayload.idempotencyKey || "",
           },
+        });
+      }
+      if (req.method === "PUT" && req.url === "/api/v1/sessions/sess-actions/read-cursor") {
+        state.readCursorAuthHeader = String(req.headers.authorization || "");
+        state.readCursorPayload = await readJsonBody(req);
+        state.readCursorPayloads.push(state.readCursorPayload);
+        if (hangActionResponseBody) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.write('{"ok":true,');
+          return;
+        }
+        return jsonResponse(res, 200, {
+          ok: true,
+          updated: true,
+          lastReadSequenceId: state.readCursorPayload.targetSequenceId,
         });
       }
       return jsonResponse(res, 404, { error: "not_found", path: req.url });
@@ -258,7 +276,7 @@ test("Unit session react command: ack posts a message action and appends local e
   }
 });
 
-test("Unit session view command: posts read receipt action", async () => {
+test("Unit session view command: advances the monotonic read cursor", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-view-action-"));
   const mock = await startActionMockApi();
   try {
@@ -286,17 +304,56 @@ test("Unit session view command: posts read receipt action", async () => {
     assert.equal(payload.actionType, "view");
     assert.equal(payload.event, null);
     assert.equal(payload.localAppend.appended, false);
-    assert.equal(payload.localAppend.reason, "no_event");
-    assert.equal(mock.state.actionPayload.actionType, "view");
-    assert.equal(mock.state.actionPayload.targetSequenceId, 42);
-    assert.equal(mock.state.actionPayload.metadata.agentId, "codex");
+    assert.equal(payload.localAppend.reason, "read_cursor_projection");
+    assert.deepEqual(payload.readCursorProjection, {
+      updated: true,
+      lastReadSequenceId: 42,
+      targetCursor: null,
+    });
+    assert.equal(mock.state.actionPayloads.length, 0);
+    assert.equal(mock.state.readCursorPayload.targetSequenceId, 42);
+    assert.equal(mock.state.readCursorPayload.agentId, "codex");
+    const humanResult = await runCli(
+      [
+        "session",
+        "view",
+        "sess-actions",
+        "43",
+        "--agent",
+        "codex",
+        "--path",
+        tmp,
+      ],
+      {
+        cwd: tmp,
+        env: { SENTINELAYER_API_URL: mock.apiUrl },
+      },
+    );
+    assert.equal(humanResult.code, 0, humanResult.stderr);
+    assert.match(
+      humanResult.stdout,
+      /Advanced read cursor through #43; no transcript event appended\./,
+    );
+    assert.equal(mock.state.actionPayloads.length, 0);
+
+    const streamRaw = await readFile(
+      path.join(tmp, ".sentinelayer", "sessions", "sess-actions", "stream.ndjson"),
+      "utf8",
+    );
+    const stream = streamRaw.trim()
+      ? JSON.parse(`[${streamRaw.trim().split(/\r?\n/).join(",")}]`)
+      : [];
+    assert.equal(
+      stream.some((event) => event.event === "session_action" && event.payload?.actionType === "view"),
+      false,
+    );
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
-test("Unit session read --remote: records automatic view receipts for displayed messages", async () => {
+test("Unit session read --remote: performs one read-cursor upsert for the displayed window", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-auto-view-"));
   const mock = await startActionMockApi();
   try {
@@ -337,23 +394,19 @@ test("Unit session read --remote: records automatic view receipts for displayed 
       recorded: 0,
       duplicates: 0,
       failed: 0,
-      skipped: 0,
-      queued: 2,
+      skipped: 1,
+      queued: 1,
       background: true,
-      reason: "queued_best_effort",
+      reason: "queued_monotonic_upsert",
     });
 
-    assert.equal(mock.state.actionPayloads.length, 2);
-    assert.deepEqual(
-      mock.state.actionPayloads.map((body) => body.targetSequenceId),
-      [41, 42],
-    );
-    assert.equal(mock.state.actionPayloads[0].actionType, "view");
-    assert.equal(mock.state.actionPayloads[0].targetCursor, "cursor-41");
-    assert.equal(mock.state.actionPayloads[0].metadata.source, "cli_read");
-    assert.equal(mock.state.actionPayloads[0].metadata.agentId, "codex");
-    assert.equal(mock.state.actionPayloads[0].idempotencyKey, "cli:view:seq:41:codex:none");
-    assert.equal(mock.state.actionPayloads[1].idempotencyKey, "cli:view:seq:42:codex:none");
+    assert.equal(mock.state.actionPayloads.length, 0);
+    assert.equal(mock.state.readCursorPayloads.length, 1);
+    assert.deepEqual(mock.state.readCursorPayloads[0], {
+      targetSequenceId: 42,
+      targetCursor: "cursor-42",
+      agentId: "codex",
+    });
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
@@ -392,13 +445,14 @@ test("Unit session read --remote: --no-view suppresses automatic view receipts",
     assert.equal(payload.autoView.queued, 0);
     assert.equal(payload.autoView.background, false);
     assert.equal(mock.state.actionPayloads.length, 0);
+    assert.equal(mock.state.readCursorPayloads.length, 0);
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
-test("Unit session read --remote: caps automatic view writes per read", async () => {
+test("Unit session read --remote: collapses all displayed messages into one cursor write", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-read-auto-view-cap-"));
   const mock = await startActionMockApi();
   try {
@@ -439,10 +493,11 @@ test("Unit session read --remote: caps automatic view writes per read", async ()
       skipped: 1,
       queued: 1,
       background: true,
-      reason: "target_cap_reached",
+      reason: "queued_monotonic_upsert",
     });
-    assert.equal(mock.state.actionPayloads.length, 1);
-    assert.equal(mock.state.actionPayloads[0].targetSequenceId, 42);
+    assert.equal(mock.state.actionPayloads.length, 0);
+    assert.equal(mock.state.readCursorPayloads.length, 1);
+    assert.equal(mock.state.readCursorPayloads[0].targetSequenceId, 42);
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
@@ -499,13 +554,13 @@ test("Unit session read --remote: hanging auto-view action body does not block o
       recorded: 0,
       duplicates: 0,
       failed: 0,
-      skipped: 0,
-      queued: 2,
+      skipped: 1,
+      queued: 1,
       background: true,
-      reason: "queued_best_effort",
+      reason: "queued_monotonic_upsert",
     });
-    assert.equal(mock.state.actionPayloads.length, 1);
-    assert.equal(mock.state.actionPayloads[0].actionType, "view");
+    assert.equal(mock.state.actionPayloads.length, 0);
+    assert.equal(mock.state.readCursorPayloads.length, 1);
   } finally {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });

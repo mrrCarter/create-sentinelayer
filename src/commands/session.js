@@ -42,11 +42,20 @@ import {
 } from "../session/daemon-spawn.js";
 import { listRuntimeRuns } from "../session/runtime-bridge.js";
 import {
+  guardFileLeases,
   listFileLocks,
   lockFile,
   releaseFileLocksForAgent,
+  renewFileLease,
   unlockFile,
 } from "../session/file-locks.js";
+import {
+  formatFileLeaseDenialSummary,
+  installFileLeaseIntegrations,
+  runFileLeaseGuardHook,
+  safeFileLeaseErrorMessage,
+  uninstallFileLeaseIntegrations,
+} from "../session/file-lease-integrations.js";
 import {
   injectSessionGuides,
   setupSessionGuides,
@@ -64,7 +73,7 @@ import {
   refreshSessionCacheForRemoteActivity,
   updateSessionTitle,
 } from "../session/store.js";
-import { fetchSessionListeners, formatListenerLine, summarizeListeners } from "../session/listeners.js";
+import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import {
   getListenerProcessStatus,
   removeListenerPidRecord,
@@ -103,9 +112,12 @@ import {
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
+  requestSessionListenerStop,
+  renewSessionPresence,
   searchSessionEvents,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
+  updateSessionReadCursor,
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
 import { runSessionRecall } from "../session/recall/index.js";
@@ -443,7 +455,9 @@ async function confirmSessionEventVisible(
       }
       lastReason = "not_visible";
       const nextCursor = normalizeString(result.cursor);
-      if (!events.length || !nextCursor || nextCursor === pageCursor) {
+      const scanExhausted = result.scanExhausted ?? result.scan_exhausted;
+      const emptyScanCanContinue = !events.length && scanExhausted === false;
+      if (!nextCursor || nextCursor === pageCursor || (!events.length && !emptyScanCanContinue)) {
         break;
       }
       pageCursor = nextCursor;
@@ -961,12 +975,12 @@ function normalizeAutoViewTimeoutMs(value) {
   return Math.max(50, Math.min(5_000, Math.floor(parsed)));
 }
 
-async function writeSessionReadViews(sessionId, writeTargets = [], {
+async function writeSessionReadCursor(sessionId, target = null, {
   targetPath,
   agentId,
   timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
 } = {}) {
-  if (!Array.isArray(writeTargets) || writeTargets.length === 0) {
+  if (!target) {
     return;
   }
   const totalTimeoutMs = normalizeAutoViewTimeoutMs(timeoutMs);
@@ -984,50 +998,31 @@ async function writeSessionReadViews(sessionId, writeTargets = [], {
   }
 
   try {
-    for (const target of writeTargets) {
-      if (controller.signal.aborted) {
-        break;
-      }
-      const elapsedMs = Math.max(0, Date.now() - startedAt);
-      const remainingMs = Math.max(1, totalTimeoutMs - elapsedMs);
-      const result = await createSessionMessageAction(sessionId, {
-        actionType: "view",
-        targetPath,
-        targetSequenceId: target.targetSequenceId,
-        targetCursor: target.targetCursor,
-        metadata: {
-          source: "cli_read",
-          agentId,
-        },
-        idempotencyKey: defaultActionIdempotencyKey({
-          actionType: "view",
-          targetSequenceId: target.targetSequenceId,
-          targetCursor: target.targetCursor,
-          agentId,
-        }),
-        timeoutMs: remainingMs,
-        signal: controller.signal,
-      });
-      if (!result?.ok) {
-        break;
-      }
-    }
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    const remainingMs = Math.max(1, totalTimeoutMs - elapsedMs);
+    await updateSessionReadCursor(sessionId, {
+      targetPath,
+      targetSequenceId: target.targetSequenceId,
+      targetCursor: target.targetCursor,
+      agentId,
+      timeoutMs: remainingMs,
+      signal: controller.signal,
+    });
   } finally {
     clearTimeout(timeoutHandle);
   }
 }
 
-function recordSessionReadViews(sessionId, events = [], {
+function recordSessionReadCursor(sessionId, events = [], {
   targetPath,
   agentId,
   enabled = false,
-  maxTargets = 50,
   timeoutMs = SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
 } = {}) {
-  const maxAutoViewTargets = Math.max(0, Math.min(200, Number(maxTargets) || 0));
+  const normalizedAgentId = normalizeString(agentId);
   const summary = {
     enabled: Boolean(enabled),
-    agentId: normalizeString(agentId) || "cli-user",
+    agentId: normalizedAgentId || "cli-user",
     targetCount: 0,
     attempted: 0,
     recorded: 0,
@@ -1043,26 +1038,22 @@ function recordSessionReadViews(sessionId, events = [], {
     return summary;
   }
 
-  const seenTargets = new Set();
-  const targets = [];
+  let target = null;
   for (const event of Array.isArray(events) ? events : []) {
-    const target = sessionReadViewTarget(event);
-    if (!target || seenTargets.has(target.key)) {
-      continue;
+    const candidate = sessionReadViewTarget(event);
+    if (!candidate) continue;
+    summary.targetCount += 1;
+    if (
+      !target ||
+      Number(candidate.targetSequenceId || 0) >= Number(target.targetSequenceId || 0)
+    ) {
+      target = candidate;
     }
-    seenTargets.add(target.key);
-    targets.push(target);
   }
-  summary.targetCount = targets.length;
+  summary.skipped = Math.max(0, summary.targetCount - (target ? 1 : 0));
+  summary.queued = target ? 1 : 0;
 
-  const writeTargets = maxAutoViewTargets > 0 ? targets.slice(-maxAutoViewTargets) : [];
-  summary.skipped = Math.max(0, targets.length - writeTargets.length);
-  summary.queued = writeTargets.length;
-  if (summary.skipped > 0) {
-    summary.reason = "target_cap_reached";
-  }
-
-  if (writeTargets.length === 0) {
+  if (!target) {
     if (!summary.reason) {
       summary.reason = "no_targets";
     }
@@ -1070,13 +1061,13 @@ function recordSessionReadViews(sessionId, events = [], {
   }
 
   summary.background = true;
-  if (!summary.reason) {
-    summary.reason = "queued_best_effort";
-  }
+  summary.reason = "queued_monotonic_upsert";
 
-  void writeSessionReadViews(sessionId, writeTargets, {
+  void writeSessionReadCursor(sessionId, target, {
     targetPath,
-    agentId: summary.agentId,
+    // Omit a placeholder identity so the server can bind human reads to the
+    // authenticated principal. Explicit agent reads still carry their grant.
+    agentId: normalizedAgentId,
     timeoutMs,
   }).catch(() => {
     // Best-effort view receipts must never affect transcript rendering.
@@ -1856,13 +1847,6 @@ function normalizeSessionObservationText(rawValue, fieldName, maxLength) {
   return value;
 }
 
-function listenerLifecycleEventName(type = "") {
-  const normalized = normalizeString(type).toLowerCase();
-  if (normalized === "started") return "session_listener_started";
-  if (normalized === "stopped") return "session_listener_stopped";
-  return "session_listener_heartbeat";
-}
-
 function compactPayload(record = {}) {
   return Object.fromEntries(
     Object.entries(record).filter(([, value]) => value !== undefined)
@@ -1949,11 +1933,6 @@ async function publishListenerPresenceEvent({
   lifecycle = {},
 } = {}) {
   const normalizedType = normalizeString(lifecycle.type) || "heartbeat";
-  const eventName = listenerLifecycleEventName(normalizedType);
-  const idempotencyStep = listenerLifecycleIdempotencyStep({
-    ...lifecycle,
-    type: normalizedType,
-  });
   const identity = inferSessionAgentIdentity({
     agentId,
     model: agentModel,
@@ -1961,49 +1940,23 @@ async function publishListenerPresenceEvent({
     provider,
     clientKind,
   });
-  const event = createAgentEvent({
-    event: eventName,
-    sessionId,
-    agent: {
-      id: agentId,
-      model: normalizeString(identity.model) || "cli",
-      role: "listener",
-      displayName: normalizeString(identity.displayName) || agentId,
-      provider: normalizeString(identity.provider) || undefined,
-      clientKind: normalizeString(identity.clientKind) || "cli",
-    },
-    eventId: `session-listener-${listenerId}-${normalizedType}-${idempotencyStep}`,
-    idempotencyToken: `session-listener:${listenerId}:${normalizedType}:${idempotencyStep}`,
-    payload: compactPayload({
-      source: "session_listen",
-      listenerId,
-      lifecycle: normalizedType,
-      state: normalizeString(lifecycle.state) || normalizedType,
-      active: lifecycle.active,
-      cursor: lifecycle.cursor || null,
-      cursorSuffix: lifecycle.cursorSuffix,
-      cursorSource: lifecycle.cursorSource,
-      pollCount: lifecycle.pollCount,
-      heartbeatCount: lifecycle.heartbeatCount,
-      matched: lifecycle.matched,
-      emitted: lifecycle.emitted,
-      persistedCursor: lifecycle.persistedCursor,
-      idleIntervalSeconds: lifecycle.idleIntervalSeconds,
-      activeIntervalSeconds: lifecycle.activeIntervalSeconds,
-      activeWindowSeconds: lifecycle.activeWindowSeconds,
-      presenceIntervalSeconds: lifecycle.presenceIntervalSeconds,
-      presenceKeepaliveSeconds: lifecycle.presenceKeepaliveSeconds,
-      lastHumanActivityAt: lifecycle.lastHumanActivityAt,
-      lastSleepMs: lifecycle.lastSleepMs,
-      nextPollMs: lifecycle.nextPollMs,
-      reason: lifecycle.reason || null,
-      startedAt: lifecycle.startedAt,
-      stoppedAt: lifecycle.stoppedAt,
-      aborted: lifecycle.aborted,
-      stopping: lifecycle.stopping,
-    }),
+  return renewSessionPresence(sessionId, {
+    targetPath,
+    agentId,
+    state:
+      normalizedType === "stopped"
+        ? "stopped"
+        : normalizeString(lifecycle.state) || normalizedType,
+    listenerId,
+    model: normalizeString(identity.model) || "cli",
+    displayName: normalizeString(identity.displayName) || agentId,
+    provider: normalizeString(identity.provider),
+    clientKind: normalizeString(identity.clientKind) || "cli",
+    observedAt:
+      lifecycle.stoppedAt ||
+      lifecycle.startedAt ||
+      new Date().toISOString(),
   });
-  return syncSessionEventToApi(sessionId, event, { targetPath });
 }
 
 function formatListenerCatchupNotice(catchup = {}) {
@@ -2399,17 +2352,6 @@ async function resolveSessionAgentEnvelope(
       undefined,
   };
   return Object.fromEntries(Object.entries(envelope).filter(([, value]) => value !== undefined));
-}
-
-// Builds the lock/unlock say-convention directive the session daemon parses
-// into the authoritative file-lock registry. Kept pure + exported for testing.
-export function buildSessionLockDirective(verb, file, intent = "") {
-  const normalizedFile = normalizeString(file);
-  const normalizedIntent = normalizeString(intent);
-  if (verb === "unlock") {
-    return `unlock: ${normalizedFile} - ${normalizedIntent || "done"}`;
-  }
-  return normalizedIntent ? `lock: ${normalizedFile} - ${normalizedIntent}` : `lock: ${normalizedFile}`;
 }
 
 async function runWithConcurrency(items = [], concurrency = 1, worker = async () => null) {
@@ -3369,7 +3311,7 @@ export function registerSessionCommand(program) {
     .option("--name <name>", "Agent display name (legacy alias for --agent)")
     .option(
       "--agent <id>",
-      "Granted agent id to emit an agent_join event as. Behaves like post-agent for human/placeholder ids — those are recorded in the local registry only.",
+      "Granted agent id to register in the participant roster. Join state and onboarding are returned locally and never appended to the transcript.",
     )
     .option("--invite-token <token>", "Invitation token to accept before joining the session")
     .option("--seat-key <key>", "Reserved session seat key to claim while accepting an invite")
@@ -3458,13 +3400,9 @@ export function registerSessionCommand(program) {
       const model = normalizeString(options.model) || "cli";
       const hasConcreteAgentIdentity = Boolean(explicitAgent || acceptedAgentId);
 
-      // `registerAgent` already writes the canonical `agent_join` event to the
-      // local NDJSON and best-effort relays it to /events via appendToStream
-      // → syncSessionEventToApi. That gives us the exact `post-agent` parity
-      // the spec calls for when `--agent <granted>` or an accepted reserved
-      // seat provides a concrete agent id. We don't double-emit; we record
-      // whether a durable agent identity path was used
-      // so the JSON output can advertise it to callers (and tests).
+      // Registration updates the local participant projection and returns
+      // onboarding directly to this process. It never writes join, identity,
+      // or coaching rows into the transcript.
       const joined = await registerAgent(normalizedSessionId, {
         targetPath,
         agentId: resolvedAgentId,
@@ -3475,13 +3413,12 @@ export function registerSessionCommand(program) {
         trackProcessExit: false,
         awaitRemoteSync: hasConcreteAgentIdentity,
       });
-      const agentJoinRelayed =
-        joined.emittedJoinEvent !== false &&
-        hasConcreteAgentIdentity &&
-        Boolean(resolvedAgentId) &&
-        resolvedAgentId !== "cli-user" &&
-        resolvedAgentId !== "unknown" &&
-        !resolvedAgentId.startsWith("human-");
+      const agentJoinRelayed = false;
+      const localBriefingPayload =
+        joined.onboarding?.contextBriefing?.event?.payload &&
+        typeof joined.onboarding.contextBriefing.event.payload === "object"
+          ? joined.onboarding.contextBriefing.event.payload
+          : null;
       const onboardingBrief = await writeSessionOnboardingBrief(normalizedSessionId, {
         targetPath,
         onboarding: acceptedOnboarding,
@@ -3522,6 +3459,17 @@ export function registerSessionCommand(program) {
         agentCount: Number.isFinite(agentCount) ? agentCount : 0,
         lastActivityAt: lastActivityIso || null,
         agentJoinRelayed,
+        onboardingBriefing: localBriefingPayload
+          ? {
+              forAgent: localBriefingPayload.forAgent || joined.agentId,
+              message: localBriefingPayload.message || "",
+              recap: localBriefingPayload.recap || "",
+              rules: localBriefingPayload.rules || null,
+              generatedAt: localBriefingPayload.generatedAt || null,
+              delivery: "joining_process",
+              persisted: false,
+            }
+          : null,
         invitationAccepted: Boolean(invitationAcceptResult?.ok || invitationAccept),
         invitationAccept: invitationAccept
           ? {
@@ -3559,6 +3507,9 @@ export function registerSessionCommand(program) {
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
       if (payload.onboardingGuide?.markdownPath) {
         console.log(pc.gray(`onboarding=${payload.onboardingGuide.markdownPath}`));
+      }
+      if (payload.onboardingBriefing?.recap) {
+        console.log(payload.onboardingBriefing.recap);
       }
     });
 
@@ -4083,10 +4034,23 @@ export function registerSessionCommand(program) {
     if (!result.ok || !result.action) {
       throw new Error(`Session action failed (${result.reason || "unknown"}).`);
     }
-    const actionEvent = buildSessionActionEvent(normalizedSessionId, result.action);
-    const localAppend = await appendActionEventIfMissing(normalizedSessionId, actionEvent, {
-      targetPath,
-    });
+    const isReadCursorProjection = normalizedActionType === "view";
+    const actionEvent = isReadCursorProjection
+      ? null
+      : buildSessionActionEvent(normalizedSessionId, result.action);
+    const localAppend = isReadCursorProjection
+      ? { appended: false, reason: "read_cursor_projection", event: null }
+      : await appendActionEventIfMissing(normalizedSessionId, actionEvent, {
+          targetPath,
+        });
+    const readCursorProjection = isReadCursorProjection
+      ? {
+          updated: Boolean(result.updated),
+          lastReadSequenceId:
+            Number(result.lastReadSequenceId || result.action.targetSequenceId || 0) || null,
+          targetCursor: targetCursor || null,
+        }
+      : null;
     const payload = {
       command: commandName,
       targetPath,
@@ -4099,9 +4063,20 @@ export function registerSessionCommand(program) {
         appended: Boolean(localAppend.appended),
         reason: localAppend.reason || "",
       },
+      ...(readCursorProjection ? { readCursorProjection } : {}),
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    if (readCursorProjection) {
+      const targetLabel = readCursorProjection.lastReadSequenceId
+        ? `#${readCursorProjection.lastReadSequenceId}`
+        : readCursorProjection.targetCursor || "target";
+      const status = readCursorProjection.updated ? "Advanced" : "Confirmed";
+      console.log(
+        pc.green(`${status} read cursor through ${targetLabel}; no transcript event appended.`),
+      );
       return payload;
     }
     if (localAppend.event || actionEvent) {
@@ -4320,15 +4295,17 @@ export function registerSessionCommand(program) {
       if (verb === "lock") {
         const result = await lockFile(normalizedSessionId, identity.agentId, file, {
           intent,
+          ttlSeconds: options.ttl,
           targetPath,
-          awaitRemoteSync: true,
         });
         const record = {
           file: result.file || file,
           locked: Boolean(result.locked),
           reason: result.reason || (result.locked ? "locked" : "held_by_other_agent"),
           heldBy: result.heldBy || null,
+          intent: result.lock?.intent || result.lease?.intent || null,
           since: result.since || null,
+          expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
         };
         results.push(record);
         if (result.locked) {
@@ -4342,7 +4319,6 @@ export function registerSessionCommand(program) {
       const result = await unlockFile(normalizedSessionId, identity.agentId, file, {
         reason: intent || "manual_release",
         targetPath,
-        awaitRemoteSync: true,
       });
       const record = {
         file: result.file || file,
@@ -4350,6 +4326,7 @@ export function registerSessionCommand(program) {
         reason: result.reason || (result.unlocked ? "unlocked" : "not_locked"),
         heldBy: result.heldBy || null,
         since: result.since || null,
+        expiresAt: result.lock?.expiresAt || result.lease?.expiresAt || null,
       };
       results.push(record);
       if (result.unlocked) {
@@ -4361,12 +4338,6 @@ export function registerSessionCommand(program) {
       }
     }
 
-    if (failed.length > 0) {
-      const summary = failed
-        .map((item) => `${item.file}${item.heldBy ? ` held by ${item.heldBy}` : ""}`)
-        .join(", ");
-      throw new Error(`session ${verb} failed for ${summary}`);
-    }
     const payload = {
       command: `session ${verb}`,
       sessionId: normalizedSessionId,
@@ -4374,16 +4345,38 @@ export function registerSessionCommand(program) {
       files: processed,
       results,
       skipped,
+      failed,
     };
     if (shouldEmitJson(options, command)) {
       console.log(JSON.stringify(payload, null, 2));
+      if (failed.length > 0) {
+        process.exitCode = 2;
+      }
       return payload;
     }
-    const action = verb === "lock" ? "Requested lock on" : "Released";
+    if (failed.length > 0) {
+      for (const item of failed) {
+        const details = [
+          item.heldBy ? `held by ${item.heldBy}` : "",
+          item.intent ? `intent: ${item.intent}` : "",
+          item.expiresAt ? `expires ${item.expiresAt}` : "",
+        ].filter(Boolean);
+        console.error(
+          pc.red(
+            `Blocked ${item.file}: ${item.reason}${details.length > 0 ? ` (${details.join(", ")})` : ""}`,
+          ),
+        );
+      }
+      process.exitCode = 2;
+      return payload;
+    }
+    const action = verb === "lock" ? "Acquired lease for" : "Released";
     console.log(pc.green(`${action} ${processed.length} file(s) as ${identity.agentId}: ${processed.join(", ")}`));
     if (verb === "lock") {
       console.log(
-        pc.gray("Senti enforces fail-closed; locks auto-release on TTL. Release with `sl session unlock`."),
+        pc.gray(
+          "The SentinelLayer API is authoritative; leases expire by TTL and can be released with `sl session unlock`.",
+        ),
       );
     }
     return payload;
@@ -4391,8 +4384,9 @@ export function registerSessionCommand(program) {
 
   session
     .command("lock <sessionId> <files...>")
-    .description("Claim exclusive file locks via Senti (fail-closed, TTL auto-release)")
+    .description("Claim exclusive API-backed file leases (fail-closed, TTL expiry)")
     .option("--intent <text>", "Why you're locking these files (shown to peers)")
+    .option("--ttl <seconds>", "Lease TTL in seconds (15-3600)", "300")
     .option("--agent <id>", "Agent id claiming the lock (defaults to the joined session agent)")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
@@ -4402,7 +4396,7 @@ export function registerSessionCommand(program) {
 
   session
     .command("unlock <sessionId> <files...>")
-    .description("Release file locks you hold (Senti only lets the holder release)")
+    .description("Release API-backed file leases you hold")
     .option("--intent <text>", "Optional note on the release")
     .option("--agent <id>", "Agent id releasing the lock (defaults to the joined session agent)")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -4412,8 +4406,263 @@ export function registerSessionCommand(program) {
     });
 
   session
+    .command("renew <sessionId> <files...>")
+    .description("Renew holder-bound file leases without writing session events")
+    .option("--ttl <seconds>", "Renewed lease TTL in seconds (15-3600)", "300")
+    .option("--agent <id>", "Agent id renewing the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const fileList = (Array.isArray(files) ? files : [files])
+        .map((file) => normalizeString(file))
+        .filter(Boolean);
+      if (fileList.length === 0) {
+        throw new Error("session renew requires at least one file path.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
+      const identity = await resolveMessageActionIdentity({
+        sessionId: normalizedSessionId,
+        optionAgent: options.agent,
+        targetPath,
+        env: process.env,
+      });
+      if (shouldBlockImplicitCliUserSessionSay(identity)) {
+        throw new Error(
+          identity.identityWarning ||
+            "session renew requires an agent identity; pass --agent <id>.",
+        );
+      }
+      const results = [];
+      for (const file of fileList) {
+        results.push(
+          await renewFileLease(normalizedSessionId, identity.agentId, file, {
+            ttlSeconds: options.ttl,
+            targetPath,
+          }),
+        );
+      }
+      const payload = {
+        command: "session renew",
+        sessionId: normalizedSessionId,
+        agentId: identity.agentId,
+        allowed: results.every((result) => result.renewed),
+        results,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (payload.allowed) {
+        console.log(
+          pc.green(`Renewed ${results.length} file lease(s) as ${identity.agentId}.`),
+        );
+      } else {
+        console.error(
+          pc.red("One or more file leases could not be renewed; edit access is not assured."),
+        );
+      }
+      if (!payload.allowed) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
+    .command("guard <sessionId> <files...>")
+    .description("Fail-closed authoritative preflight for file edits")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, files, options, command) => {
+      const normalizedSessionId = normalizeString(sessionId);
+      if (!normalizedSessionId) {
+        throw new Error("session id is required.");
+      }
+      const fileList = (Array.isArray(files) ? files : [files])
+        .map((file) => normalizeString(file))
+        .filter(Boolean);
+      if (fileList.length === 0) {
+        throw new Error("session guard requires at least one file path.");
+      }
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const requestedAgentId = normalizeString(options.agent).toLowerCase();
+      let result;
+      try {
+        result = await guardFileLeases(
+          normalizedSessionId,
+          requestedAgentId,
+          fileList,
+          { targetPath },
+        );
+      } catch (error) {
+        const message = safeFileLeaseErrorMessage(error);
+        result = {
+          ok: false,
+          allowed: false,
+          authoritative: false,
+          sessionId: normalizedSessionId,
+          holderId: requestedAgentId || null,
+          checkedAt: new Date().toISOString(),
+          validUntil: null,
+          files: fileList,
+          guarded: [],
+          denials: fileList.map((file) => ({
+            path: file,
+            reason: "guard_failed",
+          })),
+          error: {
+            code: normalizeString(error?.code) || "FILE_LEASE_GUARD_FAILED",
+            message,
+          },
+        };
+      }
+      const payload = {
+        command: "session guard",
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.allowed) {
+        console.log(
+          pc.green(`File-lease guard allowed ${fileList.length} edit target(s).`),
+        );
+      } else {
+        if (result.error?.message) {
+          console.error(pc.red(`Authoritative guard failed: ${result.error.message}`));
+        }
+        if ((result.denials || []).length > 0) {
+          console.error(
+            pc.red(`Edit blocked: ${formatFileLeaseDenialSummary(result)}`),
+          );
+        }
+      }
+      if (!result.allowed) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
+    .command("guard-hook <sessionId>")
+    .description("Claude PreToolUse hook: read tool JSON on stdin and block denied edits")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace root", ".")
+    .action(async (sessionId, options) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await runFileLeaseGuardHook({
+        sessionId,
+        agentId: options.agent,
+        targetPath,
+      });
+      process.exitCode = result.exitCode;
+      return result;
+    });
+
+  session
+    .command("guard-install <sessionId>")
+    .description("Install Claude, terminal, and VS Code authoritative lease preflights")
+    .requiredOption("--agent <id>", "Agent id presenting holder capabilities")
+    .option("--path <path>", "Workspace root", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await installFileLeaseIntegrations(
+        sessionId,
+        options.agent,
+        { targetPath },
+      );
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify({
+          command: "session guard-install",
+          ...result,
+        }, null, 2));
+      } else {
+        console.log(
+          pc.green(
+            "Installed Claude PreToolUse blocking plus terminal and VS Code lease preflights.",
+          ),
+        );
+        console.log(
+          pc.yellow(
+            "VS Code native Save cannot be cancelled reliably; run the generated guard task before edits or make it a dependency of mutation tasks.",
+          ),
+        );
+      }
+      return result;
+    });
+
+  session
+    .command("guard-uninstall <sessionId>")
+    .description("Safely remove only fingerprinted SentinelLayer lease preflights before CLI rollback")
+    .requiredOption("--agent <id>", "Agent id that owns the managed integration")
+    .option("--path <path>", "Workspace root", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      let result;
+      try {
+        result = await uninstallFileLeaseIntegrations(
+          sessionId,
+          options.agent,
+          { targetPath },
+        );
+      } catch (error) {
+        result = {
+          ok: false,
+          uninstalled: false,
+          reason: "guard_uninstall_failed",
+          sessionId: normalizeString(sessionId),
+          agentId: normalizeString(options.agent),
+          activeLeases: [],
+          residuals: [],
+          error: {
+            code: normalizeString(error?.code) || "FILE_LEASE_GUARD_UNINSTALL_FAILED",
+            message: safeFileLeaseErrorMessage(error),
+          },
+        };
+      }
+      const payload = {
+        command: "session guard-uninstall",
+        ...result,
+      };
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(payload, null, 2));
+      } else if (result.ok) {
+        console.log(pc.green("Removed the managed SentinelLayer lease preflights."));
+      } else {
+        if (result.error?.message) {
+          console.error(pc.red(`Guard uninstall blocked: ${result.error.message}`));
+        }
+        for (const lease of result.activeLeases || []) {
+          const file = normalizeString(lease.file || lease.path) || "(unknown path)";
+          const holder = normalizeString(lease.agentId || lease.holderId) || "unknown";
+          const expiresAt = normalizeString(lease.expiresAt);
+          console.error(
+            pc.red(
+              `Guard uninstall blocked by ${file} (held by ${holder}${expiresAt ? `, expires ${expiresAt}` : ""}).`,
+            ),
+          );
+        }
+        for (const residual of result.residuals || []) {
+          console.error(
+            pc.red(
+              `Managed artifact retained: ${residual.path || residual.label || residual.artifact} (${residual.reason}).`,
+            ),
+          );
+        }
+      }
+      if (!result.ok) {
+        process.exitCode = 2;
+      }
+      return payload;
+    });
+
+  session
     .command("locks <sessionId>")
-    .description("List active file locks for the session (who holds what, and when they expire)")
+    .description("List authoritative active file leases for the session")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
@@ -4452,11 +4701,11 @@ export function registerSessionCommand(program) {
   session
     .command("listeners <sessionId>")
     .description(
-      "List who is actively listening to the session and at what poll cadence (active/idle/stale/stopped), derived from listener presence heartbeats. Mirrors the web roster.",
+      "List the authoritative ephemeral listener presence roster. Presence is unknown when the server capability or Redis is unavailable; transcript heartbeats are never scanned.",
     )
     .option("--path <path>", "Workspace path for the session", ".")
-    .option("--limit <n>", "Recent events to scan for heartbeats (default 200)", "200")
-    .option("--max-pages <n>", "Maximum older event pages to scan for heartbeats (default 5)", "5")
+    .option("--limit <n>", "Deprecated compatibility option; no event rows are scanned", "200")
+    .option("--max-pages <n>", "Deprecated compatibility option; no event rows are scanned", "5")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -4513,12 +4762,18 @@ export function registerSessionCommand(program) {
           };
         }
       }
-      const live = listeners.filter((row) => row.status === "active" || row.status === "idle").length;
+      const live = listeners.filter(
+        (row) => row.status === "present" || row.status === "active" || row.status === "idle",
+      ).length;
       const payload = {
         command: "session listeners",
         sessionId: normalizedSessionId,
         ok: Boolean(result.ok),
         reason: result.ok ? undefined : result.reason,
+        authoritative: Boolean(result.authoritative),
+        presenceStatus: result.presenceStatus || "degraded",
+        presenceEnabled: result.enabled ?? null,
+        retryAfterMs: result.retryAfterMs || null,
         count: listeners.length,
         liveCount: live,
         pageCount: Number(result.pageCount || 0),
@@ -4534,17 +4789,21 @@ export function registerSessionCommand(program) {
         return payload;
       }
       if (!result.ok) {
-        console.log(pc.yellow(`Could not read listeners (${result.reason}).`));
+        console.log(
+          pc.yellow(
+            `Listener presence is unknown (${result.reason}); durable heartbeat history was not scanned.`,
+          ),
+        );
         return payload;
       }
       if (listeners.length === 0) {
-        console.log(pc.gray("No listeners detected (no recent presence heartbeats)."));
+        console.log(pc.gray("No listeners are currently present."));
         return payload;
       }
       console.log(pc.bold(`Listeners (${live} live / ${listeners.length} seen)`));
       for (const row of listeners) {
         const line = formatListenerLine(row);
-        if (row.status === "active") console.log(pc.green(`  ${line}`));
+        if (row.status === "present" || row.status === "active") console.log(pc.green(`  ${line}`));
         else if (row.status === "idle") console.log(pc.cyan(`  ${line}`));
         else console.log(pc.gray(`  ${line}`));
       }
@@ -4564,7 +4823,7 @@ export function registerSessionCommand(program) {
   session
     .command("stop-listener <sessionId>")
     .description(
-      "Ask an agent's listener to stop (save energy). Posts a listener_stop directive the listener honors on its next poll, then exits cleanly. Targets one agent with --agent; omit it to stop every listener in the room.",
+      "Ask an agent's listener to stop through the ephemeral listener-control plane. Targets one agent with --agent; omit it to stop every listener in the room.",
     )
     .option("--agent <id>", "Agent whose listener to stop (omit to stop all listeners in the room)")
     .option("--path <path>", "Workspace path for the session", ".")
@@ -4577,27 +4836,21 @@ export function registerSessionCommand(program) {
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const targetAgent = normalizeString(options.agent);
       await ensureLocalSessionForRemoteCommand(normalizedSessionId, { targetPath });
-      const event = createAgentEvent({
-        event: "listener_stop",
-        agent: { id: "session-control", model: "control", persona: "Session Control" },
-        sessionId: normalizedSessionId,
-        payload: {
-          // targetAgentId routes the directive to that agent's listener (an
-          // event recipient); omitting it broadcasts to every listener.
-          ...(targetAgent ? { targetAgentId: targetAgent } : { broadcast: true }),
-          reason: "operator_stop",
-        },
+      const listenerControl = await requestSessionListenerStop(normalizedSessionId, {
+        targetPath,
+        targetAgentId: targetAgent,
       });
-      const remoteSync = await syncSessionEventToApi(normalizedSessionId, event, { targetPath }).catch(
-        (error) => ({ synced: false, reason: normalizeString(error?.message) || "sync_failed" }),
-      );
-      await appendToStream(normalizedSessionId, event, { targetPath, syncRemote: false }).catch(() => {});
+      if (!listenerControl?.ok || !listenerControl?.recorded) {
+        throw new Error(
+          `Listener stop request failed (${normalizeString(listenerControl?.reason) || "not_recorded"}).`,
+        );
+      }
       const payload = {
         command: "session stop-listener",
         sessionId: normalizedSessionId,
         targetAgent: targetAgent || null,
         scope: targetAgent ? "agent" : "all",
-        remoteSync: remoteSync || undefined,
+        listenerControl,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -4625,8 +4878,8 @@ export function registerSessionCommand(program) {
     .option("--interval <seconds>", "Idle polling interval in seconds (default 60)", "60")
     .option(
       "--active-interval <seconds>",
-      "Polling interval after recent human activity (default 5)",
-      "5",
+      "Polling interval after recent human activity (default 60)",
+      "60",
     )
     .option(
       "--active-window <seconds>",
@@ -4635,17 +4888,17 @@ export function registerSessionCommand(program) {
     )
     .option(
       "--presence-interval <seconds>",
-      "Minimum seconds between remote listener heartbeat events (default 60)",
+      "Minimum seconds between ephemeral presence renewals (default 60)",
       "60",
     )
     .option(
       "--presence-keepalive <seconds>",
-      "Maximum seconds between unchanged remote listener heartbeat events (default 180)",
+      "Maximum seconds between unchanged ephemeral presence renewals (default 180)",
       "180",
     )
     .option(
       "--no-presence",
-      "Do not publish durable listener lifecycle/heartbeat events",
+      "Do not renew ephemeral remote presence",
     )
     .option(
       "--model <model>",
@@ -4654,7 +4907,7 @@ export function registerSessionCommand(program) {
     )
     .option("--display-name <name>", "Human-readable listener name for presence")
     .option("--emit <format>", "Output format: ndjson or text", "ndjson")
-    .option("--transport <mode>", "Listen transport: auto, stream, or poll (default auto)", "auto")
+    .option("--transport <mode>", "Listen transport: poll, auto, or stream (default poll)", "poll")
     .option("--limit <n>", "Maximum events to request per poll (default 200)", "200")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--since <cursor>", "Override the persisted listen cursor")
@@ -4706,7 +4959,7 @@ export function registerSessionCommand(program) {
       const activeIntervalSeconds = parsePositiveInteger(
         options.activeInterval,
         "active-interval",
-        5,
+        60,
       );
       const activeWindowSeconds = parsePositiveInteger(options.activeWindow, "active-window", 300);
       const presenceIntervalSeconds = parsePositiveInteger(
@@ -4782,7 +5035,7 @@ export function registerSessionCommand(program) {
           "--wake-host requires a valid host (claude|codex) and --resume-session <host-session-id>.",
         );
       }
-      const requestedTransport = normalizeString(options.transport).toLowerCase() || "auto";
+      const requestedTransport = normalizeString(options.transport).toLowerCase() || "poll";
       if (!["auto", "stream", "poll"].includes(requestedTransport)) {
         throw new Error("--transport must be one of: auto, stream, poll.");
       }
@@ -4866,14 +5119,15 @@ export function registerSessionCommand(program) {
       const ac = new AbortController();
       const onSigint = () => ac.abort();
       process.on("SIGINT", onSigint);
-      const durablePresenceEnabled = options.presence !== false;
-      const publishPresence = durablePresenceEnabled && canPublishListenerPresence(agentId);
+      const remotePresenceEnabled = options.presence !== false;
+      const publishPresence = remotePresenceEnabled && canPublishListenerPresence(agentId);
       const presenceIntervalMs = Math.max(1, presenceIntervalSeconds) * 1000;
       const effectivePresenceKeepaliveSeconds =
         Math.max(presenceIntervalSeconds, presenceKeepaliveSeconds, intervalSeconds, 1);
       const presenceKeepaliveMs = effectivePresenceKeepaliveSeconds * 1000;
       let lastPresenceHeartbeatMs = 0;
       let lastPresenceHeartbeatFingerprint = "";
+      let nextPresenceAttemptMs = 0;
 
       // Periodic in-session success reminders (ack, claim work, reply
       // in-thread). Long-running interactive listeners only — skipped under
@@ -4921,10 +5175,10 @@ export function registerSessionCommand(program) {
             `Listening to session ${normalizedSessionId} as ${agentId}; transport=${listenTransport} idle=${intervalSeconds}s active=${activeIntervalSeconds}s/${activeWindowSeconds}s. Press Ctrl+C to stop.`,
           ),
         );
-        if (!durablePresenceEnabled) {
+        if (!remotePresenceEnabled) {
           console.log(
             pc.gray(
-              "Remote listener presence is disabled; no durable lifecycle events will be written.",
+              "Remote listener presence is disabled; no liveness writes will be made.",
             ),
           );
         } else if (!publishPresence) {
@@ -4975,21 +5229,17 @@ export function registerSessionCommand(program) {
               console.log(pc.yellow(formatListenerCatchupNotice(catchup)));
             }
           },
-          onEvent: async (event) => {
-            // Cut-listener: a `listener_stop` directive addressed to this
-            // agent (from the web "stop listening" control or
-            // `sl session stop-listener`) cleanly exits this listener to save
-            // energy. Untargeted (no targetAgentId) stops every listener.
-            if (normalizeString(event?.event) === "listener_stop") {
-              const target = normalizeString(event?.payload?.targetAgentId);
-              if (!target || target === agentId) {
-                if (emitFormat !== "ndjson") {
-                  console.log(pc.yellow(`Listener stop requested for ${agentId}; exiting.`));
-                }
-                ac.abort();
-                return;
-              }
+          onControl: async (control) => {
+            const controlType = normalizeString(
+              control?.type || control?.action || control?.event,
+            ).toLowerCase();
+            if (!["stop", "listener_stop"].includes(controlType)) return;
+            if (emitFormat !== "ndjson") {
+              console.log(pc.yellow(`Listener stop requested for ${agentId}; exiting.`));
             }
+            ac.abort();
+          },
+          onEvent: async (event) => {
             if (emitFormat === "ndjson") {
               console.log(JSON.stringify(event));
             } else {
@@ -5055,13 +5305,17 @@ export function registerSessionCommand(program) {
             }
             if (!publishPresence) return;
             const lifecycleType = normalizeString(lifecycle?.type);
+            const presenceAttemptMs = Date.now();
+            if (lifecycleType !== "stopped" && presenceAttemptMs < nextPresenceAttemptMs) {
+              return;
+            }
             const publishLifecycle = {
               ...lifecycle,
               presenceIntervalSeconds,
               presenceKeepaliveSeconds: effectivePresenceKeepaliveSeconds,
             };
             if (lifecycleType === "heartbeat") {
-              const nowMs = Date.now();
+              const nowMs = presenceAttemptMs;
               const heartbeatDecision = shouldPublishListenerPresenceHeartbeat({
                 lifecycle: publishLifecycle,
                 nowMs,
@@ -5076,7 +5330,7 @@ export function registerSessionCommand(program) {
               lastPresenceHeartbeatFingerprint = heartbeatDecision.fingerprint;
               lastPresenceHeartbeatMs = nowMs;
             }
-            await publishListenerPresenceEvent({
+            const presenceResult = await publishListenerPresenceEvent({
               sessionId: normalizedSessionId,
               targetPath,
               agentId,
@@ -5087,6 +5341,15 @@ export function registerSessionCommand(program) {
               listenerId,
               lifecycle: publishLifecycle,
             });
+            if (presenceResult?.ok) {
+              nextPresenceAttemptMs = 0;
+              return;
+            }
+            const retryAfterMs = Math.max(
+              presenceIntervalMs,
+              Number(presenceResult?.retryAfterMs) || 0,
+            );
+            nextPresenceAttemptMs = presenceAttemptMs + retryAfterMs;
           },
         });
       } finally {
@@ -5566,6 +5829,8 @@ export function registerSessionCommand(program) {
       let hydration = null;
       let remoteTail = null;
       let remoteAppend = null;
+      let listenerPresence = null;
+      let readCursor = null;
       if (options.remote) {
         hydration = await hydrateSessionFromRemote({
           sessionId: normalizedSessionId,
@@ -5593,12 +5858,27 @@ export function registerSessionCommand(program) {
           remoteAppend = await appendMissingRemoteEvents(normalizedSessionId, remoteTail.events, {
             targetPath,
           });
+          readCursor = recordSessionReadCursor(normalizedSessionId, remoteTail.events, {
+            targetPath,
+            agentId,
+            enabled: true,
+          });
         }
+        listenerPresence = await fetchSessionListeners(normalizedSessionId, {
+          targetPath,
+        }).catch((error) => ({
+          ok: false,
+          authoritative: false,
+          presenceStatus: "degraded",
+          reason: normalizeString(error?.message) || "presence_read_failed",
+          listeners: [],
+        }));
       }
       const current = await buildSessionRecap(normalizedSessionId, {
         forAgentId: agentId,
         maxEvents,
         targetPath,
+        listenerPresence,
       });
       const payload = {
         command: "session recap now",
@@ -5623,6 +5903,8 @@ export function registerSessionCommand(program) {
                   }
                 : null,
               appendedTail: remoteAppend,
+              listenerPresence,
+              readCursor,
             }
           : null,
       };
@@ -5842,11 +6124,10 @@ export function registerSessionCommand(program) {
           ? filterSessionActionEventsForTranscriptWindow(visibleActionEvents, transcriptEvents)
           : visibleActionEvents;
         const events = mergeSessionActionEvents(transcriptEvents, actionEvents).slice(-tail);
-        const autoView = recordSessionReadViews(normalizedSessionId, events, {
+        const autoView = recordSessionReadCursor(normalizedSessionId, events, {
           targetPath,
           agentId: readAgentId,
           enabled: Boolean(options.remote && options.view !== false),
-          maxTargets: process.env.SENTINELAYER_SESSION_READ_VIEW_MAX_TARGETS || 50,
           timeoutMs: process.env.SENTINELAYER_SESSION_READ_VIEW_TIMEOUT_MS || SESSION_READ_AUTO_VIEW_TIMEOUT_MS,
         });
         const remoteVerified = Boolean(
@@ -6483,7 +6764,14 @@ export function registerSessionCommand(program) {
         throw new Error(`Session '${normalizedSessionId}' was not found.`);
       }
 
-      const [agents, runtimeRuns, leases, fileLocks, activeTasks, recentEvents] = await Promise.all([
+      const [
+        agents,
+        runtimeRuns,
+        leases,
+        fileLeaseStatus,
+        activeTasks,
+        recentEvents,
+      ] = await Promise.all([
         listAgents(normalizedSessionId, {
           targetPath,
           includeInactive: false,
@@ -6502,10 +6790,22 @@ export function registerSessionCommand(program) {
           includeExpired: true,
           limit: 100,
         }),
-        listFileLocks(normalizedSessionId, {
-          targetPath,
-          emitExpiredEvents: false,
-        }),
+        listFileLocks(normalizedSessionId, { targetPath })
+          .then((activeFileLocks) => ({
+            ok: true,
+            authoritative: true,
+            activeFileLocks,
+            error: null,
+          }))
+          .catch((error) => ({
+            ok: false,
+            authoritative: false,
+            activeFileLocks: [],
+            error: {
+              code: normalizeString(error?.code) || "FILE_LEASE_LIST_FAILED",
+              message: safeFileLeaseErrorMessage(error),
+            },
+          })),
         listSessionTasks(normalizedSessionId, {
           targetPath,
           statuses: ["PENDING", "ACCEPTED"],
@@ -6516,42 +6816,51 @@ export function registerSessionCommand(program) {
           tail: 10,
         }),
       ]);
+      const fileLocks = fileLeaseStatus.activeFileLocks;
 
       const staleAgents = detectStaleAgents(agents, {});
       const staleAgentIds = new Set(staleAgents.map((agent) => normalizeString(agent.agentId)));
       const activeAgents = agents.filter((agent) => !staleAgentIds.has(normalizeString(agent.agentId)));
-      let listenerRows = summarizeListeners(recentEvents);
+      const materialRecentEvents = filterSessionMaterialEvents(recentEvents);
+      const hiddenControlEventCount = recentEvents.length - materialRecentEvents.length;
+      let listenerRows = [];
       let listenerPresence = {
-        source: "local_recent_events",
-        ok: true,
-        count: listenerRows.length,
-        liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
-        listeners: listenerRows,
+        source: "remote_presence",
+        ok: false,
+        authoritative: false,
+        presenceStatus: "degraded",
+        reason: "presence_unknown",
+        count: 0,
+        liveCount: 0,
+        listeners: [],
       };
       try {
         const remoteListeners = await fetchSessionListeners(normalizedSessionId, {
           targetPath,
-          limit: 200,
-          maxPages: 5,
         });
-        if (remoteListeners?.ok && Array.isArray(remoteListeners.listeners) && remoteListeners.listeners.length > 0) {
+        if (remoteListeners?.ok && Array.isArray(remoteListeners.listeners)) {
           listenerRows = remoteListeners.listeners;
           listenerPresence = {
-            source: "remote_events",
+            source: "remote_presence",
             ok: true,
+            authoritative: true,
+            presenceStatus: remoteListeners.presenceStatus || "ok",
             count: listenerRows.length,
-            liveCount: listenerRows.filter((row) => row.status === "active" || row.status === "idle").length,
-            pageCount: Number(remoteListeners.pageCount || 0),
-            scannedEventCount: Number(remoteListeners.scannedEventCount || 0),
-            listenerEventCount: Number(remoteListeners.listenerEventCount || 0),
-            partial: Boolean(remoteListeners.partial),
+            liveCount: listenerRows.filter(
+              (row) => row.status === "present" || row.status === "active" || row.status === "idle",
+            ).length,
             listeners: listenerRows,
           };
         } else if (remoteListeners && remoteListeners.ok === false) {
-          listenerPresence.remoteReason = normalizeString(remoteListeners.reason) || "remote_unavailable";
+          listenerPresence = {
+            ...listenerPresence,
+            presenceStatus: remoteListeners.presenceStatus || "degraded",
+            reason: normalizeString(remoteListeners.reason) || "remote_unavailable",
+            retryAfterMs: remoteListeners.retryAfterMs || null,
+          };
         }
       } catch (error) {
-        listenerPresence.remoteReason = normalizeString(error?.message) || "remote_unavailable";
+        listenerPresence.reason = normalizeString(error?.message) || "remote_unavailable";
       }
       const liveListenerCount = listenerPresence.liveCount;
       const payload = {
@@ -6566,8 +6875,14 @@ export function registerSessionCommand(program) {
         runtimeRuns,
         activeLeases: leases.assignments,
         activeFileLocks: fileLocks,
+        fileLeaseAuthority: {
+          ok: fileLeaseStatus.ok,
+          authoritative: fileLeaseStatus.authoritative,
+          error: fileLeaseStatus.error,
+        },
         activeTasks: activeTasks.tasks,
-        recentEvents,
+        recentEvents: materialRecentEvents,
+        hiddenControlEventCount,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -6575,12 +6890,15 @@ export function registerSessionCommand(program) {
       }
 
       console.log(pc.bold(`Session ${normalizedSessionId}`));
+      const listenerText = listenerPresence.authoritative
+        ? `${liveListenerCount}/${listenerRows.length}`
+        : `unknown(${listenerPresence.presenceStatus || "degraded"})`;
       console.log(
         pc.gray(
-          `status=${sessionPayload.status} active=${activeAgents.length} registered=${agents.length} stale=${staleAgents.length} listeners=${liveListenerCount}/${listenerRows.length} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
+          `status=${sessionPayload.status} active=${activeAgents.length} registered=${agents.length} stale=${staleAgents.length} listeners=${listenerText} runs=${runtimeRuns.length} leases=${leases.assignments.length} locks=${fileLocks.length} tasks=${activeTasks.tasks.length}`
         )
       );
-      for (const event of recentEvents) {
+      for (const event of materialRecentEvents) {
         console.log(formatEventLine(event));
       }
     });

@@ -231,6 +231,10 @@ async function pollSessionEventPages({
     const pageEvents = Array.isArray(result.events) ? result.events : [];
     const nextCursor =
       typeof result.cursor === "string" && result.cursor.trim() ? result.cursor.trim() : cursor;
+    const scanExhausted =
+      typeof (result.scanExhausted ?? result.scan_exhausted) === "boolean"
+        ? (result.scanExhausted ?? result.scan_exhausted)
+        : null;
     const progressed = nextCursor && cursorAdvances(nextCursor, cursor);
     if (nextCursor && cursor && !progressed && pageEvents.length === 0) {
       return {
@@ -250,7 +254,7 @@ async function pollSessionEventPages({
     events.push(...pageEvents);
     cursor = nextCursor || cursor;
 
-    if (pageEvents.length < normalizedLimit) {
+    if (pageEvents.length < normalizedLimit && scanExhausted !== false) {
       return {
         ok: true,
         reason: "",

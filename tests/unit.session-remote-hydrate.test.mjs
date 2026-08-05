@@ -446,6 +446,57 @@ test("hydrateSessionFromRemote: walks durable event pages before rendering tail"
   }
 });
 
+test("hydrateSessionFromRemote: crosses an empty non-exhausted semantic page", async () => {
+  const root = await makeTempRepo();
+  try {
+    const eventPollCalls = [];
+    const appended = [];
+    const result = await hydrateSessionFromRemote({
+      sessionId: "hidden-control-range",
+      targetPath: root,
+      eventPageLimit: 2,
+      maxEventPages: 5,
+      _poll: async () => ({ ok: true, events: [], cursor: null, dropped: [] }),
+      _pollEvents: async (_sessionId, options) => {
+        eventPollCalls.push(options.since || null);
+        if (!options.since) {
+          return {
+            ok: true,
+            events: [],
+            cursor: "scan-9",
+            scannedThroughSequence: 9,
+            scanExhausted: false,
+          };
+        }
+        assert.equal(options.since, "scan-9");
+        return {
+          ok: true,
+          events: [
+            { event: "session_message", cursor: "scan-10", payload: { message: "semantic" } },
+          ],
+          cursor: "scan-10",
+          scannedThroughSequence: 10,
+          scanExhausted: true,
+        };
+      },
+      _append: async (_sessionId, event) => {
+        appended.push(event);
+        return event;
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(eventPollCalls, [null, "scan-9"]);
+    assert.equal(result.eventsCursor, "scan-10");
+    assert.equal(result.eventsPageCount, 2);
+    assert.equal(result.eventsBackfillComplete, true);
+    assert.equal(result.eventsBackfillTruncated, false);
+    assert.deepEqual(appended.map((event) => event.payload.message), ["semantic"]);
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("hydrateSessionFromRemote: bounded page option truncates long durable backfill", async () => {
   const root = await makeTempRepo();
   try {

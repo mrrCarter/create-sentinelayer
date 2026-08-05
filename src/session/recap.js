@@ -5,9 +5,8 @@ import process from "node:process";
 
 import { createAgentEvent } from "../events/schema.js";
 import { dedupeSessionEvents } from "./event-identity.js";
-import { summarizeListeners } from "./listeners.js";
 import { resolveSessionPaths } from "./paths.js";
-import { appendToStream, readStream } from "./stream.js";
+import { readStream } from "./stream.js";
 import { getSession } from "./store.js";
 import { aggregateSessionUsage } from "./usage.js";
 
@@ -1107,13 +1106,13 @@ const AGENT_JOIN_RULES = [
   "",
   "**Reading the room** — When you join, the recap above summarizes activity since the last quiet stretch. To read further back, run `sl session read --remote --tail 50 --json` (bump `--tail` if you need more). Do this BEFORE responding so you don't repeat questions or miss a lock-and-claim someone else already opened.",
   "",
-  "**Polling cadence** — Poll new events at most once per 60s (`sl session listen` or `sl session read --remote --tail N`). `session listen` is only a delivery cursor, not a grounding command; join or recap before acting. More frequent than that wastes budget and can hit per-user rate limits. Less frequent than ~5min and peers may think you went idle.",
+  "**Polling cadence** — Poll new events at most once per 60s (`sl session listen --transport poll` or `sl session read --remote --tail N`). The listener adds bounded jitter, backs off exponentially after transient failures, and treats `429 Retry-After` as a hard floor. `session listen` is only a delivery cursor, not a grounding command; join or recap before acting.",
   "",
-  "**Session grounding** — Long-lived rooms should have one visible daemon owner running `sl session daemon --session <id> --recap-interval 300 --checkpoint-interval 60`. If no durable `session_recap` or `session_checkpoint` is appearing, run `sl session recap now <id> --remote --agent <your-name> --json` before posting a long plan.",
+  "**Session grounding** — Use `sl session recap now <id> --remote --agent <your-name> --json` when you need a current grounding summary. Routine room health is a derived status projection and never a chat message; explicit `session_checkpoint` artifacts remain durable.",
   "",
   "**Writing back** — You can use **markdown**: bold, italic, lists, fenced code, and `inline code`. The web dashboard renders it. Plain text also works. Keep posts terse and technical — link to the work, don't recap it.",
   "",
-  "**Actions and threading** — Use message actions instead of top-level ACK chatter: `sl session react <id> ack --target-sequence <n>` only when an explicit ACK matters, and `sl session action <id> working_on --target-sequence <n>` for ownership. Read receipts are automatic when you run `sl session read <id> --remote --agent <your-name>`; reserve `sl session view <id> <sequence>` for repair/backfill. Reply to a specific message with `sl session reply <id> <sequence> \"<message>\"`, `sl session comment <id> <sequence> \"<message>\"`, or `sl session say <id> \"<message>\" --reply-to <sequence>`; only start a new top-level post for a new topic. Run `sl session actions` for the full list.",
+  "**Actions and threading** — Use message actions instead of top-level ACK chatter: `sl session react <id> ack --target-sequence <n>` only when an explicit ACK matters, and `sl session action <id> working_on --target-sequence <n>` for ownership. `sl session read <id> --remote --agent <your-name>` advances one monotonic per-agent read cursor, never one durable view event per message; `sl session view <id> <sequence>` repairs that same cursor. Reply to a specific message with `sl session reply <id> <sequence> \"<message>\"`, `sl session comment <id> <sequence> \"<message>\"`, or `sl session say <id> \"<message>\" --reply-to <sequence>`; only start a new top-level post for a new topic. Run `sl session actions` for the full list.",
   "",
   "**Search before asking** — Use `sl session search <id> \"<topic>\" --limit 10` to recover old context before asking another agent to re-paste or summarize what is already in the transcript.",
   "",
@@ -1166,6 +1165,7 @@ export async function buildSessionRecap(
     maxEvents = DEFAULT_RECAP_MAX_EVENTS,
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
+    listenerPresence = null,
   } = {}
 ) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -1207,11 +1207,12 @@ export async function buildSessionRecap(
     return !normalizedForAgentId || agentId.toLowerCase() !== normalizedForAgentId.toLowerCase();
   });
 
-  const listenerRows = summarizeListeners(sortedEvents, {
-    nowMs: toEpoch(normalizedNow, normalizedNow),
-  });
+  const listenerRows =
+    listenerPresence?.authoritative && Array.isArray(listenerPresence?.listeners)
+      ? listenerPresence.listeners
+      : [];
   const liveListenerRows = listenerRows.filter(
-    (row) => row.status === "active" || row.status === "idle",
+    (row) => row.status === "present" || row.status === "active" || row.status === "idle",
   );
   const liveListenerIds = liveListenerRows.map((row) => row.agentId).filter(Boolean);
 
@@ -1282,6 +1283,8 @@ export async function buildSessionRecap(
       liveListenerCount: liveListenerIds.length,
       listenerCount: listenerRows.length,
       listenerStatus: listenerRows,
+      listenerPresenceAuthoritative: Boolean(listenerPresence?.authoritative),
+      listenerPresenceStatus: normalizeString(listenerPresence?.presenceStatus) || "unknown",
       totalFindings: findingSummary,
       totalFindingsCount,
       activeLocks,
@@ -1302,7 +1305,7 @@ export async function buildSessionRecap(
   };
 }
 
-export async function emitContextBriefing(
+export async function buildContextBriefing(
   sessionId,
   {
     forAgentId = "",
@@ -1310,7 +1313,6 @@ export async function emitContextBriefing(
     targetPath = process.cwd(),
     nowIso = new Date().toISOString(),
     includeJoinRules = true,
-    awaitRemoteSync = false,
   } = {}
 ) {
   const recap = await buildSessionRecap(sessionId, {
@@ -1339,14 +1341,19 @@ export async function emitContextBriefing(
       summary: recap.summary,
     },
   });
-  const persisted = await appendToStream(sessionId, event, {
-    targetPath,
-    awaitRemoteSync,
-  });
   return {
     recap,
-    event: persisted,
+    event,
+    persisted: false,
+    delivery: "joining_process",
   };
+}
+
+// Backward-compatible name for callers that have not yet migrated. This
+// returns the briefing directly to the joining process; it never appends it to
+// the session stream.
+export async function emitContextBriefing(sessionId, options = {}) {
+  return buildContextBriefing(sessionId, options);
 }
 
 export async function shouldEmitRecap(
@@ -1533,28 +1540,27 @@ export function emitPeriodicRecap(
           summary: recap.summary,
         },
       });
-      const persisted = await appendToStream(state.sessionId, event, {
-        targetPath: state.targetPath,
-      });
       state.lastRecapAt = nowIso;
       rememberRecapSource(state, trigger.sourceEvent, nowIso);
-      state.lastRecapEvent = persisted;
+      state.lastRecapEvent = event;
       state.lastDecision = {
         emitted: true,
+        persisted: false,
+        delivery: "room_health_projection",
         mode: trigger.mode,
         reason: "",
-        eventId: persisted.eventId || null,
+        eventId: event.eventId || null,
         sourceEventCount: trigger.policy.sourceEventCount,
         policy: trigger.policy,
       };
 
       if (typeof onEmit === "function") {
-        await onEmit(persisted, recap);
+        await onEmit(event, recap);
       }
       if (trigger.stopAfterEmit) {
         stop("inactive");
       }
-      return persisted;
+      return event;
     } finally {
       state.inFlight = false;
     }

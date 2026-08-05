@@ -4,16 +4,14 @@ import path from "node:path";
 import process from "node:process";
 
 import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
-import { createAgentEvent } from "../events/schema.js";
 import { inferSessionAgentIdentity } from "./agent-identity.js";
 import { resolveSessionPaths } from "./paths.js";
-import { emitContextBriefing } from "./recap.js";
+import { buildContextBriefing } from "./recap.js";
 import {
   assignFriendlyName,
   buildSentiWelcome,
   shouldAutoRenameInRegistry,
 } from "./senti-naming.js";
-import { appendToStream } from "./stream.js";
 
 const AGENT_SNAPSHOT_SCHEMA_VERSION = "1.0.0";
 
@@ -177,28 +175,6 @@ async function writeAgentSnapshot(snapshotPath, snapshot) {
   }
 }
 
-async function emitAgentEvent(
-  sessionId,
-  event,
-  payload,
-  { targetPath = process.cwd(), awaitRemoteSync = false } = {}
-) {
-  const envelope = createAgentEvent({
-    event,
-    agent: {
-      id: payload.agentId,
-      model: payload.model,
-      displayName: payload.displayName,
-      provider: payload.provider,
-      role: payload.role,
-      clientKind: payload.clientKind,
-    },
-    sessionId,
-    payload,
-  });
-  await appendToStream(sessionId, envelope, { targetPath, awaitRemoteSync });
-}
-
 function buildAgentSnapshotPath(paths, agentId) {
   const normalizedAgentId = normalizeString(agentId);
   if (!normalizedAgentId) {
@@ -288,17 +264,15 @@ function _untrackLocalAgent(sessionId, agentId) {
   _localAgents.delete(_agentKey(sessionId, agentId));
 }
 
-async function _emitLeaveForAllLocalAgents(reason) {
+async function _leaveAllLocalAgents(reason) {
   const entries = [..._localAgents.values()];
   _localAgents.clear();
   for (const entry of entries) {
     try {
-      await emitAgentEvent(
-        entry.sessionId,
-        "agent_leave",
-        { agentId: entry.agentId, reason, model: "unknown", role: "participant" },
-        { targetPath: entry.targetPath },
-      );
+      await unregisterAgent(entry.sessionId, entry.agentId, {
+        reason,
+        targetPath: entry.targetPath,
+      });
     } catch {
       // Best-effort: a stuck filesystem or network shouldn't block exit.
     }
@@ -309,7 +283,7 @@ function _ensureExitHooksInstalled() {
   if (_exitHooksInstalled) return;
   _exitHooksInstalled = true;
   const onSignal = (signal) => {
-    void _emitLeaveForAllLocalAgents("manual").finally(() => {
+    void _leaveAllLocalAgents("manual").finally(() => {
       process.removeListener(signal, onSignal);
       process.kill(process.pid, signal);
     });
@@ -317,7 +291,7 @@ function _ensureExitHooksInstalled() {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   process.on("beforeExit", () => {
-    void _emitLeaveForAllLocalAgents("manual");
+    void _leaveAllLocalAgents("manual");
   });
 }
 
@@ -332,7 +306,6 @@ export async function registerAgent(
     role = "observer",
     targetPath = process.cwd(),
     trackProcessExit = true,
-    awaitRemoteSync = false,
   } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
@@ -426,46 +399,39 @@ export async function registerAgent(
   );
 
   await writeAgentSnapshot(snapshotPath, snapshot);
-  await emitAgentEvent(paths.sessionId, "agent_join", {
-    agentId: snapshot.agentId,
-    model: snapshot.model,
-    displayName: snapshot.displayName,
-    provider: snapshot.provider,
-    clientKind: snapshot.clientKind,
-    role: snapshot.role,
-    status: snapshot.status,
-  }, { targetPath, awaitRemoteSync });
   if (trackProcessExit) {
     _trackLocalAgent(paths.sessionId, snapshot.agentId, targetPath);
   }
 
+  let welcome = null;
   if (renamedFrom) {
-    const welcome = buildSentiWelcome({
+    welcome = buildSentiWelcome({
       agentId: snapshot.agentId,
       model: snapshot.model,
       role: snapshot.role,
       wasAnonymous: true,
       originalAgentId: renamedFrom,
     });
-    await emitAgentEvent(paths.sessionId, "agent_identified", {
-      ...welcome,
-      sessionId: paths.sessionId,
-    }, { targetPath });
   }
 
+  let contextBriefing = null;
   if (normalizeString(snapshot.agentId).toLowerCase() !== "senti") {
-    await emitContextBriefing(paths.sessionId, {
+    contextBriefing = await buildContextBriefing(paths.sessionId, {
       forAgentId: snapshot.agentId,
       targetPath,
-      awaitRemoteSync,
     }).catch(() => {});
   }
 
   return {
     ...snapshot,
     snapshotPath,
-    emittedJoinEvent: true,
-    emittedContextBriefing: normalizeString(snapshot.agentId).toLowerCase() !== "senti",
+    emittedJoinEvent: false,
+    emittedContextBriefing: false,
+    returnedContextBriefing: Boolean(contextBriefing),
+    onboarding: {
+      welcome,
+      contextBriefing,
+    },
     refreshedExistingAgent: false,
   };
 }
@@ -607,16 +573,9 @@ export async function unregisterAgent(
   );
 
   await writeAgentSnapshot(snapshotPath, snapshot);
-  await emitAgentEvent(paths.sessionId, "agent_leave", {
-    agentId: snapshot.agentId,
-    reason: normalizedReason,
-    role: snapshot.role,
-    model: snapshot.model,
-    displayName: snapshot.displayName,
-    provider: snapshot.provider,
-    clientKind: snapshot.clientKind,
-  }, { targetPath });
-  // Already left explicitly — don't double-emit on process exit.
+  // Presence and roster state are projections, not transcript events. The
+  // snapshot is authoritative for this workspace; remote listener presence is
+  // renewed through the TTL endpoint.
   _untrackLocalAgent(paths.sessionId, snapshot.agentId);
 
   return {

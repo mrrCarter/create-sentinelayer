@@ -17,8 +17,9 @@
  * model download, no network.
  */
 
-import { buildRecallIndex } from "./index-build.js";
+import { buildRecallIndex } from "./index-core.js";
 import { createEmbedder } from "./embedder.js";
+import { buildEventObservations } from "./observation-core.js";
 import { recall } from "./retrieve.js";
 
 /** mulberry32 — tiny deterministic PRNG. */
@@ -242,8 +243,18 @@ export function runEightNeedle({
   const chain = buildChainCorpus({ chains, chainLen, seed });
   const scatter = buildScatterCorpus({ queries: scatterQueries, relevants, distractorsPerQuery, seed: seed + 100 });
 
-  const chainIndex = buildRecallIndex({ events: chain.events, embedder, sessionId: "needle-chain" });
-  const scatterIndex = buildRecallIndex({ events: scatter.events, embedder, sessionId: "needle-scatter" });
+  const chainObservations = buildEventObservations(chain.events, { sessionId: "needle-chain" });
+  const scatterObservations = buildEventObservations(scatter.events, { sessionId: "needle-scatter" });
+  const chainIndex = buildRecallIndex({
+    observations: chainObservations.observations,
+    embedder,
+    sessionId: "needle-chain",
+  });
+  const scatterIndex = buildRecallIndex({
+    observations: scatterObservations.observations,
+    embedder,
+    sessionId: "needle-scatter",
+  });
 
   // Fixed "now" strictly after every corpus timestamp -> deterministic B(m).
   const nowMs = BASE_TS_MS + (Math.max(chain.lastSeq, scatter.lastSeq) + 10) * STEP_MS;

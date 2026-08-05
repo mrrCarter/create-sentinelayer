@@ -171,7 +171,7 @@ test("Unit session join: GETs singleton, materializes local, prints summary", as
   }
 });
 
-test("Unit session join: hydrates remote tail before emitting context briefing", async () => {
+test("Unit session join: hydrates remote tail before returning context briefing", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-recap-"));
   const restoreEnv = installAuthEnv();
@@ -237,17 +237,12 @@ test("Unit session join: hydrates remote tail before emitting context briefing",
         event.agent?.id === "claude-peer" &&
         event.payload?.message === remoteEvent.payload.message,
     );
-    const briefingIndex = local.findIndex(
-      (event) =>
-        event.event === "context_briefing" &&
-        event.agent?.id === "senti" &&
-        event.payload?.forAgent === "codex-joiner",
-    );
     assert.notEqual(remoteIndex, -1, "remote tail event should be appended locally");
-    assert.notEqual(briefingIndex, -1, "join should still emit a context briefing");
-    assert.equal(remoteIndex < briefingIndex, true, "briefing should be built after hydration");
+    assert.equal(local.some((event) => event.event === "context_briefing"), false);
+    assert.equal(payload.onboardingBriefing.persisted, false);
+    assert.equal(payload.onboardingBriefing.delivery, "joining_process");
     assert.match(
-      String(local[briefingIndex].payload?.recap || ""),
+      String(payload.onboardingBriefing.recap || ""),
       /claude-peer #42: checkpoint card works/,
     );
   } finally {
@@ -296,7 +291,7 @@ test("Unit session join: 404 from singleton + empty list fallback exits with fri
   }
 });
 
-test("Unit session join: --agent <granted> relays agent_join canonical event", async () => {
+test("Unit session join: --agent <granted> keeps join identity and briefing out of the remote transcript", async () => {
   resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-join-agent-"));
   const restoreEnv = installAuthEnv();
@@ -343,57 +338,24 @@ test("Unit session join: --agent <granted> relays agent_join canonical event", a
 
     const payload = JSON.parse(stdout);
     assert.equal(payload.command, "session join");
-    assert.equal(payload.agentJoinRelayed, true);
-
-    // registerAgent fan-outs an `agent_join` to /events through appendToStream
-    // — exactly the relay path the spec calls for. Other auxiliary events
-    // (agent_identified, etc.) may piggy-back, but at least one POST must
-    // be the canonical agent_join with the granted agent id.
-    assert.ok(eventPosts.length >= 1, "expected at least one relayed event");
-    const joinPost = eventPosts.find((entry) => entry.body?.event?.event === "agent_join");
-    assert.ok(joinPost, "expected an agent_join POST to /events");
-    const agentBlock = joinPost.body.event.agent || {};
-    assert.equal(agentBlock.id || joinPost.body.event.agentId, "codex");
-    assert.equal(agentBlock.model, "gpt-5-codex");
-    assert.equal(agentBlock.displayName, "Codex");
-    assert.equal(agentBlock.provider, "openai");
-    assert.equal(agentBlock.clientKind, "cli");
-    assert.equal(joinPost.body.event.payload.model, "gpt-5-codex");
-    assert.equal(joinPost.body.event.payload.displayName, "Codex");
-    assert.equal(joinPost.body.event.payload.provider, "openai");
+    assert.equal(payload.agentJoinRelayed, false);
+    assert.equal(eventPosts.length, 0, "coordination-only join events must not POST to /events");
     assert.equal(payload.model, "gpt-5-codex");
     assert.equal(payload.displayName, "Codex");
     assert.equal(payload.provider, "openai");
     assert.equal(payload.clientKind, "cli");
 
     const local = await readStream(remoteSessionId, { targetPath: tempRoot, tail: 20 });
-    const joinEvents = local.filter(
-      (event) => event.event === "agent_join" && (event.agent?.id || event.agentId) === "codex",
-    );
-    assert.equal(joinEvents.length, 1, "join must persist exactly one codex agent_join");
-    assert.equal(joinEvents[0].agent.model, "gpt-5-codex");
-    assert.equal(joinEvents[0].agent.displayName, "Codex");
-    assert.equal(joinEvents[0].agent.provider, "openai");
-    const briefingEvents = local.filter(
-      (event) =>
-        event.event === "context_briefing" &&
-        event.agent?.id === "senti" &&
-        event.payload?.forAgent === "codex",
-    );
-    assert.equal(
-      briefingEvents.length,
-      1,
-      "join must persist exactly one context_briefing for the joined agent",
-    );
+    assert.equal(local.some((event) => event.event === "agent_join"), false);
+    assert.equal(local.some((event) => event.event === "context_briefing"), false);
+    assert.equal(payload.onboardingBriefing.forAgent, "codex");
+    assert.equal(payload.onboardingBriefing.persisted, false);
     const leaveEvents = local.filter(
       (event) => event.event === "agent_leave" && (event.agent?.id || event.agentId) === "codex",
     );
     assert.equal(leaveEvents.length, 0, "join must not emit a phantom agent_leave");
     const anyLeaveEvents = local.filter((event) => event.event === "agent_leave");
     assert.equal(anyLeaveEvents.length, 0, "join must not emit any phantom agent_leave");
-    const persistedJoin = joinEvents[0];
-    const persistedAgentBlock = persistedJoin.agent || {};
-    assert.equal(persistedAgentBlock.id || persistedJoin.agentId, "codex");
   } finally {
     globalThis.fetch = originalFetch;
     restoreEnv();
@@ -497,12 +459,12 @@ test("Unit session join: spawned CLI does not emit process-exit agent_leave", as
     const local = await readStreamEventually(remoteSessionId, {
       targetPath: tempRoot,
       tail: 20,
-      minEvents: 2,
+      minEvents: 0,
     });
     const localEventNames = local.map((event) => event.event);
     const remoteEventNames = eventPosts.map((entry) => entry.event?.event);
-    assert.deepEqual(localEventNames, ["agent_join", "context_briefing"]);
-    assert.deepEqual(remoteEventNames, ["agent_join", "context_briefing"]);
+    assert.deepEqual(localEventNames, []);
+    assert.deepEqual(remoteEventNames, []);
     assert.equal(localEventNames.includes("agent_leave"), false);
     assert.equal(remoteEventNames.includes("agent_leave"), false);
   } finally {

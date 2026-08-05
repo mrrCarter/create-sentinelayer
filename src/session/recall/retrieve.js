@@ -23,7 +23,7 @@
 import { normInt8, cosineInt8 } from "./embedder.js";
 import { matchQueryEntities } from "./entities.js";
 import { buildProvenance, observationNeighbors } from "./provenance.js";
-import { BM25_K1, BM25_B } from "./index-build.js";
+import { BM25_K1, BM25_B } from "./index-core.js";
 import { queryTokens } from "./text.js";
 
 export const RECALL_DEFAULTS = Object.freeze({

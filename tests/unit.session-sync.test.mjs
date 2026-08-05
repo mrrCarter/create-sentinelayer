@@ -4,17 +4,21 @@ import assert from "node:assert/strict";
 import {
   __resetAutoGrantCacheForTests,
   createSessionMessageAction,
+  fetchSessionPresence,
   fetchSessionUsageLedger,
   listSessionMessageActions,
   pollHumanMessages,
   pollSessionEvents,
   pollSessionEventsBefore,
+  requestSessionListenerStop,
+  renewSessionPresence,
   resetSessionSyncStateForTests,
   searchSessionEvents,
   streamSessionEvents,
   syncSessionErrorToApi,
   syncSessionEventToApi,
   syncSessionMetadataToApi,
+  updateSessionReadCursor,
 } from "../src/session/sync.js";
 
 test("Unit session sync: syncSessionEventToApi posts canonical event payload", async () => {
@@ -54,6 +58,348 @@ test("Unit session sync: syncSessionEventToApi posts canonical event payload", a
   assert.equal(payload.source, "cli");
   assert.equal(payload.event.event, "session_message");
   assert.equal(payload.event.sessionId, "sess-123");
+});
+
+test("Unit session sync: non-semantic coordination events are rejected before fetch", async () => {
+  for (const eventType of [
+    "agent_heartbeat",
+    "agent_identified",
+    "agent_identity",
+    "agent_join",
+    "agent_leave",
+    "agent_left",
+    "agent_status",
+    "context_briefing",
+    "session_listener_started",
+    "session_listener_heartbeat",
+    "session_listener_stopped",
+    "session_recap",
+    "session_view",
+    "file_lock",
+    "file_unlock",
+    "file_lock_expired",
+  ]) {
+    let fetchCount = 0;
+    const result = await syncSessionEventToApi(
+      "sess-no-noise",
+      { event: eventType, payload: {} },
+      {
+        resolveAuthSession: async () => ({
+          token: "tok_no_noise",
+          apiUrl: "https://api.sentinelayer.com",
+        }),
+        fetchImpl: async () => {
+          fetchCount += 1;
+          throw new Error("durable append must not be attempted");
+        },
+      },
+    );
+    assert.equal(result.synced, false);
+    assert.equal(result.reason, "non_semantic_transcript_event_rejected");
+    assert.equal(result.eventType, eventType);
+    assert.equal(fetchCount, 0);
+  }
+});
+
+test("Unit session sync: every canonical control event is rejected before durable fetch", async () => {
+  const rejectedEvents = [
+    { event: "listener_stop", payload: { targetAgentId: "codex" } },
+    { event: "file_lock", payload: {} },
+    { event: "file_unlock", payload: {} },
+    { event: "file_lock_expired", payload: {} },
+    { event: "session_coaching", payload: {} },
+    { event: "session_listen_catchup", payload: {} },
+    { event: "session_listen_error", payload: {} },
+    { event: "session_reaction", payload: {} },
+    { event: "session_listener_future_lifecycle", payload: {} },
+    { event: "custom_control", payload: { source: "session_listen" } },
+    { event: "session_action", payload: { actionType: "ack" } },
+    { event: "session_action", payload: { actionType: "dislike" } },
+    { event: "session_action", payload: { actionType: "disregard" } },
+    { event: "session_action", payload: { actionType: "like" } },
+    { event: "session_action", payload: { actionType: "view" } },
+  ];
+
+  for (const event of rejectedEvents) {
+    let fetchCount = 0;
+    const result = await syncSessionEventToApi(
+      "sess-control-boundary",
+      event,
+      {
+        resolveAuthSession: async () => ({
+          token: "tok_control_boundary",
+          apiUrl: "https://api.sentinelayer.com",
+        }),
+        fetchImpl: async () => {
+          fetchCount += 1;
+          throw new Error("durable append must not be attempted");
+        },
+      },
+    );
+    assert.equal(
+      result.reason,
+      "non_semantic_transcript_event_rejected",
+      `${event.event}:${event.payload?.actionType || event.payload?.source || ""}`,
+    );
+    assert.equal(fetchCount, 0);
+  }
+});
+
+test("Unit session sync: listener stop uses only the ephemeral control endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await requestSessionListenerStop("sess-control-boundary", {
+    targetAgentId: "codex",
+    idempotencyKey: "sl-listener-stop-contract-test",
+    resolveAuthSession: async () => ({
+      token: "tok_control_boundary",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 202,
+        json: async () => ({
+          recorded: true,
+          control: {
+            controlId: "control-1",
+            type: "stop",
+            issuedAt: "2026-07-31T05:30:00.000Z",
+          },
+        }),
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recorded, true);
+  assert.equal(result.control.controlId, "control-1");
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-control-boundary/listener-controls/stop",
+  );
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { targetAgentId: "codex" });
+  assert.equal(
+    calls[0].options.headers["Idempotency-Key"],
+    "sl-listener-stop-contract-test",
+  );
+  assert.equal(calls[0].url.endsWith("/events"), false);
+});
+
+test("Unit session sync: missing listener-control endpoint never falls back to events", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await requestSessionListenerStop("sess-control-unsupported", {
+    resolveAuthSession: async () => ({
+      token: "tok_control_boundary",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: false,
+        status: 404,
+        json: async () => ({ error: { code: "NOT_FOUND" } }),
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "listener_control_unsupported");
+  assert.equal(result.recorded, false);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.endsWith("/listener-controls/stop"), true);
+});
+
+test("Unit session sync: presence read and renewal use only the ephemeral endpoint", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const resolveAuthSession = async () => ({
+    token: "tok_presence",
+    apiUrl: "https://api.sentinelayer.com",
+  });
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (options.method === "GET") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "ok",
+          enabled: true,
+          present: [{ agentId: "codex", lastSeenMs: 1_700_000_000_000 }],
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "ok", recorded: true, ttlSeconds: 90 }),
+    };
+  };
+
+  const roster = await fetchSessionPresence("sess-presence", {
+    resolveAuthSession,
+    fetchImpl,
+  });
+  const renewal = await renewSessionPresence("sess-presence", {
+    agentId: "codex",
+    state: "idle",
+    listenerId: "listener-1",
+    model: "gpt-5",
+    resolveAuthSession,
+    fetchImpl,
+  });
+
+  assert.equal(roster.ok, true);
+  assert.equal(roster.present[0].agentId, "codex");
+  assert.equal(renewal.ok, true);
+  assert.equal(renewal.recorded, true);
+  assert.deepEqual(
+    calls.map((call) => [call.options.method, call.url]),
+    [
+      ["GET", "https://api.sentinelayer.com/api/v1/sessions/sess-presence/presence"],
+      ["PUT", "https://api.sentinelayer.com/api/v1/sessions/sess-presence/presence"],
+    ],
+  );
+  assert.equal(calls.some((call) => call.url.endsWith("/events")), false);
+  const renewalBody = JSON.parse(calls[1].options.body);
+  assert.equal(renewalBody.agentId, "codex");
+  assert.equal(renewalBody.listenerId, "listener-1");
+});
+
+test("Unit session sync: view actions collapse into the dedicated read-cursor upsert", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await createSessionMessageAction("sess-read", {
+    actionType: "view",
+    targetSequenceId: 42,
+    targetCursor: "cursor-42",
+    metadata: { agentId: "codex", source: "unit" },
+    resolveAuthSession: async () => ({
+      token: "tok_read",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, updated: true, lastReadSequenceId: 42 }),
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.readCursor, true);
+  assert.equal(calls.length, 1);
+  assert.equal(
+    calls[0].url,
+    "https://api.sentinelayer.com/api/v1/sessions/sess-read/read-cursor",
+  );
+  assert.equal(calls[0].options.method, "PUT");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    targetSequenceId: 42,
+    targetCursor: "cursor-42",
+    agentId: "codex",
+  });
+});
+
+test("Unit session sync: read-cursor 429 exposes Retry-After without action fallback", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const result = await updateSessionReadCursor("sess-read-limit", {
+    targetSequenceId: 9,
+    agentId: "codex",
+    resolveAuthSession: async () => ({
+      token: "tok_read",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return {
+        ok: false,
+        status: 429,
+        headers: new Map([["Retry-After", "75"]]),
+        json: async () => {
+          throw new Error("error body must not be read");
+        },
+      };
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "rate_limited");
+  assert.equal(result.retryAfterMs, 75_000);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url.endsWith("/read-cursor"), true);
+});
+
+test("Unit session sync: missing or degraded operational endpoints never fall back to durable rows", async () => {
+  resetSessionSyncStateForTests();
+  const calls = [];
+  const statuses = [404, 503, 404, 503];
+  const resolveAuthSession = async () => ({
+    token: "tok_fail_closed",
+    apiUrl: "https://api.sentinelayer.com",
+  });
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    const status = statuses.shift();
+    return {
+      ok: false,
+      status,
+      json: async () => {
+        throw new Error("operational error bodies are not required");
+      },
+    };
+  };
+
+  const unsupportedPresence = await renewSessionPresence("sess-fail-closed", {
+    agentId: "codex",
+    resolveAuthSession,
+    fetchImpl,
+  });
+  const degradedPresence = await renewSessionPresence("sess-fail-closed", {
+    agentId: "codex",
+    resolveAuthSession,
+    fetchImpl,
+  });
+  const unsupportedCursor = await updateSessionReadCursor("sess-fail-closed", {
+    targetSequenceId: 10,
+    agentId: "codex",
+    resolveAuthSession,
+    fetchImpl,
+  });
+  const degradedCursor = await updateSessionReadCursor("sess-fail-closed", {
+    targetSequenceId: 11,
+    agentId: "codex",
+    resolveAuthSession,
+    fetchImpl,
+  });
+
+  assert.equal(unsupportedPresence.reason, "presence_unsupported");
+  assert.equal(unsupportedPresence.status, "unsupported");
+  assert.equal(degradedPresence.reason, "api_503");
+  assert.equal(degradedPresence.status, "degraded");
+  assert.equal(unsupportedCursor.reason, "read_cursor_unsupported");
+  assert.equal(degradedCursor.reason, "api_503");
+  assert.deepEqual(
+    calls.map((call) => [call.options.method, new URL(call.url).pathname]),
+    [
+      ["PUT", "/api/v1/sessions/sess-fail-closed/presence"],
+      ["PUT", "/api/v1/sessions/sess-fail-closed/presence"],
+      ["PUT", "/api/v1/sessions/sess-fail-closed/read-cursor"],
+      ["PUT", "/api/v1/sessions/sess-fail-closed/read-cursor"],
+    ],
+  );
+  assert.equal(
+    calls.some((call) => /\/(?:events|actions)$/.test(new URL(call.url).pathname)),
+    false,
+  );
 });
 
 test("Unit session sync: relay events from API are not re-synced outbound", async () => {
@@ -361,6 +707,7 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   const result = await pollSessionEvents("sess-events", {
     since: "cursor-1",
     limit: 500,
+    listenerAgentId: "codex-1",
     resolveAuthSession: async () => ({
       token: "tok_test_123",
       apiUrl: "https://api.sentinelayer.com/",
@@ -378,6 +725,20 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
               payload: { message: "hello" },
             },
           ],
+          nextCursor: "cursor-3",
+          scannedThroughSequence: 3,
+          scanExhausted: false,
+          listenerControls: {
+            status: "ok",
+            items: [
+              {
+                controlId: "control-1",
+                type: "listener_stop",
+                issuedAtMs: 1_785_478_200_000,
+                targetAgentId: "codex-1",
+              },
+            ],
+          },
         }),
       };
     },
@@ -385,15 +746,46 @@ test("Unit session sync: pollSessionEvents uses cursor and limit against events 
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.cursor, "cursor-2");
+  assert.equal(result.cursor, "cursor-3");
+  assert.equal(result.scannedThroughSequence, 3);
+  assert.equal(result.scanExhausted, false);
   assert.equal(result.events.length, 1);
+  assert.equal(result.listenerControls.length, 1);
+  assert.equal(result.listenerControls[0].controlId, "control-1");
   assert.equal(calls.length, 1);
   assert.equal(
     calls[0].url,
-    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events?after=cursor-1&limit=200"
+    "https://api.sentinelayer.com/api/v1/sessions/sess-events/events?after=cursor-1&listenerAgentId=codex-1&limit=200"
   );
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_test_123");
+});
+
+test("Unit session sync: pollSessionEvents adopts scan progress without visible events", async () => {
+  resetSessionSyncStateForTests();
+  const result = await pollSessionEvents("sess-hidden-range", {
+    since: "cursor-8",
+    resolveAuthSession: async () => ({
+      token: "tok_test_123",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        events: [],
+        next_cursor: "cursor-9",
+        scanned_through_sequence: 9,
+        scan_exhausted: false,
+      }),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.events, []);
+  assert.equal(result.cursor, "cursor-9");
+  assert.equal(result.scannedThroughSequence, 9);
+  assert.equal(result.scanExhausted, false);
 });
 
 test("Unit session sync: pollSessionEvents treats 429 as backoff without opening inbound circuit", async () => {
@@ -453,6 +845,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   resetSessionSyncStateForTests();
   const calls = [];
   const seen = [];
+  const cursors = [];
   let heartbeats = 0;
   const encoder = new TextEncoder();
   const body = new ReadableStream({
@@ -460,7 +853,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
       controller.enqueue(encoder.encode(": keep-alive\n\n"));
       controller.enqueue(
         encoder.encode(
-          'data: {"event":"session_message","cursor":"cursor-2","payload":{"message":"wake"}}\n\n',
+          'id: cursor-2\ndata: {"event":"session_message","cursor":"cursor-2","payload":{"message":"wake"}}\n\n',
         ),
       );
       controller.close();
@@ -484,6 +877,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
     onHeartbeat: async () => {
       heartbeats += 1;
     },
+    onCursor: async (cursor) => cursors.push(cursor),
     onEvent: async (event) => {
       seen.push(event);
     },
@@ -494,6 +888,7 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   assert.equal(result.eventCount, 1);
   assert.equal(result.errorCount, 0);
   assert.equal(heartbeats, 1);
+  assert.deepEqual(cursors, [], "data-frame ids advance with the semantic event, not a cursor-only callback");
   assert.equal(seen[0].payload.message, "wake");
   assert.equal(
     calls[0].url,
@@ -502,6 +897,41 @@ test("Unit session sync: streamSessionEvents consumes SSE events from stream end
   assert.equal(calls[0].options.method, "GET");
   assert.equal(calls[0].options.headers.Accept, "text/event-stream");
   assert.equal(calls[0].options.headers.Authorization, "Bearer tok_stream");
+  assert.equal(calls[0].options.headers["Last-Event-ID"], "cursor-1");
+});
+
+test("Unit session sync: streamSessionEvents advances an id-only scan frame without an event", async () => {
+  resetSessionSyncStateForTests();
+  const seen = [];
+  const cursors = [];
+  let heartbeats = 0;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode("id: cursor-control-9\n: scanned-through 9\n\n"));
+      controller.close();
+    },
+  });
+
+  const result = await streamSessionEvents("sess-stream-hidden", {
+    since: "cursor-8",
+    resolveAuthSession: async () => ({
+      token: "tok_stream",
+      apiUrl: "https://api.sentinelayer.com",
+    }),
+    fetchImpl: async () => ({ ok: true, status: 200, body }),
+    onCursor: async (cursor) => cursors.push(cursor),
+    onHeartbeat: async () => { heartbeats += 1; },
+    onEvent: async (event) => seen.push(event),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.cursor, "cursor-control-9");
+  assert.equal(result.eventCount, 0);
+  assert.equal(result.errorCount, 0);
+  assert.deepEqual(cursors, ["cursor-control-9"]);
+  assert.equal(heartbeats, 1);
+  assert.deepEqual(seen, []);
 });
 
 test("Unit session sync: streamSessionEvents aborts a silent stream after idle timeout", async () => {

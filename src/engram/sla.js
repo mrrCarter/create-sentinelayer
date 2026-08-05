@@ -21,7 +21,7 @@ import {
   evaluateScatter,
   evaluateRecallAt10,
 } from "../session/recall/needle-eval.js";
-import { buildRecallIndex } from "../session/recall/index-build.js";
+import { buildRecallIndex } from "../session/recall/index-core.js";
 import { createEmbedder } from "../session/recall/embedder.js";
 import { createStore } from "./store.js";
 import { parseNamespace } from "./namespace.js";

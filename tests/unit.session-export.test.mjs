@@ -11,7 +11,7 @@ import { Command } from "commander";
 import { registerSessionCommand } from "../src/commands/session.js";
 import { createSession } from "../src/session/store.js";
 import { appendToStream, readStream } from "../src/session/stream.js";
-import { registerAgent } from "../src/session/agent-registry.js";
+import { listAgents, registerAgent } from "../src/session/agent-registry.js";
 import { createAgentEvent } from "../src/events/schema.js";
 
 async function makeTempRepo() {
@@ -98,13 +98,9 @@ test("export bundle: agents list includes every registered agent", async () => {
       model: "gpt-5.3-codex",
     });
     const events = await readStream(created.sessionId, { targetPath: root, tail: 0 });
-    // registerAgent emits join events into the stream
-    const joinEvents = events.filter((e) => e.event === "agent_join");
-    assert.ok(
-      joinEvents.length >= 2,
-      `expected at least 2 agent_join events, got ${joinEvents.length}`,
-    );
-    const ids = new Set(joinEvents.map((e) => e.payload?.agentId));
+    assert.equal(events.length, 0, "participant registration is not transcript content");
+    const agents = await listAgents(created.sessionId, { targetPath: root });
+    const ids = new Set(agents.map((agent) => agent.agentId));
     assert.ok(ids.has("claude-1"));
     assert.ok(ids.has("codex-1"));
   } finally {

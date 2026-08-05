@@ -16,16 +16,6 @@ function heartbeat(agentId, payload = {}, ts = "2026-06-14T08:00:00.000Z", event
   };
 }
 
-function sessionMessage(sequenceId, message = "busy room chatter") {
-  return {
-    event: "session_message",
-    sequenceId,
-    agent: { id: "builder" },
-    payload: { message: `${message} ${sequenceId}` },
-    ts: "2026-06-14T08:00:20Z",
-  };
-}
-
 const NOW = Date.parse("2026-06-14T08:00:30.000Z");
 
 test("Unit listeners: one row per agent from the latest heartbeat, active vs idle cadence", () => {
@@ -118,142 +108,94 @@ test("Unit listeners: ignores non-listener events", () => {
   assert.equal(rows[0].agentId, "api-01");
 });
 
-test("Unit listeners: fetchSessionListeners summarizes a poll result", async () => {
-  let pollOptions = null;
-  const fakePoll = async () => ({
-    ok: true,
-    events: [heartbeat("api-01", { active: true, activeIntervalSeconds: 30 }, "2026-06-14T08:00:20Z")],
-  });
-  const recordingPoll = async (sessionId, options) => {
-    pollOptions = { sessionId, options };
-    return fakePoll();
-  };
-  const result = await fetchSessionListeners("sess-1", { poll: recordingPoll, nowMs: () => NOW });
-  assert.equal(result.ok, true);
-  assert.equal(result.listeners.length, 1);
-  assert.equal(result.listeners[0].status, "active");
-  assert.equal(pollOptions.sessionId, "sess-1");
-  assert.equal(pollOptions.options.forceCircuitProbe, true);
-});
-
-test("Unit listeners: fetchSessionListeners walks older pages when the tail is noisy", async () => {
+test("Unit listeners: fetchSessionListeners uses the ephemeral presence endpoint once", async () => {
   const calls = [];
-  const pages = [
-    {
-      ok: true,
-      beforeSequence: 300,
-      events: [
-        sessionMessage(498),
-        sessionMessage(499),
-        sessionMessage(500),
-      ],
-    },
-    {
-      ok: true,
-      beforeSequence: 250,
-      events: [
-        heartbeat(
-          "codex",
+  const result = await fetchSessionListeners("sess-1", {
+    nowMs: () => NOW,
+    fetchPresence: async (sessionId, options) => {
+      calls.push({ sessionId, options });
+      return {
+        ok: true,
+        status: "ok",
+        enabled: true,
+        present: [
           {
-            active: false,
-            idleIntervalSeconds: 60,
-            presenceIntervalSeconds: 60,
-            presenceKeepaliveSeconds: 180,
+            agentId: "api-01",
+            lastSeenMs: Date.parse("2026-06-14T08:00:20Z"),
           },
-          "2026-06-14T08:00:10Z",
-        ),
-        sessionMessage(299),
-      ],
+        ],
+      };
     },
-  ];
-  const fakePoll = async (_sessionId, options) => {
-    calls.push(options);
-    return pages[calls.length - 1];
-  };
-
-  const result = await fetchSessionListeners("sess-noisy", {
-    poll: fakePoll,
-    nowMs: () => NOW,
-    limit: 3,
-    maxPages: 5,
   });
 
   assert.equal(result.ok, true);
-  assert.equal(result.pageCount, 2);
-  assert.equal(result.scannedEventCount, 5);
-  assert.equal(result.listenerEventCount, 1);
-  assert.equal(calls[0].beforeSequence, null);
-  assert.equal(calls[1].beforeSequence, 300);
+  assert.equal(result.authoritative, true);
+  assert.equal(result.presenceStatus, "ok");
   assert.equal(result.listeners.length, 1);
-  assert.equal(result.listeners[0].agentId, "codex");
-  assert.equal(result.listeners[0].status, "idle");
-});
-
-test("Unit listeners: fetchSessionListeners stops after a full page once listeners are found", async () => {
-  const calls = [];
-  const fakePoll = async (_sessionId, options) => {
-    calls.push(options);
-    return {
-      ok: true,
-      beforeSequence: 300,
-      events: [
-        sessionMessage(498),
-        heartbeat("codex", { active: false, idleIntervalSeconds: 60 }, "2026-06-14T08:00:10Z"),
-        sessionMessage(500),
-      ],
-    };
-  };
-
-  const result = await fetchSessionListeners("sess-listeners-in-tail", {
-    poll: fakePoll,
-    nowMs: () => NOW,
-    limit: 3,
-    maxPages: 5,
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.pageCount, 1);
-  assert.equal(result.scannedEventCount, 3);
-  assert.equal(result.listenerEventCount, 1);
-  assert.equal(calls.length, 1);
-  assert.equal(result.listeners.length, 1);
-});
-
-test("Unit listeners: fetchSessionListeners stops on non-advancing beforeSequence", async () => {
-  const calls = [];
-  const fakePoll = async (_sessionId, options) => {
-    calls.push(options);
-    return {
-      ok: true,
-      beforeSequence: 40,
-      events: [
-        sessionMessage(98),
-        sessionMessage(99),
-      ],
-    };
-  };
-
-  const result = await fetchSessionListeners("sess-cyclic", {
-    poll: fakePoll,
-    nowMs: () => NOW,
-    limit: 2,
-    maxPages: 10,
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.pageCount, 2);
+  assert.equal(result.listeners[0].status, "present");
+  assert.equal(result.listeners[0].lastSeenAgoSeconds, 10);
+  assert.deepEqual(calls, [
+    {
+      sessionId: "sess-1",
+      options: { targetPath: process.cwd(), forceCircuitProbe: true },
+    },
+  ]);
+  assert.equal(result.scannedEventCount, 0);
   assert.equal(result.listenerEventCount, 0);
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].beforeSequence, null);
-  assert.equal(calls[1].beforeSequence, 40);
 });
 
-test("Unit listeners: fetch surfaces a failed poll without throwing", async () => {
-  const fakePoll = async () => ({ ok: false, reason: "auth_required" });
-  const result = await fetchSessionListeners("sess-1", { poll: fakePoll });
+test("Unit listeners: degraded presence stays unknown and never scans event history", async () => {
+  let presenceCalls = 0;
+  const result = await fetchSessionListeners("sess-degraded", {
+    fetchPresence: async () => {
+      presenceCalls += 1;
+      return {
+        ok: false,
+        status: "degraded",
+        enabled: true,
+        reason: "api_503",
+        retryAfterMs: 12_000,
+        present: [],
+      };
+    },
+  });
+
+  assert.equal(presenceCalls, 1);
   assert.equal(result.ok, false);
-  assert.equal(result.reason, "auth_required");
+  assert.equal(result.authoritative, false);
+  assert.equal(result.presenceStatus, "degraded");
+  assert.equal(result.retryAfterMs, 12_000);
   assert.deepEqual(result.listeners, []);
+  assert.equal(result.pageCount, 0);
+  assert.equal(result.scannedEventCount, 0);
+});
+
+test("Unit listeners: disabled or unsupported presence never re-enables durable heartbeats", async () => {
+  for (const response of [
+    {
+      ok: false,
+      status: "unsupported",
+      enabled: false,
+      reason: "presence_disabled",
+      present: [],
+    },
+    {
+      ok: false,
+      status: "unsupported",
+      enabled: false,
+      reason: "presence_unsupported",
+      present: [],
+    },
+  ]) {
+    const result = await fetchSessionListeners("sess-old-server", {
+      fetchPresence: async () => response,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.authoritative, false);
+    assert.equal(result.presenceStatus, "unsupported");
+    assert.deepEqual(result.listeners, []);
+    assert.equal(result.listenerEventCount, 0);
+  }
 });
 
 test("Unit listeners: formatListenerLine renders status, cadence, last-seen", () => {
