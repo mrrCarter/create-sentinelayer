@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from "node:fs/promises";
 
 import {
   createMemoryService,
@@ -15,6 +15,50 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ENGRAM_DIR = path.join(HERE, "..", "src", "engram");
+const RECALL_CORE_DIR = path.join(HERE, "..", "src", "session", "recall");
+
+function isWithinRoot(file, root) {
+  const relative = path.relative(root, file);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function moduleSpecifiers(source) {
+  const specs = new Set();
+  const patterns = [
+    /\b(?:import|export)\s+(?:[^"']*?\sfrom\s*)?["']([^"']+)["']/g,
+    /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g,
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(source)) !== null) specs.add(match[1]);
+  }
+  return Array.from(specs);
+}
+
+async function inspectDependencyClosure(entryFiles, allowedRoots) {
+  const queue = entryFiles.map((file) => path.resolve(file));
+  const visited = new Set();
+  const violations = [];
+
+  while (queue.length > 0) {
+    const file = queue.shift();
+    if (visited.has(file)) continue;
+    visited.add(file);
+    const source = await readFile(file, "utf-8");
+    for (const specifier of moduleSpecifiers(source)) {
+      if (specifier.startsWith("node:") || !specifier.startsWith(".")) continue;
+      let resolved = path.resolve(path.dirname(file), specifier);
+      if (!path.extname(resolved)) resolved += ".js";
+      if (!allowedRoots.some((root) => isWithinRoot(resolved, root))) {
+        violations.push({ file, specifier, resolved });
+        continue;
+      }
+      queue.push(resolved);
+    }
+  }
+
+  return { visited, violations };
+}
 
 async function withStore(fn) {
   const root = await mkdtemp(path.join(os.tmpdir(), "engram-maas-"));
@@ -28,23 +72,42 @@ async function withStore(fn) {
 const verifiedCaller = { id: "codex", kind: "agent", verified: true };
 
 test("Unit engram MaaS: HARD detachability — src/engram imports NO session runtime", async () => {
-  // The detachable MaaS core may import ONLY node builtins, sibling engram
-  // modules, and the §1 engine core (../session/recall/). Any other
-  // ../session/* (runtime), ../mcp, ../auth, etc. breaks sellable-alone.
-  const files = (await readdir(ENGRAM_DIR)).filter((f) => f.endsWith(".js"));
-  assert.ok(files.length >= 6, "expected the engram core modules");
-  const importRe = /(?:import|export)[^"']*?from\s*["']([^"']+)["']/g;
-  const allowed = /^(node:|\.\/|\.\.\/session\/recall\/)/;
-  for (const file of files) {
-    const src = await readFile(path.join(ENGRAM_DIR, file), "utf-8");
-    let m;
-    while ((m = importRe.exec(src)) !== null) {
-      const spec = m[1];
-      assert.ok(
-        allowed.test(spec),
-        `src/engram/${file} imports '${spec}' — only node:, ./, or ../session/recall/ are allowed (detachability)`,
-      );
-    }
+  const entries = (await readdir(ENGRAM_DIR))
+    .filter((file) => file.endsWith(".js"))
+    .map((file) => path.join(ENGRAM_DIR, file));
+  assert.ok(entries.length >= 6, "expected the engram core modules");
+
+  const result = await inspectDependencyClosure(entries, [ENGRAM_DIR, RECALL_CORE_DIR]);
+  assert.ok(
+    Array.from(result.visited).some((file) => file.endsWith(`${path.sep}index-core.js`)),
+    "the test must recursively traverse the shared retrieval core",
+  );
+  assert.deepEqual(
+    result.violations.map(({ file, specifier }) => ({
+      file: path.relative(path.join(HERE, ".."), file),
+      specifier,
+    })),
+    [],
+    "ENGRAM's complete relative-import closure must stay inside src/engram or the pure recall core",
+  );
+});
+
+test("Unit engram MaaS: detachability test catches a transitive runtime escape", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "engram-closure-negative-"));
+  const engram = path.join(root, "engram");
+  const recall = path.join(root, "recall");
+  try {
+    await mkdir(engram, { recursive: true });
+    await mkdir(recall, { recursive: true });
+    await writeFile(path.join(engram, "entry.js"), 'export { core } from "../recall/core.js";\n', "utf-8");
+    await writeFile(path.join(recall, "core.js"), 'export { runtime } from "../runtime.js";\n', "utf-8");
+    await writeFile(path.join(root, "runtime.js"), "export const runtime = true;\n", "utf-8");
+
+    const result = await inspectDependencyClosure([path.join(engram, "entry.js")], [engram, recall]);
+    assert.equal(result.violations.length, 1);
+    assert.equal(result.violations[0].specifier, "../runtime.js");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

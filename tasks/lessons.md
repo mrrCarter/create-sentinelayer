@@ -331,3 +331,7 @@
   upstream progress because one GitHub API request returns a transient `503`.
   Centralize bounded connect/request timeouts and retry transient API failures,
   then fail closed only after the retry budget is exhausted.
+- Detachability is a transitive property. A test that allowlists direct imports
+  into a nominally pure directory can miss a runtime dependency one edge later;
+  walk the complete module closure and prove the test rejects a synthetic
+  transitive escape.

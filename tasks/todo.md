@@ -3889,4 +3889,17 @@ Review:
   one-off GitHub API `503` aborted the job after nine minutes. Required-check
   API reads now use bounded connect/request timeouts and bounded retries for
   transient transport/HTTP failures; terminal failures still fail closed.
+- Independent review blocked exact SHA `2968287` because ENGRAM's shallow
+  detachability test allowed `session/recall/*` without walking its imports;
+  `index-build -> observations -> control-events` therefore pulled session
+  runtime into the advertised standalone product.
+- The retrieval index is now split into a pure observation-only core and a
+  SentinelLayer session adapter. Generic item normalization is a sibling
+  ENGRAM adapter over a pure observation core. The replacement test walks the
+  complete import closure and includes a negative transitive-escape fixture.
+- Post-refactor ENGRAM + MCP verification passes `39/39`; the combined
+  cursor/noise/lease/MCP/ENGRAM/provenance suite passes `123/123`; static
+  checks cover `378` files. The broader import-affected sweep passed every
+  retrieval test and reproduced only the two pre-existing Windows investor-DD
+  `ENOTEMPTY` cleanup failures already tracked by PR #782.
 

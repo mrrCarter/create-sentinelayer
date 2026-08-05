@@ -18,7 +18,7 @@
  * the product is detachable/sellable on its own.
  */
 
-import { buildRecallIndex } from "../session/recall/index-build.js";
+import { buildRecallIndex } from "../session/recall/index-core.js";
 import { recall as recallEngine } from "../session/recall/retrieve.js";
 import { createEmbedder } from "../session/recall/embedder.js";
 import { normalizeString } from "../session/recall/text.js";
