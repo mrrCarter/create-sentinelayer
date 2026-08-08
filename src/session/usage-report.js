@@ -64,6 +64,45 @@ function optionalUsdCell(value, hasValue) {
   return hasValue ? usdCell(value) : "-";
 }
 
+function booleanFlag(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
+  const text = normalize(value).toLowerCase();
+  if (!text) return null;
+  if (["1", "true", "t", "yes", "y"].includes(text)) return true;
+  if (["0", "false", "f", "no", "n"].includes(text)) return false;
+  return null;
+}
+
+function hasHostedCustomerCost(bag) {
+  const camelFlag = booleanFlag(bag.hasCustomerCost);
+  if (camelFlag != null) return camelFlag;
+  const snakeFlag = booleanFlag(bag.has_customer_cost);
+  if (snakeFlag != null) return snakeFlag;
+  return [
+    bag.customerCostUsd,
+    bag.customer_cost_usd,
+    bag.billableCostUsd,
+    bag.billable_cost_usd,
+  ].some((value) => value != null && value !== "");
+}
+
+function rollupCostSummary(rollup = {}) {
+  const parts = [`provider ${usdCell(rollup.providerCostUsd)}`];
+  if (rollup.customerCostUsd != null) {
+    parts.push(`customer ${usdCell(rollup.customerCostUsd)}`);
+  }
+  const unpriced = nonNegativeInt(rollup.unpriced);
+  if (unpriced > 0) {
+    parts.push(`unpriced ${intCell(unpriced)}`);
+  }
+  const estimatedEntries = nonNegativeInt(rollup.estimatedEntries);
+  if (estimatedEntries > 0) {
+    parts.push(`estimated ${intCell(estimatedEntries)}`);
+  }
+  return parts.join(", ");
+}
+
 function timestampOnly(iso) {
   if (!iso) return "";
   const date = new Date(iso);
@@ -122,7 +161,7 @@ function rollupToJson(rollup) {
 
 function hostedRollupToJson(rollup, fallbackLabel = "") {
   const bag = object(rollup);
-  const hasCustomerCost = Boolean(bag.hasCustomerCost ?? bag.has_customer_cost ?? bag.customerCostUsd != null ?? bag.customer_cost_usd != null);
+  const hasCustomerCost = hasHostedCustomerCost(bag);
   return {
     label: normalize(bag.label ?? bag.agentId ?? bag.agent_id ?? bag.action ?? fallbackLabel) || "unknown",
     entries: nonNegativeInt(bag.entries ?? bag.entryCount ?? bag.entry_count ?? bag.count ?? bag.interactions),
@@ -412,7 +451,7 @@ export function renderSessionUsageSummary(report = {}) {
     lines.push("Per agent:");
     for (const agent of agents) {
       lines.push(
-        `- ${agent.label}: ${intCell(agent.totalTokens)} tokens, ${intCell(agent.entries)} entries, provider ${usdCell(agent.providerCostUsd)}`,
+        `- ${agent.label}: ${intCell(agent.totalTokens)} tokens, ${intCell(agent.entries)} entries, ${rollupCostSummary(agent)}`,
       );
     }
   }
