@@ -69,6 +69,11 @@ const COMMAND_REGISTRARS = {
     exportName: "registerTelemetryCommand",
     needsLegacy: false,
   },
+  respawn: {
+    loader: () => import("./commands/respawn.js"),
+    exportName: "registerRespawnCommand",
+    needsLegacy: false,
+  },
   auth: {
     loader: () => import("./commands/auth.js"),
     exportName: "registerAuthCommand",
