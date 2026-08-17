@@ -50,6 +50,30 @@ function runPassthrough(cliPath, args) {
   });
 }
 
+/** direct passthrough entry (used by runCli BEFORE commander parses, so inner --help/--version/flags are never intercepted) */
+export async function runRespawnPassthrough(list) {
+  if (list[0] === "use") {
+    const fs = await import("node:fs");
+    const dir = path.resolve(process.cwd(), String(list[1] || "."));
+    fs.mkdirSync(path.join(homedir(), ".respawn"), { recursive: true });
+    fs.writeFileSync(path.join(homedir(), ".respawn", "repo"), dir + "\n");
+    console.log(JSON.stringify({ ok: true, repo: dir, machineCli: resolveRespawnCli("machine"), bundleCli: resolveRespawnCli("bundle"), lifeCli: resolveRespawnCli("life") }));
+    return;
+  }
+  const isBundle = list[0] === "bundle";
+  const isLife = list[0] === "life";
+  const kind = isBundle ? "bundle" : isLife ? "life" : "machine";
+  const cli = resolveRespawnCli(kind);
+  if (!cli) {
+    console.error(JSON.stringify({ ok: false, error: `respawn ${kind} CLI not found`, hint: "set RESPAWN_CLI / RESPAWN_BUNDLE_CLI / RESPAWN_LIFE_CLI, run inside a respawn checkout, `sl respawn use <repoDir>`, or run on a deployed orchestrator host (/opt/respawn/orch)", searched: candidates(kind) }));
+    process.exitCode = 2;
+    return;
+  }
+  const forwarded = isBundle || isLife ? list.slice(1) : list;
+  if (!forwarded.length) forwarded.push("--help");
+  process.exitCode = await runPassthrough(cli, forwarded);
+}
+
 export function registerRespawnCommand(program) {
   const respawn = program
     .command("respawn")
@@ -59,42 +83,15 @@ export function registerRespawnCommand(program) {
     .helpOption(false)
     .argument("[args...]", "respawn command + args (up|kill|rehydrate|status|liveness|receipts|console|exec|pr|ssh|extend|demo|receipt verify)")
     .action(async () => {
-      // forward EVERYTHING after `respawn` verbatim (flags included) — commander must not reinterpret the inner CLI's options
+      // normally runCli hands `sl respawn <…>` off BEFORE commander (see cli.js); this path only sees bare `sl respawn`
       const i = process.argv.indexOf("respawn");
       const list = i >= 0 ? process.argv.slice(i + 1) : [];
       if (!list.length || list[0] === "--help" || list[0] === "-h") {
         respawn.outputHelp();
         return;
       }
-      if (list[0] === "use") {
-        // `sl respawn use <repoDir>` — record where the respawn checkout lives (no other state)
-        const fs = await import("node:fs");
-        const dir = path.resolve(process.cwd(), String(list[1] || "."));
-        fs.mkdirSync(path.join(homedir(), ".respawn"), { recursive: true });
-        fs.writeFileSync(path.join(homedir(), ".respawn", "repo"), dir + "\n");
-        console.log(JSON.stringify({ ok: true, repo: dir, machineCli: resolveRespawnCli("machine"), bundleCli: resolveRespawnCli("bundle"), lifeCli: resolveRespawnCli("life") }));
-        return;
-      }
-      const isBundle = list[0] === "bundle";
-      const isLife = list[0] === "life";
-      const kind = isBundle ? "bundle" : isLife ? "life" : "machine";
-      const cli = resolveRespawnCli(kind);
-      if (!cli) {
-        console.error(
-          JSON.stringify({
-            ok: false,
-            error: `respawn ${kind} CLI not found`,
-            hint: "set RESPAWN_CLI / RESPAWN_BUNDLE_CLI / RESPAWN_LIFE_CLI, run inside a respawn checkout, `sl respawn use <repoDir>`, or run on a deployed orchestrator host (/opt/respawn/orch)",
-            searched: candidates(kind),
-          }),
-        );
-        process.exitCode = 2;
-        return;
-      }
-      const forwarded = isBundle || isLife ? list.slice(1) : list;
-      if (!forwarded.length) forwarded.push("--help");
-      const code = await runPassthrough(cli, forwarded);
-      process.exitCode = code;
+      await runRespawnPassthrough(list);
+      return;
     });
 
   respawn.addHelpText(

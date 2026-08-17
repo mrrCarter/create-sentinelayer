@@ -258,6 +258,14 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
     return;
   }
 
+  // `sl respawn …` is a verbatim PASSTHROUGH to the Respawn CLIs: hand off before commander so the inner CLI's own
+  // --help/--version/flags are never intercepted by sl's global options (no `--` separator needed).
+  if (normalizedArgs[0] === "respawn" && normalizedArgs.length > 1) {
+    const { runRespawnPassthrough } = await import("./commands/respawn.js");
+    await runRespawnPassthrough(normalizedArgs.slice(1));
+    return;
+  }
+
   const program = await buildCliProgram({
     invokeLegacy: runLegacyCliWithErrorHandling,
     onlyCommand: normalizedArgs[0],
