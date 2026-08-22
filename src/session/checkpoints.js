@@ -17,6 +17,15 @@ const DEFAULT_RESTORE_MAX_EVENTS = 120;
 const MAX_RESTORE_CONTEXT_EVENTS = 50;
 const MAX_RESTORE_EVENTS = 200;
 const DEFAULT_CREATED_BY_AGENT_ID = "senti";
+// Checkpoint origin honesty (Carter, room 430135 lane 2): a cut is `service` ONLY when a managed
+// infra cutter creates it; everything else — an agent's CLI, an agent-run `sl session daemon` — is
+// `agent`. Never INFER `service`: absent/unknown/anything-but-the-literal-string collapses to `agent`,
+// so honesty can't ride on a remembered flag. `createdBy` only defaults to the service id on `service`.
+const CHECKPOINT_ORIGIN_SERVICE = "service";
+const CHECKPOINT_ORIGIN_AGENT = "agent";
+function normalizeCheckpointOrigin(origin) {
+  return normalizeString(origin) === CHECKPOINT_ORIGIN_SERVICE ? CHECKPOINT_ORIGIN_SERVICE : CHECKPOINT_ORIGIN_AGENT;
+}
 
 function normalizeString(value) {
   return String(value ?? "").trim();
@@ -196,6 +205,7 @@ export function buildManualCheckpointPayload(sessionId, {
   title,
   summary,
   createdByAgentId = "",
+  origin = "",
   tokenStart,
   tokenEnd,
 } = {}) {
@@ -229,6 +239,7 @@ export function buildManualCheckpointPayload(sessionId, {
   if (normalizedCreatedBy) {
     body.createdByAgentId = normalizedCreatedBy;
   }
+  body.origin = normalizeCheckpointOrigin(origin);
   if (tokenRange) {
     body.tokenRange = tokenRange;
   }
@@ -243,6 +254,7 @@ export function buildGenerateCheckpointPayload(sessionId, {
   minEvents = DEFAULT_MIN_EVENTS,
   maxEvents = DEFAULT_MAX_EVENTS,
   createdByAgentId = "",
+  origin = "",
   idempotencyKey = "",
 } = {}) {
   const normalizedSessionId = normalizeString(sessionId);
@@ -268,6 +280,7 @@ export function buildGenerateCheckpointPayload(sessionId, {
   if (normalizedCreatedBy) {
     body.createdByAgentId = normalizedCreatedBy;
   }
+  body.origin = normalizeCheckpointOrigin(origin);
   return {
     body,
     idempotencyKey:
@@ -612,9 +625,17 @@ export async function generateSessionCheckpointBestEffort(sessionId, options = {
     return buildCheckpointNoop("remote_sync_disabled_env");
   }
   try {
+    // ORIGIN HONESTY (lane 2): default `createdBy` to the service id ONLY for a real `service`-origin cut.
+    // An agent-run best-effort cut (the CLI, an agent's daemon) is `agent` — its createdBy is the real agent
+    // id or ABSENT, never silently "senti". Absence of a creator is not the service; the humble state is honest.
+    const origin = normalizeCheckpointOrigin(options.origin);
+    const createdByAgentId = origin === CHECKPOINT_ORIGIN_SERVICE
+      ? (normalizeString(options.createdByAgentId) || DEFAULT_CREATED_BY_AGENT_ID)
+      : normalizeString(options.createdByAgentId);
     const result = await generateSessionCheckpoint(normalizedSessionId, {
       ...options,
-      createdByAgentId: normalizeString(options.createdByAgentId) || DEFAULT_CREATED_BY_AGENT_ID,
+      origin,
+      createdByAgentId,
     });
     return normalizeCheckpointGenerationResult(result);
   } catch (error) {
@@ -633,6 +654,9 @@ export async function generateSessionCheckpointBestEffort(sessionId, options = {
 
 export {
   DEFAULT_CREATED_BY_AGENT_ID,
+  CHECKPOINT_ORIGIN_SERVICE,
+  CHECKPOINT_ORIGIN_AGENT,
+  normalizeCheckpointOrigin,
   DEFAULT_BATCH_MAX_CHECKPOINTS,
   DEFAULT_MAX_EVENTS,
   DEFAULT_MIN_EVENTS,
