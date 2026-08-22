@@ -174,6 +174,9 @@ test("Unit session daemon: health tick requests durable checkpoints with cadence
     assert.equal(calls[0].options.minEvents, 20);
     assert.equal(calls[0].options.maxEvents, 80);
     assert.equal(calls[0].options.createdByAgentId, "senti");
+    // lane 2: the daemon self-declares origin:'agent' (it is an agent-started process,
+    // not the managed service). origin is the authoritative field; createdBy is descriptive.
+    assert.equal(calls[0].options.origin, "agent");
     assert.equal(first.checkpoint.attempted, true);
     assert.equal(first.checkpoint.created, true);
     assert.equal(first.checkpoint.checkpointId, "cp_auto_daemon");
@@ -332,6 +335,9 @@ test("Unit session daemon: stop performs closeout checkpoint for uncheckpointed 
     assert.equal(calls.length, 1);
     assert.equal(calls[0].generatedSessionId, session.sessionId);
     assert.equal(calls[0].options.createdByAgentId, "senti");
+    // lane 2: the daemon self-declares origin:'agent' (it is an agent-started process,
+    // not the managed service). origin is the authoritative field; createdBy is descriptive.
+    assert.equal(calls[0].options.origin, "agent");
     assert.equal(stopped.checkpointCloseout.attempted, true);
     assert.equal(stopped.checkpointCloseout.trigger, "closeout");
     assert.equal(stopped.checkpointCloseout.checkpointId, "cp_closeout_daemon");

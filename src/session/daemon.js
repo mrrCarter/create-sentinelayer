@@ -1280,6 +1280,12 @@ async function maybeGenerateSessionCheckpoint(
       targetPath: daemonState.targetPath,
       minEvents: daemonState.checkpointMinEvents,
       maxEvents: daemonState.checkpointMaxEvents,
+      // origin is the AUTHORITATIVE field (lane 2): this daemon is a process an agent
+      // started, so its cuts are origin:'agent' — never the managed service, even though
+      // #800's humble default would already resolve to agent. Declaring it explicitly means
+      // the daemon's honesty does not silently ride on that default. createdBy stays the
+      // descriptive "senti" persona; origin:'agent' is what a DoD/audit keys on.
+      origin: "agent",
       createdByAgentId: SENTI_IDENTITY.id,
       nowIso: normalizedNow,
     });
