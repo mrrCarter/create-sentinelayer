@@ -558,6 +558,15 @@ test("Unit session checkpoints: payload carries an explicit origin (default agen
   const gSvc = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", { origin: "service", createdByAgentId: "senti" }).body;
   assert.equal(gSvc.origin, CHECKPOINT_ORIGIN_SERVICE);
   assert.equal(gSvc.createdByAgentId, "senti");
+  // relay's else-branch, pinned by EXECUTION at the payload level (not by reading the
+  // normalize test + the createdBy gate and composing them): every non-service origin
+  // with no explicit creator yields agent + NO service createdBy. Forgetting or
+  // misspelling the flag must produce the humble claim, never service attribution.
+  for (const o of [undefined, "", "Service", "svc", "agent"]) {
+    const b = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", o === undefined ? {} : { origin: o }).body;
+    assert.equal(b.origin, CHECKPOINT_ORIGIN_AGENT, `origin ${JSON.stringify(o)} must render agent`);
+    assert.equal("createdByAgentId" in b, false, `origin ${JSON.stringify(o)} must not plant a service createdBy`);
+  }
   // manual payload: same origin default + honouring
   const mAuto = buildManualCheckpointPayload("11111111-1111-4111-8111-111111111111", { startSequence: 1, endSequence: 2, title: "t", summary: "s" }).body;
   assert.equal(mAuto.origin, CHECKPOINT_ORIGIN_AGENT);
