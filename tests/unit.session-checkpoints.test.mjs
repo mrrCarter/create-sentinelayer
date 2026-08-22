@@ -5,6 +5,9 @@ import { SentinelayerApiError } from "../src/auth/http.js";
 import {
   buildGenerateCheckpointPayload,
   buildManualCheckpointPayload,
+  normalizeCheckpointOrigin,
+  CHECKPOINT_ORIGIN_SERVICE,
+  CHECKPOINT_ORIGIN_AGENT,
   buildCheckpointRestoreWindow,
   classifyCheckpointRestoreEvents,
   createSessionCheckpoint,
@@ -98,6 +101,7 @@ test("Unit session checkpoints: generate payload bounds event window", () => {
     minEvents: 5,
     maxEvents: 20,
     createdByAgentId: "senti",
+    origin: "agent",
   });
   assert.match(payload.idempotencyKey, /^sl_cli_session_checkpoint_generate_[a-f0-9-]+$/);
   assert.throws(
@@ -349,6 +353,7 @@ test("Unit session checkpoints: generate posts bounded request body", async () =
     minEvents: 4,
     maxEvents: 12,
     createdByAgentId: "senti",
+    origin: "agent",
   });
   assert.equal(result.checkpoint.checkpointId, "cp_auto_1");
 });
@@ -402,6 +407,7 @@ test("Unit session checkpoints: batch generate stops on first skipped window", a
     minEvents: 20,
     maxEvents: 80,
     createdByAgentId: "codex",
+    origin: "agent",
   });
   assert.equal(result.createdCount, 2);
   assert.equal(result.attemptedCount, 3);
@@ -459,10 +465,12 @@ test("Unit session checkpoints: best-effort generate is safe for daemon ticks", 
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://api.example.com/api/v1/sessions/sess-123/checkpoints/generate");
+  // ORIGIN HONESTY (lane 2): a daemon tick with no explicit creator no longer claims the service.
+  // The body is humble — origin:agent, and NO createdByAgentId ("senti" is only for origin:service).
   assert.deepEqual(calls[0].options.body, {
     minEvents: 25,
     maxEvents: 90,
-    createdByAgentId: "senti",
+    origin: "agent",
   });
   assert.equal(result.ok, true);
   assert.equal(result.created, true);
@@ -526,4 +534,42 @@ test("Unit session checkpoints: generation result normalization handles API casi
   assert.equal(normalized.eventCount, 33);
   assert.equal(normalized.minEvents, 20);
   assert.equal(normalized.maxEvents, 80);
+});
+
+test("Unit session checkpoints: origin honesty — only literal 'service' is service; everything else is the humble 'agent'", () => {
+  assert.equal(normalizeCheckpointOrigin("service"), CHECKPOINT_ORIGIN_SERVICE);
+  assert.equal(normalizeCheckpointOrigin("agent"), CHECKPOINT_ORIGIN_AGENT);
+  // never INFER service: absent, unknown, wrong-case, and even "senti" collapse to agent
+  for (const v of ["", undefined, null, "Service", "SERVICE", "senti", "auto", "svc", 0, {}]) {
+    assert.equal(normalizeCheckpointOrigin(v), CHECKPOINT_ORIGIN_AGENT, `origin ${JSON.stringify(v)} must be humble`);
+  }
+});
+
+test("Unit session checkpoints: payload carries an explicit origin (default agent), createdBy never auto-becomes 'senti'", () => {
+  // generate payload: no createdBy + no origin -> origin:agent, and NO createdByAgentId planted (humble, not "senti")
+  const gAuto = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", {}).body;
+  assert.equal(gAuto.origin, CHECKPOINT_ORIGIN_AGENT);
+  assert.equal("createdByAgentId" in gAuto, false, "an unattributed cut must not claim any creator, least of all the service");
+  // explicit agent creator is honoured, origin still agent
+  const gAgent = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", { createdByAgentId: "respawn-red" }).body;
+  assert.equal(gAgent.createdByAgentId, "respawn-red");
+  assert.equal(gAgent.origin, CHECKPOINT_ORIGIN_AGENT);
+  // explicit service origin is the ONLY way to get origin:service
+  const gSvc = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", { origin: "service", createdByAgentId: "senti" }).body;
+  assert.equal(gSvc.origin, CHECKPOINT_ORIGIN_SERVICE);
+  assert.equal(gSvc.createdByAgentId, "senti");
+  // relay's else-branch, pinned by EXECUTION at the payload level (not by reading the
+  // normalize test + the createdBy gate and composing them): every non-service origin
+  // with no explicit creator yields agent + NO service createdBy. Forgetting or
+  // misspelling the flag must produce the humble claim, never service attribution.
+  for (const o of [undefined, "", "Service", "svc", "agent"]) {
+    const b = buildGenerateCheckpointPayload("11111111-1111-4111-8111-111111111111", o === undefined ? {} : { origin: o }).body;
+    assert.equal(b.origin, CHECKPOINT_ORIGIN_AGENT, `origin ${JSON.stringify(o)} must render agent`);
+    assert.equal("createdByAgentId" in b, false, `origin ${JSON.stringify(o)} must not plant a service createdBy`);
+  }
+  // manual payload: same origin default + honouring
+  const mAuto = buildManualCheckpointPayload("11111111-1111-4111-8111-111111111111", { startSequence: 1, endSequence: 2, title: "t", summary: "s" }).body;
+  assert.equal(mAuto.origin, CHECKPOINT_ORIGIN_AGENT);
+  const mSvc = buildManualCheckpointPayload("11111111-1111-4111-8111-111111111111", { startSequence: 1, endSequence: 2, title: "t", summary: "s", origin: "service" }).body;
+  assert.equal(mSvc.origin, CHECKPOINT_ORIGIN_SERVICE);
 });
