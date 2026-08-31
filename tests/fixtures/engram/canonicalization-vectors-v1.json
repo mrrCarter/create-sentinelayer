@@ -1,0 +1,115 @@
+{
+  "schema": "engram-canonicalization-vectors/v1",
+  "canonicalization": "RFC 8785 (JCS) subset — keys sorted by UTF-16 code units; safe integers only (non-integers REJECTED at encode time); strings raw UTF-8, never \\uXXXX-escaped; no whitespace; keys with absent/undefined values OMITTED before sorting (never null); the canonical STRING is hashed as UTF-8 bytes.",
+  "authority": "respawn docs/contracts/checkpoint-proof-identity.md 19.1; reference impl bundle/src/crypto/canonical.ts",
+  "idPreimage": [
+    "sourceDigest",
+    "lineageId",
+    "generation",
+    "kind",
+    "statement",
+    "payloadRef"
+  ],
+  "mustReject": [
+    {
+      "case": "non-integer number",
+      "input": {
+        "generation": 1.5
+      },
+      "expect": "encode-time error"
+    }
+  ],
+  "mustDiffer": [
+    [
+      "v4a-nfc",
+      "v4b-nfd"
+    ]
+  ],
+  "vectors": [
+    {
+      "name": "v1-baseline",
+      "note": "both optionals present",
+      "preimage": {
+        "sourceDigest": "abababababababababababababababababababababababababababababababab",
+        "lineageId": "lin_1",
+        "generation": 0,
+        "kind": "decision",
+        "statement": "use node:test",
+        "payloadRef": {
+          "hash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "bytes": 98
+        }
+      },
+      "canonical": "{\"generation\":0,\"kind\":\"decision\",\"lineageId\":\"lin_1\",\"payloadRef\":{\"bytes\":98,\"hash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"},\"sourceDigest\":\"abababababababababababababababababababababababababababababababab\",\"statement\":\"use node:test\"}",
+      "sha256": "d85529e391856a68fbf9dee17baaecaa9c3046a6fef77eff17452af9995e385f",
+      "statementUtf8Hex": "757365206e6f64653a74657374"
+    },
+    {
+      "name": "v2-unicode-empty",
+      "note": "unicode key ordering + empty string + zero bytes",
+      "preimage": {
+        "sourceDigest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "lineageId": "ω-lineage",
+        "generation": 42,
+        "kind": "file_touched",
+        "statement": "",
+        "payloadRef": {
+          "hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "bytes": 0
+        }
+      },
+      "canonical": "{\"generation\":42,\"kind\":\"file_touched\",\"lineageId\":\"ω-lineage\",\"payloadRef\":{\"bytes\":0,\"hash\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\"},\"sourceDigest\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"statement\":\"\"}",
+      "sha256": "272b33bf685df9299c5c87fc1761e85d8210631b3f0027bd61b194ac5df1f114",
+      "statementUtf8Hex": ""
+    },
+    {
+      "name": "v3-absent-optionals",
+      "note": "absent optionals OMITTED, never null",
+      "preimage": {
+        "sourceDigest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "lineageId": "lin_2",
+        "generation": 3,
+        "kind": "error"
+      },
+      "canonical": "{\"generation\":3,\"kind\":\"error\",\"lineageId\":\"lin_2\",\"sourceDigest\":\"1111111111111111111111111111111111111111111111111111111111111111\"}",
+      "sha256": "130d7d502cbdc52733de1bed586e508ae3b5d1a32a1590ca3a7b5f3f52480237"
+    },
+    {
+      "name": "v4a-nfc",
+      "note": "precomposed U+00E9 - canonicalizer MUST NOT normalize",
+      "preimage": {
+        "sourceDigest": "abababababababababababababababababababababababababababababababab",
+        "lineageId": "lin_1",
+        "generation": 0,
+        "kind": "decision",
+        "statement": "café",
+        "payloadRef": {
+          "hash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "bytes": 1
+        }
+      },
+      "canonical": "{\"generation\":0,\"kind\":\"decision\",\"lineageId\":\"lin_1\",\"payloadRef\":{\"bytes\":1,\"hash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"},\"sourceDigest\":\"abababababababababababababababababababababababababababababababab\",\"statement\":\"café\"}",
+      "sha256": "413e034ca9f36c3e4187c97a2cb69399049fb6a32072d1ba336e23c4eea55cd5",
+      "statementUtf8Hex": "636166c3a9"
+    },
+    {
+      "name": "v4b-nfd",
+      "note": "decomposed U+0065 U+0301 - MUST differ from v4a",
+      "preimage": {
+        "sourceDigest": "abababababababababababababababababababababababababababababababab",
+        "lineageId": "lin_1",
+        "generation": 0,
+        "kind": "decision",
+        "statement": "café",
+        "payloadRef": {
+          "hash": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "bytes": 1
+        }
+      },
+      "canonical": "{\"generation\":0,\"kind\":\"decision\",\"lineageId\":\"lin_1\",\"payloadRef\":{\"bytes\":1,\"hash\":\"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd\"},\"sourceDigest\":\"abababababababababababababababababababababababababababababababab\",\"statement\":\"café\"}",
+      "sha256": "b42a69825a137f809d80baa03c5848208917054476870129c8eb20746515fe41",
+      "statementUtf8Hex": "63616665cc81"
+    }
+  ],
+  "consumerContract": "Consumers MUST check: every vector's canonical string and sha256; statementUtf8Hex where present (the NFC/NFD pair is not distinguishable by eye); mustDiffer pairs; and mustReject cases (a loader that skips these can pass while normalizing or accepting floats). The respawn TS suite is the ANCHOR - it keeps hand-pinned literals and asserts this fixture matches them, so a corrupted fixture fails here rather than self-verifying into every downstream language. WHY THE HEX FIELDS EXIST (respawn, seq 430403): the ASCII hex fields (sha256, statementUtf8Hex) anchor the unicode content precisely BECAUSE they are immune to the normalization they detect - bytes over glyphs, one level up. A transit normalization that rewrites a statement cannot also rewrite its hex, so the mismatch surfaces instead of rendering identically and passing."
+}
