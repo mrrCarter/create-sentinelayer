@@ -12,7 +12,8 @@
     "test:e2e": "node --import ./tests/setup-env.mjs --test tests/e2e*.test.mjs",
     "test:coverage": "c8 node --import ./tests/setup-env.mjs --test tests/unit*.test.mjs",
     "verify": "npm run check && npm run docs:build && npm run test:e2e && npm run test:coverage && npm pack --dry-run",
-    "release:publish": "node scripts/release-publish.mjs"
+    "release:publish": "node scripts/release-publish.mjs",
+    "test:conformance": "node --import ./tests/setup-env.mjs --test tests/conformance.engram-21-3.test.mjs"
   },
   "bin": {
     "sentinelayer-cli": "bin/sentinelayer-cli.js",
