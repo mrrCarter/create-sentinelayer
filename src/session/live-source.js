@@ -23,6 +23,7 @@ import { readStream } from "./stream.js";
 import {
   addSessionEventIdentityKeys,
   dedupeSessionEvents,
+  readSessionEventSequence,
   sessionEventHasKnownIdentity,
   sessionEventIdentityKeys,
 } from "./event-identity.js";
@@ -154,11 +155,24 @@ export async function* watchRemoteStream({
     sessionId,
   )}/stream`;
   let backoff = reconnectBackoffMs;
+  // Highest server sequence actually DELIVERED to the consumer. SSE is a live push with no
+  // backlog: reconnecting without it silently drops everything published while we were away,
+  // and a listener that missed messages looks exactly like a quiet room. This is what makes an
+  // agent "go dark".
+  let resumeSequence = 0;
 
   while (!signal?.aborted) {
     let response;
+    // Resume strictly after the last delivered event. The server filter is exclusive
+    // (`sequence_id > from_sequence`), so this replays nothing and skips nothing. The first
+    // connection sends no cursor and starts live, which is the behaviour attaching to a room
+    // should have -- resume only ever applies to a RECONNECT.
+    const url =
+      resumeSequence > 0
+        ? `${endpoint}?fromSequence=${encodeURIComponent(String(resumeSequence))}`
+        : endpoint;
     try {
-      response = await _sseFetch(endpoint, {
+      response = await _sseFetch(url, {
         method: "GET",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -201,6 +215,11 @@ export async function* watchRemoteStream({
             try {
               const event = JSON.parse(payload);
               yield { source: "sse", event };
+              // Advance only AFTER the consumer has taken the event. If the generator is closed
+              // mid-yield we resume one early and the merger dedups the repeat -- a duplicate is
+              // recoverable, a gap is not.
+              const sequence = readSessionEventSequence(event);
+              if (sequence > resumeSequence) resumeSequence = sequence;
             } catch {
               yield { source: "sse", raw: payload };
             }

@@ -3,7 +3,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { mergeLiveSources } from "../src/session/live-source.js";
+import { mergeLiveSources, watchRemoteStream } from "../src/session/live-source.js";
+import { readSessionEventSequence } from "../src/session/event-identity.js";
 
 /**
  * Build an async iterable from a list of items so we can drive the
@@ -143,4 +144,116 @@ test("mergeLiveSources: passes through non-event items (errors)", async () => {
   const events = collected.filter((c) => c.event);
   assert.equal(errors.length, 1);
   assert.equal(events.length, 1);
+});
+
+/**
+ * Build a fake SSE Response whose body yields the given frames then ends.
+ * Ending the body is how we simulate a dropped connection.
+ */
+function sseResponse(frames) {
+  const encoder = new TextEncoder();
+  let i = 0;
+  return {
+    ok: true,
+    status: 200,
+    body: {
+      getReader() {
+        return {
+          async read() {
+            if (i >= frames.length) return { done: true, value: undefined };
+            return { done: false, value: encoder.encode(frames[i++]) };
+          },
+          async cancel() {},
+        };
+      },
+    },
+  };
+}
+
+function sseFrame(sequenceId) {
+  return `data: ${JSON.stringify({
+    sequenceId,
+    event: "session_message",
+    payload: { message: `m${sequenceId}` },
+  })}\n\n`;
+}
+
+/**
+ * Regression: agents "going dark".
+ *
+ * SSE is a live push with no backlog. Reconnecting without a cursor drops every event published
+ * during the gap, and a listener that missed messages is indistinguishable from a quiet room --
+ * which is exactly what makes the failure so hard to notice.
+ *
+ * The server has supported resume all along (`fromSequence`, `after`, `Last-Event-ID`); the
+ * client simply never sent one.
+ */
+test("watchRemoteStream: resumes from the last delivered sequence after a reconnect", async () => {
+  const urls = [];
+  const responses = [
+    sseResponse([sseFrame(5), sseFrame(6)]),
+    sseResponse([sseFrame(7)]),
+  ];
+  let call = 0;
+  const _sseFetch = async (url) => {
+    urls.push(url);
+    return responses[Math.min(call++, responses.length - 1)];
+  };
+
+  const controller = new AbortController();
+  const seen = [];
+  for await (const item of watchRemoteStream({
+    apiBaseUrl: "https://api.test",
+    sessionId: "s1",
+    token: "tok",
+    signal: controller.signal,
+    _sseFetch,
+    reconnectBackoffMs: 1,
+  })) {
+    if (item?.event) seen.push(readSessionEventSequence(item.event));
+    if (seen.length >= 3) {
+      controller.abort();
+      break;
+    }
+  }
+
+  // Nothing was lost across the drop.
+  assert.deepEqual(seen, [5, 6, 7]);
+  // First attach is live -- no cursor, no history replay.
+  assert.ok(!urls[0].includes("fromSequence"), `first connect should not resume: ${urls[0]}`);
+  // The reconnect resumes strictly after the last event the consumer actually received.
+  assert.ok(urls[1].includes("fromSequence=6"), `reconnect should resume at 6: ${urls[1]}`);
+});
+
+test("watchRemoteStream: a reconnect before any event still attaches live", async () => {
+  const urls = [];
+  let call = 0;
+  const _sseFetch = async (url) => {
+    urls.push(url);
+    // First attempt fails outright, so no event was ever delivered.
+    if (call++ === 0) throw new Error("connection refused");
+    return sseResponse([sseFrame(9)]);
+  };
+
+  const controller = new AbortController();
+  const seen = [];
+  for await (const item of watchRemoteStream({
+    apiBaseUrl: "https://api.test",
+    sessionId: "s1",
+    token: "tok",
+    signal: controller.signal,
+    _sseFetch,
+    reconnectBackoffMs: 1,
+  })) {
+    if (item?.event) {
+      seen.push(readSessionEventSequence(item.event));
+      controller.abort();
+      break;
+    }
+  }
+
+  assert.deepEqual(seen, [9]);
+  // With nothing delivered yet there is no floor to resume from; sending fromSequence=0 would
+  // ask the server to replay the room from the beginning.
+  assert.ok(urls.every((u) => !u.includes("fromSequence")), urls.join(" | "));
 });
