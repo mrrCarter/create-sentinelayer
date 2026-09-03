@@ -210,7 +210,7 @@ test("Unit AIdenID helper: revoke request sends scoped headers and parses respon
   });
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://api.aidenid.com/v1/identities/id_123/revoke");
+  assert.equal(requests[0].url, "https://api.aidenid.com/v1/identities/id_123/squash");
   assert.equal(requests[0].init.method, "POST");
   assert.equal(requests[0].init.headers["Authorization"], "Bearer k_test");
   assert.equal(execution.response.status, "REVOKED");
