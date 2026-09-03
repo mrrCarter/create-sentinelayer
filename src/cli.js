@@ -14,6 +14,11 @@ const COMMAND_REGISTRARS = {
     exportName: "registerOmarGateCommand",
     needsLegacy: true,
   },
+  board: {
+    loader: () => import("./commands/board.js"),
+    exportName: "registerBoardCommand",
+    needsLegacy: false,
+  },
   audit: {
     loader: () => import("./commands/audit.js"),
     exportName: "registerAuditCommand",
