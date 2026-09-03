@@ -21,7 +21,12 @@ import path from "node:path";
 import { buildObservationsFromItems } from "./observations.js";
 import { contentHash, normalizeString } from "../session/recall/text.js";
 
-function namespaceDir(root, namespace) {
+/**
+ * Where a namespace's files live. EXPORTED so siblings (e.g. build-state.js) resolve
+ * the same directory rather than re-deriving the convention -- a second copy of this
+ * sanitization would drift and silently point at a different namespace.
+ */
+export function namespaceDir(root, namespace) {
   const safe = namespace.raw.replace(/[^A-Za-z0-9._-]/g, "_");
   return path.join(root, ".sentinelayer", "engram", safe);
 }
