@@ -28,11 +28,13 @@ export {
 export { createGovernance } from "./governance.js";
 export { createMemoryTools } from "./tools.js";
 export { runEngramSla } from "./sla.js";
+export { ingestDocumentIntoNamespace } from "./ingest-document.js";
 
 import { createStore } from "./store.js";
 import { createLocalConsent } from "./namespace.js";
 import { createGovernance } from "./governance.js";
 import { createBuildState } from "./build-state.js";
+import { ingestDocumentIntoNamespace } from "./ingest-document.js";
 import { createMemoryTools } from "./tools.js";
 import { createEmbedder } from "../session/recall/embedder.js";
 
@@ -63,5 +65,9 @@ export function createMemoryService({
   // Wired by DEFAULT, not opt-in: a readiness gate nobody injects is a comment.
   const buildState = createBuildState({ storeRoot });
   const tools = createMemoryTools({ store, consent, governance, embedder, renderer, isAuthorizedForSealed, buildState });
-  return { tools, store };
+  // Exposed on the service so the lifecycle cannot be bypassed by a caller who has a
+  // store but forgets the buildState -- the deps are bound here, once.
+  const ingestDocument = (options) =>
+    ingestDocumentIntoNamespace({ ...options, deps: { store, buildState } });
+  return { tools, store, buildState, ingestDocument };
 }
