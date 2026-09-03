@@ -69,6 +69,11 @@ const COMMAND_REGISTRARS = {
     exportName: "registerTelemetryCommand",
     needsLegacy: false,
   },
+  respawn: {
+    loader: () => import("./commands/respawn.js"),
+    exportName: "registerRespawnCommand",
+    needsLegacy: false,
+  },
   auth: {
     loader: () => import("./commands/auth.js"),
     exportName: "registerAuthCommand",
@@ -250,6 +255,14 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
 
   if (shouldBypassCommander(normalizedArgs)) {
     await runLegacyCliWithErrorHandling(normalizedArgs);
+    return;
+  }
+
+  // `sl respawn …` is a verbatim PASSTHROUGH to the Respawn CLIs: hand off before commander so the inner CLI's own
+  // --help/--version/flags are never intercepted by sl's global options (no `--` separator needed).
+  if (normalizedArgs[0] === "respawn" && normalizedArgs.length > 1) {
+    const { runRespawnPassthrough } = await import("./commands/respawn.js");
+    await runRespawnPassthrough(normalizedArgs.slice(1));
     return;
   }
 
