@@ -32,6 +32,7 @@ export { runEngramSla } from "./sla.js";
 import { createStore } from "./store.js";
 import { createLocalConsent } from "./namespace.js";
 import { createGovernance } from "./governance.js";
+import { createBuildState } from "./build-state.js";
 import { createMemoryTools } from "./tools.js";
 import { createEmbedder } from "../session/recall/embedder.js";
 
@@ -59,6 +60,8 @@ export function createMemoryService({
   isAuthorizedForSealed,
 } = {}) {
   const store = createStore({ storeRoot, adapters });
-  const tools = createMemoryTools({ store, consent, governance, embedder, renderer, isAuthorizedForSealed });
+  // Wired by DEFAULT, not opt-in: a readiness gate nobody injects is a comment.
+  const buildState = createBuildState({ storeRoot });
+  const tools = createMemoryTools({ store, consent, governance, embedder, renderer, isAuthorizedForSealed, buildState });
   return { tools, store };
 }

@@ -56,6 +56,7 @@ export function createMemoryTools({
   store,
   consent,
   governance,
+  buildState = null,
   embedder = createEmbedder(),
   renderer = null,
   isAuthorizedForSealed = () => false,
@@ -81,6 +82,11 @@ export function createMemoryTools({
   async function retrieveInternal({ scope, query, k, role, caller }) {
     const namespace = parseNamespace(scope);
     authorize(caller, namespace, "read", { consent }); // fail-closed 403
+    // A half-built index must not answer. Gated HERE, in the shared core, so recall
+    // and summarize cannot diverge -- a second door is how a rule ends up enforced on
+    // one path and not the other. `absent` is allowed: session namespaces are
+    // adapter-backed and never "built", so only an in-flight build is refused.
+    if (buildState) await buildState.assertNotBuilding(namespace);
     const authorizedForSealed = Boolean(isAuthorizedForSealed(caller, namespace));
 
     const all = await store.readObservations(namespace);
