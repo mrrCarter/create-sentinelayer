@@ -86,6 +86,22 @@ test("Unit board resolvers: a check still RUNNING is unknown", async () => {
   assert.equal(await running(CHK), null);
 });
 
+test("Unit board resolvers: a RUNNING check with a STALE conclusion is still unknown", async () => {
+  // GitHub can report a previous run's conclusion while a re-run is queued or in
+  // flight. Trusting `conclusion` without checking `status` would read that stale
+  // success as a current one -- a green that belongs to a run nobody asked about.
+  // Found by mutating away the status guard and watching the suite stay green.
+  const staleSuccess = createEvidenceResolver({
+    run: okJson([{ name: "Native Quality Gates", status: "in_progress", conclusion: "success" }]),
+  });
+  assert.equal(await staleSuccess(CHK), null, "a conclusion from a previous run is not this run's answer");
+
+  const queuedFailure = createEvidenceResolver({
+    run: okJson([{ name: "Native Quality Gates", status: "queued", conclusion: "failure" }]),
+  });
+  assert.equal(await queuedFailure(CHK), null, "and a stale failure is equally not an answer");
+});
+
 test("Unit board resolvers: check conclusions map correctly", async () => {
   const pass = createEvidenceResolver({
     run: okJson([{ name: "Native Quality Gates", status: "completed", conclusion: "success" }]),
