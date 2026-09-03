@@ -151,7 +151,27 @@ export function createBuildState({ storeRoot } = {}) {
       return record;
     },
 
-    /** Throw unless the namespace is ready. The gate a query path calls. */
+    /**
+     * Throw ONLY when a build is in flight. The gate the RETRIEVAL path calls.
+     *
+     * Deliberately weaker than `assertQueryable`, and the difference is the whole
+     * reason this exists: `absent` must be ALLOWED. A session namespace is adapter-
+     * backed and live — nobody ever "builds" it, so it has no state file and never
+     * will. Requiring `ready` there would refuse every session recall in the product.
+     *
+     * What must be refused is the state where answering is actively misleading: a
+     * document half-written to disk, where recall would return the best match among
+     * the chunks that happen to exist and look exactly like a complete answer.
+     */
+    async assertNotBuilding(namespace) {
+      const current = await read(namespace);
+      if (current.state === BUILD_STATES.BUILDING) {
+        throw new EngramNotReadyError(namespace.raw, current.state);
+      }
+      return current;
+    },
+
+    /** Throw unless the namespace is ready. For callers that require a finished build. */
     async assertQueryable(namespace) {
       const current = await read(namespace);
       if (current.state !== BUILD_STATES.READY) {
