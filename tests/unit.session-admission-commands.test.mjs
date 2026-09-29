@@ -58,7 +58,7 @@ const ADMISSION_ALLOWED = [
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-function fakeApi({ decision = "approved", grantActions = null } = {}) {
+function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = null, inviteResult = null } = {}) {
   const state = {
     requests: [],
     admissions: new Map(),
@@ -92,12 +92,12 @@ function fakeApi({ decision = "approved", grantActions = null } = {}) {
     if (method === "GET" && /\/admissions\/self$/.test(p)) {
       const adm = [...state.admissions.values()].find((a) => a.token === bearer);
       if (!adm) return json({ error: { code: "INVALID_TOKEN" } }, 401);
-      return json({ admissionId: adm.id, sessionId: SID, agentId: adm.body.agentId, actions: adm.actions, expiresAt: Math.floor(Date.now() / 1000) + 3600, passportId: "pid", effectiveRole: "contributor", verifiedAt: Math.floor(Date.now() / 1000) });
+      return json({ admissionId: adm.id, sessionId: SID, agentId: receiptAgentId ?? adm.body.agentId, actions: adm.actions, expiresAt: Math.floor(Date.now() / 1000) + 3600, passportId: "pid", effectiveRole: "contributor", verifiedAt: Math.floor(Date.now() / 1000) });
     }
     // --- admission management (delegator's human token)
     if (method === "POST" && /\/invitations\/accept$/.test(p)) {
       state.order.push("invite");
-      return json({ ok: true, result: { accepted: true } });
+      return json(inviteResult || { ok: true, result: { accepted: true } });
     }
     if (method === "POST" && /\/admissions$/.test(p)) {
       state.order.push("admission");
@@ -704,4 +704,94 @@ test("case alone is not a different identity: Mixed-Case runs as its admission",
 test("commands and authorisation share ONE canonicalisation", () => {
   assert.equal(canonicalAgentId("Normalized:Post:Expired"), "normalized-post-expired");
   assert.equal(canonicalAgentId("  ok-agent_1.x "), "ok-agent_1.x");
+});
+
+// ------------- one identity through every join entry (Verity 51b hold: legacy --name)
+
+const { runAdmissionJoin } = await import("../src/session/admission.js");
+
+test("legacy `join --name` with an identity-changing spelling is refused before any request", async () => {
+  const ws = await workspace();
+  const api = fakeApi({ grantActions: ["tickets.read"] });
+  const ran = await viaCli(["session", "join", SID, "--name", "legacy:name:agent", "--goal", "Read tickets only", "--scope", "tickets.read", "--json", "--path", ws]);
+  assert.match(String(ran.error?.message), /--name "legacy:name:agent" is not a canonical agent id/);
+  assert.deepEqual(api.requests, []);
+});
+
+test("the full --name chain: a canonical legacy name joins, registers, and later implicit work runs on ITS admission", async () => {
+  const ws = await workspace();
+  const api = fakeApi();
+  const joined = await viaCli(["session", "join", SID, "--name", "legacy-name-agent", "--goal", "Post the update", "--scope", "session.read,session.post", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.joined, true);
+  assert.equal(joined.json.agentId, "legacy-name-agent");
+  assert.equal(joined.json.admission.receipt.agentId, "legacy-name-agent");
+  const mark = api.requests.length;
+  // No --agent: the implicit identity is the registered one, and it is the admitted one.
+  const said = await viaCli(["session", "say", SID, "implicit follow-up", "--json", "--path", ws]);
+  assert.equal(said.error, null, String(said.error?.stack || said.error));
+  const after = since(api, mark);
+  assert.ok(after.some((c) => c.method === "POST" && /\/events$/.test(c.path)), "the message was posted");
+  assert.deepEqual(after.filter((c) => c.bearer === HUMAN), [], "nothing on the human token");
+});
+
+test("beside an explicit --agent, --name is a free-text display label", async () => {
+  const ws = await workspace();
+  const api = fakeApi();
+  const joined = await viaCli(["session", "join", SID, "--agent", "labelled-agent", "--name", "Build Bot: Nightly", "--goal", "g", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.agentId, "labelled-agent");
+  const requested = [...api.admissions.values()][0].body;
+  assert.equal(requested.agentId, "labelled-agent");
+  assert.equal(requested.displayName, "Build Bot: Nightly");
+});
+
+test("a receipt for ANY other spelling is not this agent's grant: not joined, nothing registered", async () => {
+  const ws = await workspace();
+  const api = fakeApi({ receiptAgentId: "receipt:other" });
+  const joined = await viaCli(["session", "join", SID, "--agent", "receipt-other", "--goal", "g", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.joined, false);
+  assert.equal(joined.exitCode, 4);
+  assert.match(joined.json.admission.reason, /admission is for agent "receipt:other", not "receipt-other"/);
+  const mark = api.requests.length;
+  const said = await viaCli(["session", "say", SID, "after a refused join", "--json", "--path", ws]);
+  assert.deepEqual(since(api, mark).filter((c) => c.method === "POST" && /\/events$/.test(c.path) && c.bearer === HUMAN), [],
+    "no implicit identity was registered for the human token to post as");
+});
+
+test("an admitted join registers the ADMITTED identity, never an invitation's different onboarding id", async () => {
+  const ws = await workspace();
+  const api = fakeApi({ inviteResult: { ok: true, onboarding: { agentId: "seat-agent" } } });
+  const joined = await viaCli(["session", "join", SID, "--name", "admitted-agent", "--invite-token", "inv_fixture", "--goal", "g", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.joined, true);
+  assert.equal(joined.json.agentId, "admitted-agent");
+});
+
+test("without --agent, an invitation's non-canonical onboarding id is refused before local registration", async () => {
+  const ws = await workspace();
+  fakeApi({ inviteResult: { ok: true, onboarding: { agentId: "seat:agent" } } });
+  const joined = await viaCli(["session", "join", SID, "--invite-token", "inv_fixture", "--json", "--path", ws]);
+  assert.match(String(joined.error?.message), /the invitation's agent id "seat:agent" is not a canonical agent id/);
+});
+
+test("runAdmissionJoin itself refuses a non-canonical agent before key or network I/O", async () => {
+  let calls = 0;
+  const count = async () => { calls += 1; throw new Error("no I/O expected"); };
+  await assert.rejects(
+    runAdmissionJoin(SID, { agentId: "direct:caller", goal: "g", homeDir, resolveAuthSession: count, requestMutation: count, requestRead: count }),
+    /the admission agent id "direct:caller" is not a canonical agent id/,
+  );
+  assert.equal(calls, 0);
+});
+
+test("case alone in a legacy --name is the same identity: it joins as the lowercase admission", async () => {
+  const ws = await workspace();
+  fakeApi();
+  const joined = await viaCli(["session", "join", SID, "--name", "Mixed-Legacy", "--goal", "g", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.joined, true, JSON.stringify(joined.json?.admission));
+  assert.equal(joined.json.agentId, "mixed-legacy");
+  assert.equal(joined.json.admission.receipt.agentId, "mixed-legacy");
 });

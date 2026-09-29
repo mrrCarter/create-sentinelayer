@@ -98,7 +98,12 @@ import {
   parseTtlSeconds as parseAdmissionTtlSeconds,
   runAdmissionJoin,
 } from "../session/admission.js";
-import { canonicalAgentId, currentAdmittedAgent, withAgentAdmission } from "../session/admission-auth.js";
+import {
+  assertCanonicalAgentId,
+  canonicalAgentId,
+  currentAdmittedAgent,
+  withAgentAdmission,
+} from "../session/admission-auth.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -3387,9 +3392,16 @@ export function registerSessionCommand(program) {
       const legacyName = normalizeString(options.name);
       const inviteToken = normalizeString(options.inviteToken);
       const emitJson = shouldEmitJson(options, command);
+      // ONE requested identity for the whole join, validated before any side effect.
+      // --name is the identity only when --agent is absent (its legacy alias); beside an
+      // explicit --agent it is a free-text display label. Either way the identity is
+      // used in its canonical spelling from here on, so the admission, its receipt,
+      // the local registration and every later implicit command name the same agent.
+      if (!explicitAgent) assertCanonicalAgentId(legacyName, "--name");
+      const requestedAgent = canonicalAgentId(explicitAgent || legacyName);
       if (options.cancelAdmission) {
         const cancelled = await cancelAdmission(normalizedSessionId, {
-          agentId: explicitAgent || legacyName,
+          agentId: requestedAgent,
           targetPath,
         });
         const payload = {
@@ -3414,7 +3426,7 @@ export function registerSessionCommand(program) {
           targetPath,
           invitationToken: inviteToken,
           seatKey: options.seatKey,
-          agentId: explicitAgent || legacyName,
+          agentId: requestedAgent,
           idempotencyKey: options.idempotencyKey,
         });
         invitationAcceptResult =
@@ -3424,7 +3436,7 @@ export function registerSessionCommand(program) {
       }
       let admission = null;
       if (normalizeString(options.goal)) {
-        const admissionAgent = explicitAgent || legacyName;
+        const admissionAgent = requestedAgent;
         if (!admissionAgent) {
           throw new Error("--goal requires --agent <id>: admission is requested for one named agent.");
         }
@@ -3457,7 +3469,7 @@ export function registerSessionCommand(program) {
             command: "session join",
             joined: false,
             sessionId: normalizedSessionId,
-            agentId: admissionAgent.toLowerCase(),
+            agentId: admissionAgent,
             invitationAccepted: Boolean(invitationAcceptResult),
             admission,
           };
@@ -3486,13 +3498,21 @@ export function registerSessionCommand(program) {
       // grant's receipt, and never with the human token. A cached "active" is not
       // reported until this succeeds (a revoked grant is not joined), and nothing
       // about the room is fetched on the human's authority.
-      const admittedAgentId = admission ? (explicitAgent || legacyName).toLowerCase() : "";
+      const admittedAgentId = admission ? requestedAgent : "";
       let admissionReceipt = null;
       if (admission) {
         try {
           admissionReceipt = await withAgentAdmission(normalizedSessionId, admittedAgentId, () =>
             fetchOwnAdmissionReceipt(normalizedSessionId, { targetPath }),
           );
+          // The grant must be for EXACTLY the identity this join registers, byte for
+          // byte: a receipt for any other spelling is a different agent's authority.
+          const receiptAgent = String(admissionReceipt?.agentId ?? "");
+          if (receiptAgent !== admittedAgentId) {
+            throw new Error(
+              `the admission is for agent "${receiptAgent || "(none)"}", not "${admittedAgentId}"`,
+            );
+          }
         } catch (error) {
           process.exitCode = 4;
           const payload = {
@@ -3556,8 +3576,17 @@ export function registerSessionCommand(program) {
         invitationAcceptResult?.claimedSeat,
       );
       const acceptedAgentId = normalizeString(acceptedOnboarding?.agentId);
-      const agentSeed = explicitAgent || acceptedAgentId || legacyName;
+      // An admitted join registers the admitted identity and nothing else. Otherwise an
+      // invitation's onboarding agent id is the identity only when none was given, and
+      // it is held to the same canonical rule before anything is registered locally.
+      if (!admission && !explicitAgent && acceptedAgentId) {
+        assertCanonicalAgentId(acceptedAgentId, "the invitation's agent id");
+      }
+      const agentSeed = admission ? admittedAgentId : explicitAgent || acceptedAgentId || legacyName;
       const resolvedAgentId = await defaultAgentId(agentSeed, targetPath);
+      if (admission && resolvedAgentId !== admittedAgentId) {
+        throw new Error(`join would register "${resolvedAgentId}", not the admitted agent "${admittedAgentId}".`);
+      }
       const roleWasExplicit = optionWasSetByCli(command, "role");
       const role =
         normalizeString(roleWasExplicit ? options.role : acceptedOnboarding?.role || options.role) ||

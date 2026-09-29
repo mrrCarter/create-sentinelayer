@@ -364,6 +364,11 @@ export async function runAdmissionJoin(
   const agent = normalizeString(agentId).toLowerCase();
   if (!sid) throw new Error("session id is required.");
   if (!agent) throw new Error("--agent is required for admission.");
+  // Every entry path, not only the flags the dispatcher sees: admission is never
+  // requested for a spelling that later commands would resolve to another identity.
+  // Imported lazily: admission-auth imports this module.
+  const { assertCanonicalAgentId } = await import("./admission-auth.js");
+  assertCanonicalAgentId(agent, "the admission agent id");
   const goalSummary = normalizeString(goal);
   if (!goalSummary) throw new Error("--goal is required: say what this agent is coming to do.");
 
