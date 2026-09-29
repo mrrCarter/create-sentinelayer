@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Nina's security-persona domain tools (#A13).
 
 import test from "node:test";

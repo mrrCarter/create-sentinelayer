@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the live-web validator (#investor-dd-25..28).
 
 import test from "node:test";

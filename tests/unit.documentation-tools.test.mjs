@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Samir's documentation domain tools (#A23).
 
 import test from "node:test";

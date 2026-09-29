@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Senti's auto-naming + anonymous-detection helpers.
 
 import test from "node:test";

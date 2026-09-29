@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for src/ingest/ownership.js (#A10 file → persona ownership router).
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for session-preview helper.
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Nora's supply-chain domain tools (#A22).
 
 import test from "node:test";

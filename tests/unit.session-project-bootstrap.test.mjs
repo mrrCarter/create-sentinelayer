@@ -1,3 +1,8 @@
+// FIRST: this file bootstraps real sessions. Its safety cannot depend on the caller
+// remembering `--import ./tests/setup-env.mjs` (a raw run synced every room it made to the
+// API with the developer's stored credentials). ESM evaluates imports in order, so the
+// offline flags are set before any module under test loads.
+import "./setup-env.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";

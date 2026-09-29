@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for coord/priority.js (#A9 priority ladder).
 
 import test from "node:test";

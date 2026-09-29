@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the reconciliation ruleset (#investor-dd-29).
 
 import test from "node:test";

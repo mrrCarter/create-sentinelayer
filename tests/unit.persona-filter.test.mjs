@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for per-persona CLI filtering (PR #A-CLI-1 library layer).
 // CLI-flag wiring in src/commands/omargate.js + buildLegacyArgs lands in a
 // follow-up PR; this PR only exposes the library capability + wires the

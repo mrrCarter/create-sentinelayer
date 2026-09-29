@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Sofia's observability domain tools (#A20).
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Amina's ai-governance domain tools (#A24).
 
 import test from "node:test";

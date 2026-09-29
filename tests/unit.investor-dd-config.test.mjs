@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Scaffold test — asserts the investor-dd budget resolver enforces
 // documented defaults + respects caller overrides. Expanded as later
 // PRs add the per-file loop, routing engine, compliance pack.

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Priya's testing-persona domain tools (#A15).
 
 import test from "node:test";

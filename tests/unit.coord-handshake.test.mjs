@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for coord/handshake.js (#A9 LOCK/ACK/RELEASE + deadlock detection).
 
 import test from "node:test";

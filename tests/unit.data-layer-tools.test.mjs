@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Linh's data-layer domain tools (#A17).
 
 import test from "node:test";

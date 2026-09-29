@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for buildLegacyArgs persona-flag pass-through (A-CLI-1 flags).
 
 import test from "node:test";

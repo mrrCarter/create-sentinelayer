@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the unified persona runner (#investor-dd-4..15).
 
 import test from "node:test";

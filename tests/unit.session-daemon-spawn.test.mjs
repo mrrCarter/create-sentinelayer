@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -401,4 +402,38 @@ test("Unit daemon-spawn: status line formatting covers all daemon outcomes", () 
   );
   assert.equal(failed.tone, "yellow");
   assert.ok(failed.text.includes("spawn_failed: boom"));
+});
+
+// ------------- 2026-09-29 fork bomb: the daemon entry and the test-runner guard
+
+test("Unit daemon-spawn: the daemon entry is this package's CLI, never the running script", async () => {
+  const { resolveCliEntryPath } = await import("../src/session/daemon-spawn.js");
+  const expected = path.resolve(fileURLToPath(new URL("../bin/sl.js", import.meta.url)));
+  assert.equal(path.resolve(resolveCliEntryPath()), expected);
+  // Under the test runner argv[1] is THIS test file: spawning it as a "daemon" re-ran the tests.
+  assert.notEqual(path.resolve(resolveCliEntryPath()), path.resolve(process.argv[1] || "."));
+});
+
+test("Unit daemon-spawn: under the test runner nothing detached is spawned unless the test names the entry", async () => {
+  assert.ok(process.env.NODE_TEST_CONTEXT, "precondition: running under node --test");
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-daemon-testrunner-"));
+  let result = null;
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 600 });
+    result = await spawnDetachedSentiDaemon({
+      sessionId: session.sessionId,
+      targetPath: tempRoot,
+      // Autostart NOT disabled: only the test-runner guard stands between this call and a spawn.
+      env: { SENTINELAYER_SKIP_REMOTE_SYNC: "1" },
+    });
+    assert.deepEqual({ spawned: result.spawned, pid: result.pid, reason: result.reason },
+      { spawned: false, pid: null, reason: "test_runner" });
+  } finally {
+    // If the guard ever regresses, do not leave the spawned process behind.
+    if (result?.pid) {
+      try { process.kill(result.pid); } catch {}
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit coverage for `sl session join` + `sl session ensure --session <id>`.
 //
 // Background: Carter reported that an agent could not pick up a session

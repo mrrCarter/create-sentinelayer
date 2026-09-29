@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Kat's infrastructure domain tools (#A21).
 
 import test from "node:test";

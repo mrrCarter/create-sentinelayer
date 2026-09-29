@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for listSessionsFromApi + probeSessionAccess.
 //
 // These cover the two paths Carter hit:

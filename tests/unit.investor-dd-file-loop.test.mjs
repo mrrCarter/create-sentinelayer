@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the per-file review loop library (#investor-dd-2).
 
 import test from "node:test";

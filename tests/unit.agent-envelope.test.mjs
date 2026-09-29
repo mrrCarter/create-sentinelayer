@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Tests for src/agents/envelope/* (#A8 agent envelope foundation).
 
 import test from "node:test";

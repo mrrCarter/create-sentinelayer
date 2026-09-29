@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the top-level investor-DD orchestrator (#investor-dd-5).
 
 import test from "node:test";

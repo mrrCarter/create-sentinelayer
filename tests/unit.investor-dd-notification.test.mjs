@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the notification dispatch (#investor-dd-19).
 
 import test from "node:test";

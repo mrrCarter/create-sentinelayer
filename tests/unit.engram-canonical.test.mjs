@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // unit.engram-canonical.test.mjs — required-glob proof for src/engram/canonical.js (§19.1 encoder).
 // Anchor discipline (engram #5): the fixture is verified against its PUBLISHED hash before any
 // vector is trusted — a fixture verified against itself is not an anchor.
