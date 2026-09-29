@@ -81,19 +81,86 @@ test("a direct fetch to a production host is refused with a typed error", async 
   await assert.rejects(fetch(new Request("https://api.openai.com/v1/models")), { code: "TEST_EGRESS_BLOCKED" });
 });
 
-test("destination policy: loopback and reserved test names only; look-alikes refused", () => {
-  for (const ok of [
-    "http://127.0.0.1:9/x", "http://localhost:3000", "http://[::1]:8080/", "https://api.fixture.invalid/v1",
-    "https://svc.test/a", "http://app.localhost/", "data:text/plain,hi",
-  ]) {
+test("destination policy: numeric loopback 127.0.0.1/[::1] only; names and look-alikes refused natively", () => {
+  for (const ok of ["http://127.0.0.1:9/x", "http://[::1]:8080/", "http://127.1/", "data:text/plain,hi"]) {
     assert.equal(isAllowedTestDestination(ok), true, ok);
   }
   for (const bad of [
-    "https://api.sentinelayer.com/api/v1/sessions", "https://localhost.com/", "https://127.0.0.1.nip.io/",
-    "https://evil.invalid.example.com/", "ftp://localhost/", "file:///etc/passwd", "not a url", "",
+    "https://api.sentinelayer.com/api/v1/sessions", "http://localhost:3000", "https://api.fixture.invalid/v1",
+    "https://svc.test/a", "http://app.localhost/", "http://127.0.0.2/", "https://localhost.com/",
+    "https://127.0.0.1.nip.io/", "http://[::ffff:127.0.0.1]/", "ftp://127.0.0.1/", "file:///etc/passwd",
+    "not a url", "",
   ]) {
     assert.equal(isAllowedTestDestination(bad), false, bad);
   }
+});
+
+async function withLoopbackServer(handler, fn) {
+  const hits = [];
+  const server = http.createServer((req, res) => {
+    hits.push(`${req.method} ${req.url}`);
+    handler(req, res);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    return await fn(`http://127.0.0.1:${server.address().port}`, hits);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+test("redirects: every hop is checked; a loopback-to-loopback redirect is followed", async () => {
+  await withLoopbackServer((req, res) => {
+    if (req.url === "/start") {
+      res.writeHead(302, { location: "/final" });
+      res.end();
+      return;
+    }
+    res.writeHead(200);
+    res.end("final-ok");
+  }, async (base, hits) => {
+    const response = await fetch(`${base}/start`);
+    assert.equal(await response.text(), "final-ok");
+    assert.deepEqual(hits, ["GET /start", "GET /final"]);
+  });
+});
+
+test("redirects: an allowed URL redirecting to a disallowed host is refused at that hop", async () => {
+  for (const target of ["http://127.0.0.2:9/next", "https://api.sentinelayer.com/api/v1/sessions"]) {
+    await withLoopbackServer((req, res) => {
+      res.writeHead(302, { location: target });
+      res.end();
+    }, async (base, hits) => {
+      const before = getBlockedTestEgress().length;
+      await assert.rejects(fetch(`${base}/start`), { code: "TEST_EGRESS_BLOCKED" });
+      assert.deepEqual(getBlockedTestEgress().slice(before), [new URL(target).origin]);
+      assert.deepEqual(hits, ["GET /start"]);
+    });
+  }
+});
+
+test("redirects: 303 is followed as GET; a 307 that would re-send a body is refused; manual mode is untouched", async () => {
+  await withLoopbackServer((req, res) => {
+    if (req.url === "/see-other") {
+      res.writeHead(303, { location: "/after" });
+      res.end();
+      return;
+    }
+    if (req.url === "/temporary") {
+      res.writeHead(307, { location: "/after" });
+      res.end();
+      return;
+    }
+    res.writeHead(200);
+    res.end(req.method);
+  }, async (base, hits) => {
+    const seeOther = await fetch(`${base}/see-other`, { method: "POST", body: "x" });
+    assert.equal(await seeOther.text(), "GET");
+    await assert.rejects(fetch(`${base}/temporary`, { method: "POST", body: "x" }), { code: "TEST_EGRESS_BLOCKED" });
+    const manual = await fetch(`${base}/see-other`, { method: "POST", body: "x", redirect: "manual" });
+    assert.equal(manual.status, 303);
+    assert.deepEqual(hits, ["POST /see-other", "GET /after", "POST /temporary", "POST /see-other"]);
+  });
 });
 
 test("positive control: a loopback server is still reachable through the guard", async () => {
