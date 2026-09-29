@@ -7,6 +7,11 @@ import { randomUUID } from "node:crypto";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { isSessionControlEvent } from "./control-events.js";
+import { installTestEgressGuard } from "../net/test-egress-guard.js";
+
+// No-op outside tests; inside a test process (or a child it spawned) every fetch
+// to a non-loopback host is refused before a socket opens.
+installTestEgressGuard();
 
 const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
 const DEFAULT_SYNC_TIMEOUT_MS = 5_000;
