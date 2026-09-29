@@ -104,6 +104,14 @@ import {
   currentAdmittedAgent,
   withAgentAdmission,
 } from "../session/admission-auth.js";
+import {
+  claimTicket,
+  listTickets,
+  releaseTicketLease,
+  renewTicketLease,
+  submitTicket,
+  ticketEvents,
+} from "../session/tickets.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -6721,6 +6729,134 @@ export function registerSessionCommand(program) {
           ),
         );
       }
+    });
+
+  // ---------------------------------------------------------------- tickets
+  // The room's shared backlog (API "Ticket Lease Contract (T2)"). Every subcommand is
+  // an ACTOR command: the runCli choke point runs it on the agent's admission.
+  const ticket = session
+    .command("ticket")
+    .description("The room's shared backlog: list, claim, renew, release and submit tickets");
+
+  async function ticketIdentity(sessionId, options, targetPath) {
+    const identity = await resolveSessionSayIdentity({ sessionId, agentId: options.agent, targetPath });
+    const agent = normalizeString(identity.agentId);
+    return agent && agent !== "cli-user" ? agent : "human";
+  }
+
+  function ticketOutput(options, command, payload, line) {
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(line);
+  }
+
+  ticket
+    .command("list <sessionId>")
+    .description("List the room's tickets (--available: only those claimable now)")
+    .option("--available", "Only tickets that can be claimed now (never blocked work)")
+    .option("--agent <id>", "Agent id reading the backlog (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await listTickets(normalizeString(sessionId), { targetPath, available: Boolean(options.available) });
+      const lines = result.items.map((t) => {
+        const holder = t.lease ? ` · ${t.lease.live ? "leased by" : "lease EXPIRED, was"} ${t.lease.holder}` : "";
+        const done = t.completion && !t.completion.verified ? " (manual, unverified)" : "";
+        return `${t.id}  ${t.status}${done}  v${t.version}  ${t.title}${holder}`;
+      });
+      ticketOutput(options, command, { command: "session ticket list", ...result }, lines.join("\n") || "No tickets.");
+    });
+
+  ticket
+    .command("claim <sessionId> <ticketId>")
+    .description("Claim a ticket: take its fenced lease")
+    .option("--expected-version <n>", "Refuse if the ticket has changed since this version")
+    .option("--agent <id>", "Agent id claiming the ticket (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const expectedVersion =
+        options.expectedVersion === undefined ? null : parsePositiveInteger(options.expectedVersion, "expected-version", 1);
+      const result = await claimTicket(sid, normalizeString(ticketId), { identity, expectedVersion, targetPath });
+      ticketOutput(options, command, { command: "session ticket claim", identity, ...result },
+        `Claimed ${ticketId} (fence ${result.lease.fence}, until ${result.lease.expiresAt}).`);
+    });
+
+  ticket
+    .command("renew <sessionId> <ticketId>")
+    .description("Renew the lease this identity holds on a ticket")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const result = await renewTicketLease(sid, normalizeString(ticketId), { identity, targetPath });
+      ticketOutput(options, command, { command: "session ticket renew", identity, ...result },
+        `Renewed ${ticketId} until ${result.lease.expiresAt}.`);
+    });
+
+  ticket
+    .command("release <sessionId> <ticketId>")
+    .description("Give a ticket back: it returns to open for the next claimant")
+    .option("--reason <text>", "Why it is being released")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const result = await releaseTicketLease(sid, normalizeString(ticketId), {
+        identity, targetPath, reason: normalizeString(options.reason) || null,
+      });
+      ticketOutput(options, command, { command: "session ticket release", identity, ...result }, `Released ${ticketId}.`);
+    });
+
+  ticket
+    .command("submit <sessionId> <ticketId>")
+    .description("Submit the work for review (in_review). Completion needs verification; this is not done.")
+    .option("--sha <sha>", "The implementation commit")
+    .option("--evidence-file <path>", "JSON array of re-checkable evidence claims")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      let evidence = [];
+      if (options.evidenceFile) {
+        evidence = JSON.parse(await fsp.readFile(path.resolve(targetPath, String(options.evidenceFile)), "utf8"));
+        if (!Array.isArray(evidence)) throw new Error("--evidence-file must contain a JSON array.");
+      }
+      const result = await submitTicket(sid, normalizeString(ticketId), {
+        identity, targetPath, implementationSha: normalizeString(options.sha) || null, evidence,
+      });
+      ticketOutput(options, command, { command: "session ticket submit", identity, ...result },
+        `Submitted ${ticketId} for review.`);
+    });
+
+  ticket
+    .command("events <sessionId>")
+    .description("The room's ticket events after a cursor, in commit order")
+    .option("--after <cursor>", "Only events after this cursor", "0")
+    .option("--agent <id>", "Agent id reading the feed (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const after = Number.parseInt(String(options.after ?? "0"), 10) || 0;
+      const result = await ticketEvents(normalizeString(sessionId), { after, targetPath });
+      const lines = (result.events || []).map((e) => `#${e.cursor} ${e.kind} ${e.ticketId} v${e.ticketVersion} by ${e.actorId}`);
+      ticketOutput(options, command, { command: "session ticket events", ...result }, lines.join("\n") || "No new ticket events.");
     });
 
   const checkpoint = session

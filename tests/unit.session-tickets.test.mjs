@@ -1,0 +1,220 @@
+// `sl session ticket ...` through the real runCli, as an admitted agent, against a
+// fake API that implements the T2 ticket routes the way the API does (idempotent
+// replay by key; a live lease conflicts; submit needs the current lease + version).
+
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-tickets-"));
+const homeDir = path.join(scratch, "home");
+await fsp.mkdir(homeDir, { recursive: true });
+for (const name of ["HOME", "USERPROFILE"]) process.env[name] = homeDir;
+process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+process.env.SENTINELAYER_SKIP_SENTI_AUTOSTART = "1";
+process.env.SENTINELAYER_API_URL = "https://api.fixture.invalid";
+process.env.SENTINELAYER_API_ALLOWED_HOSTS = "api.fixture.invalid";
+process.env.SENTINELAYER_CIRCUIT_STATE_DIR = path.join(scratch, "circuits");
+delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
+process.env.SENTINELAYER_TOKEN = "human-fixture-token";
+
+const { runCli } = await import("../src/cli.js");
+const { admissionCredentialPath } = await import("../src/session/admission.js");
+const { ticketLeasePath } = await import("../src/session/tickets.js");
+
+const API = "https://api.fixture.invalid";
+const SID = "e9e8dc5e-8d57-4603-975f-09156e3b4473";
+const AGENT = "ticket-agent";
+const ADMISSION_TOKEN = `sladm_${"T".repeat(43)}`;
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+async function storeAdmission({ expired = false } = {}) {
+  const file = admissionCredentialPath(SID, AGENT, { homeDir });
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(
+    file,
+    JSON.stringify({
+      version: 2, sessionId: SID, agentId: AGENT, apiUrl: API, admissionId: "adm-1", token: ADMISSION_TOKEN,
+      expiresAt: Math.floor(Date.now() / 1000) + (expired ? -5 : 3600),
+    })
+  );
+}
+
+function fakeApi({ loseClaimResponses = 0 } = {}) {
+  const state = { requests: [], tickets: new Map(), idem: new Map(), leases: 0, lose: loseClaimResponses };
+  const put = (t) => state.tickets.set(t.id, t);
+  put({ id: "t-open", title: "open work", status: "open", version: 1, lease: null });
+  put({ id: "t-blocked", title: "blocked work", status: "blocked", version: 1, lease: null });
+  put({ id: "t-leased", title: "someone else's", status: "working", version: 2, lease: { holder: "other", live: true, leaseId: "L0", fence: 1 } });
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(String(url));
+    const method = (init.method || "GET").toUpperCase();
+    const headers = new Headers(init.headers || {});
+    const bearer = (headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+    const key = headers.get("idempotency-key");
+    state.requests.push({ method, path: u.pathname, bearer, key });
+    if (u.origin !== API) throw new Error(`left the fixture API: ${u.origin}`);
+    if (bearer !== ADMISSION_TOKEN) return json({ error: { code: "INVALID_TOKEN" } }, 401);
+    const p = u.pathname;
+    if (method === "GET" && p.endsWith("/tickets")) {
+      return json({ items: [...state.tickets.values()].map((t) => ({ ...t })), cursor: 7 });
+    }
+    if (method === "GET" && p.endsWith("/tickets/events")) return json({ events: [], cursor: 7 });
+    const m = p.match(/\/tickets\/([^/]+)\/(claim|lease\/renew|lease\/release|submit)$/);
+    if (method === "POST" && m) {
+      const [, id, op] = m;
+      const replayKey = `${op}:${id}:${key}`;
+      if (state.idem.has(replayKey)) {
+        if (op === "claim" && state.lose > 0) {
+          state.lose -= 1;
+          throw new TypeError("fetch failed: connection reset (response lost)");
+        }
+        const stored = { ...state.idem.get(replayKey), replayed: true };
+        return json(stored);
+      }
+      const t = state.tickets.get(id);
+      const body = JSON.parse(init.body || "{}");
+      let out;
+      if (op === "claim") {
+        if (t.lease?.live) return json({ error: { code: "TICKET_CONFLICT" } }, 409);
+        state.leases += 1;
+        t.lease = { holder: AGENT, live: true, leaseId: `L${state.leases}`, fence: (t.lease?.fence || 0) + 1 };
+        t.status = "working";
+        t.version += 1;
+        out = { ticket: { ...t }, version: t.version, cursor: 8, lease: { leaseId: t.lease.leaseId, fence: t.lease.fence, expiresAt: "2026-09-29T08:00:00Z" } };
+        state.idem.set(replayKey, out);
+        if (state.lose > 0) {
+          state.lose -= 1;
+          throw new TypeError("fetch failed: connection reset (response lost)");
+        }
+        return json(out);
+      }
+      if (!t.lease || body.leaseId !== t.lease.leaseId || body.fence !== t.lease.fence) {
+        return json({ error: { code: "STALE_LEASE" } }, 409);
+      }
+      if (op === "lease/renew") {
+        t.version += 1;
+        out = { ticket: { ...t }, version: t.version, cursor: 9, lease: { leaseId: t.lease.leaseId, fence: t.lease.fence, expiresAt: "2026-09-29T08:15:00Z" } };
+      } else {
+        if (body.expectedVersion !== t.version) return json({ error: { code: "TICKET_CONFLICT" } }, 409);
+        t.version += 1;
+        t.status = op === "submit" ? "in_review" : "open";
+        t.lease = null;
+        out = { ticket: { ...t }, version: t.version, cursor: 10 };
+      }
+      state.idem.set(replayKey, out);
+      return json(out);
+    }
+    return json({ error: { code: "NOT_FOUND", path: p } }, 404);
+  };
+  return state;
+}
+
+async function sl(args) {
+  const out = [];
+  const originalLog = console.log;
+  console.log = (...parts) => out.push(parts.join(" "));
+  let error = null;
+  try {
+    await runCli(args);
+  } catch (err) {
+    error = err;
+  } finally {
+    console.log = originalLog;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(out.join("\n"));
+  } catch {}
+  return { error, json: parsed, text: out.join("\n") };
+}
+
+async function reset() {
+  await fsp.rm(path.join(homeDir, ".sentinelayer"), { recursive: true, force: true });
+}
+
+test("an admitted agent claims, renews and submits: every request on its admission", async () => {
+  await reset();
+  await storeAdmission();
+  const api = fakeApi();
+  const claim = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.equal(claim.error, null, String(claim.error?.stack || claim.error));
+  assert.equal(claim.json.lease.fence, 1);
+  const renew = await sl(["session", "ticket", "renew", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.equal(renew.error, null, String(renew.error?.stack || renew.error));
+  const submit = await sl(["session", "ticket", "submit", SID, "t-open", "--agent", AGENT, "--sha", "abc123", "--json"]);
+  assert.equal(submit.error, null, String(submit.error?.stack || submit.error));
+  assert.equal(submit.json.ticket.status, "in_review");
+  assert.ok(api.requests.every((r) => r.bearer === ADMISSION_TOKEN), "never the human token");
+  await assert.rejects(fsp.access(ticketLeasePath(SID, "t-open", AGENT, { homeDir })), "lease state cleared after submit");
+});
+
+test("a LOST claim response is replayed with the SAME key on the next run: one lease, not two", async () => {
+  await reset();
+  await storeAdmission();
+  const api = fakeApi({ loseClaimResponses: 99 });
+  const first = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.ok(first.error, "the response never arrived");
+  const keys = new Set(api.requests.filter((r) => r.path.endsWith("/claim")).map((r) => r.key));
+  assert.equal(keys.size, 1, "retries within one run reuse one key");
+  api.lose = 0;
+  const second = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.equal(second.error, null, String(second.error?.stack || second.error));
+  assert.equal(second.json.replayed, true);
+  assert.equal(api.leases, 1, "the server performed the claim exactly once");
+  const claimKeys = new Set(api.requests.filter((r) => r.path.endsWith("/claim")).map((r) => r.key));
+  assert.equal(claimKeys.size, 1, "the second run reused the persisted key");
+});
+
+test("an unreadable local lease state refuses instead of reading as 'no lease'", async () => {
+  await reset();
+  await storeAdmission();
+  fakeApi();
+  const file = ticketLeasePath(SID, "t-open", AGENT, { homeDir });
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, "{ not json");
+  const renew = await sl(["session", "ticket", "renew", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.match(String(renew.error?.message), /unreadable; refusing to guess/);
+});
+
+test("renewing with no lease held here says so, with no request", async () => {
+  await reset();
+  await storeAdmission();
+  const api = fakeApi();
+  const renew = await sl(["session", "ticket", "renew", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.match(String(renew.error?.message), /holds no lease/);
+  assert.equal(api.requests.length, 0);
+});
+
+test("--available lists only claimable work: never blocked, never a live lease", async () => {
+  await reset();
+  await storeAdmission();
+  fakeApi();
+  const listed = await sl(["session", "ticket", "list", SID, "--available", "--agent", AGENT, "--json"]);
+  assert.equal(listed.error, null, String(listed.error?.stack || listed.error));
+  assert.deepEqual(listed.json.items.map((t) => t.id), ["t-open"]);
+});
+
+test("an EXPIRED admission refuses a ticket command before any request", async () => {
+  await reset();
+  await storeAdmission({ expired: true });
+  const api = fakeApi();
+  const claim = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.match(String(claim.error?.message), /expired.*will not fall back/s);
+  assert.equal(api.requests.length, 0);
+});
+
+test("a lease state path that cannot be READ (not just parsed) also refuses", async () => {
+  await reset();
+  await storeAdmission();
+  fakeApi();
+  const file = ticketLeasePath(SID, "t-open", AGENT, { homeDir });
+  await fsp.mkdir(file, { recursive: true }); // a directory where the file should be: EISDIR
+  const renew = await sl(["session", "ticket", "renew", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.match(String(renew.error?.message), /unreadable; refusing to guess/);
+});

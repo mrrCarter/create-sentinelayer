@@ -147,13 +147,19 @@ export const SESSION_AGENT_PRINCIPAL = Object.freeze({
   daemon: "actor",
   "checkpoint create": "actor",
   "checkpoint generate": "actor",
+  "ticket list": "actor",
+  "ticket claim": "actor",
+  "ticket renew": "actor",
+  "ticket release": "actor",
+  "ticket submit": "actor",
+  "ticket events": "actor",
   kill: "target",
   "stop-listener": "target",
   leave: "target",
   "guard-uninstall": "target",
   join: "control",
 });
-const SESSION_COMMAND_GROUPS = new Set(["checkpoint"]);
+const SESSION_COMMAND_GROUPS = new Set(["checkpoint", "ticket"]);
 
 async function implicitAgent(sessionId, targetPath, env) {
   // The same identity the command itself resolves when --agent is omitted
