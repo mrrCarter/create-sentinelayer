@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { resolveSessionPaths } from "./paths.js";
 import {
@@ -116,9 +117,22 @@ export async function getDaemonStatus(sessionId, { targetPath = process.cwd() } 
   };
 }
 
+// The daemon is ALWAYS this package's own CLI entry, never "whatever script is running".
+// It used to be process.argv[1]: under a test runner that is the TEST FILE, so the "daemon"
+// re-ran the tests, and every bootstrapped session spawned more detached copies of them.
+// On 2026-09-29 one such run became a detached fork bomb that took the machine down and
+// created thousands of sessions on the API.
+const CLI_ENTRY_PATH = fileURLToPath(new URL("../../bin/sl.js", import.meta.url));
+
 export function resolveCliEntryPath() {
-  const entry = normalizeString(process.argv[1]);
-  return entry ? path.resolve(entry) : "";
+  return CLI_ENTRY_PATH;
+}
+
+// Under the node test runner (it sets NODE_TEST_CONTEXT in every test process), a detached
+// daemon outlives the test that started it. One is spawned only when the test names the
+// entry itself (cliPath), deliberately; never as a side effect of code under test.
+function underTestRunner() {
+  return normalizeString(process.env.NODE_TEST_CONTEXT) !== "";
 }
 
 /**
@@ -154,6 +168,10 @@ export async function spawnDetachedSentiDaemon({
       reason: "already_running",
       logPath: resolveDaemonLogPath(normalizedSessionId, { targetPath }),
     };
+  }
+
+  if (!normalizeString(cliPath) && underTestRunner()) {
+    return { spawned: false, pid: null, reason: "test_runner", logPath: "" };
   }
 
   const entryPath = normalizeString(cliPath) || resolveCliEntryPath();
