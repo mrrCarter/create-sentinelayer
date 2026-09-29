@@ -6,9 +6,10 @@
 //    session into the prod dashboard).
 // 2. SENTINELAYER_SKIP_SENTI_AUTOSTART=1 keeps tests from spawning the daemon.
 // 3. Isolated home: HOME/USERPROFILE/APPDATA/LOCALAPPDATA/XDG_CONFIG_HOME point
-//    at a fresh temp dir, and the OS keyring is disabled, so no test can load the
-//    developer's real stored credentials or write circuit-breaker state into the
-//    real ~/.sentinelayer. (os.homedir() reads USERPROFILE on Windows and HOME
+//    at a fresh temp dir, the OS keyring is disabled, inherited state-path
+//    overrides are rebound inside it, and inherited SENTINELAYER_TOKEN /
+//    SENTINELAYER_API_TOKEN are removed, so no test can load the developer's real
+//    credentials or write state outside the temp home. (os.homedir() reads USERPROFILE on Windows and HOME
 //    elsewhere, at call time.)
 // 4. Fail-closed egress guard: globalThis.fetch refuses any non-loopback host.
 //    The skip flag above is checked by only some call sites (and some tests clear
@@ -40,6 +41,14 @@ process.env.APPDATA = path.join(testHome, "AppData", "Roaming");
 process.env.LOCALAPPDATA = path.join(testHome, "AppData", "Local");
 process.env.XDG_CONFIG_HOME = path.join(testHome, ".config");
 process.env.SENTINELAYER_DISABLE_KEYRING = "1";
+// Inherited path overrides must not point test state outside the temp home: src/auth/http.js prefers
+// SENTINELAYER_CIRCUIT_STATE_DIR over HOME, and the auth-audit breaker prefers its own file override.
+process.env.SENTINELAYER_CIRCUIT_STATE_DIR = path.join(testHome, ".sentinelayer");
+process.env.SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE = path.join(testHome, ".sentinelayer", "auth-audit-breaker.json");
+delete process.env.SENTINELAYER_SECRET_SINK_FILE; // never write test secrets to an inherited real file
+// Inherited real credentials take precedence over the (now isolated) stored session; tests set their own.
+delete process.env.SENTINELAYER_TOKEN;
+delete process.env.SENTINELAYER_API_TOKEN;
 
 process.env.SENTINELAYER_TEST_EGRESS_GUARD = "1";
 installTestEgressGuard({ force: true });

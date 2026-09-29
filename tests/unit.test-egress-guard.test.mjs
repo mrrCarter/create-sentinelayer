@@ -2,6 +2,7 @@ import "./setup-env.mjs";
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,8 @@ import {
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GUARD_URL = pathToFileURL(path.join(REPO_ROOT, "src", "net", "test-egress-guard.js")).href;
 const SYNC_URL = pathToFileURL(path.join(REPO_ROOT, "src", "session", "sync.js")).href;
+const HTTP_URL = pathToFileURL(path.join(REPO_ROOT, "src", "auth", "http.js")).href;
+const SETUP_URL = pathToFileURL(path.join(REPO_ROOT, "tests", "setup-env.mjs")).href;
 
 function withEnv(overrides, fn) {
   const saved = {};
@@ -211,6 +214,102 @@ test("redirects: 303 is followed as GET; a 307 that would re-send a body is refu
     assert.equal(manual.status, 303);
     assert.deepEqual(hits, ["POST /see-other", "GET /after", "POST /temporary", "POST /see-other"]);
   });
+});
+
+test("redirects: only 301/302/303/307/308 are followed; a 300 or 304 with Location is returned as-is", async () => {
+  for (const status of [300, 304]) {
+    await withLoopbackServer((req, res) => {
+      if (req.url === "/start") {
+        res.writeHead(status, { location: "/elsewhere" });
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end("followed");
+    }, async (base, hits) => {
+      const response = await fetch(`${base}/start`);
+      assert.equal(response.status, status);
+      assert.deepEqual(hits, ["GET /start"], `a ${status} must not be followed`);
+    });
+  }
+});
+
+test("redirects: credentials are dropped on an origin change and kept on the same origin; 303 drops body headers", async () => {
+  const seen = [];
+  await withLoopbackServer((req, res) => {
+    seen.push({ path: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie,
+      custom: req.headers["x-custom"], contentType: req.headers["content-type"], method: req.method });
+    res.writeHead(200);
+    res.end("b");
+  }, async (otherBase) => {
+    await withLoopbackServer((req, res) => {
+      seen.push({ path: req.url, authorization: req.headers.authorization, cookie: req.headers.cookie,
+        custom: req.headers["x-custom"], contentType: req.headers["content-type"], method: req.method });
+      if (req.url === "/cross") {
+        res.writeHead(302, { location: `${otherBase}/landed` });
+      } else if (req.url === "/same") {
+        res.writeHead(302, { location: "/same-landed" });
+      } else if (req.url === "/post") {
+        res.writeHead(303, { location: "/after-post" });
+      } else {
+        res.writeHead(200);
+      }
+      res.end();
+    }, async (base) => {
+      const headers = { authorization: "Bearer placeholder", cookie: "c=placeholder", "x-custom": "kept" };
+      await fetch(`${base}/cross`, { headers });
+      await fetch(`${base}/same`, { headers });
+      await fetch(`${base}/post`, { method: "POST", body: "x", headers: { "content-type": "text/plain", "x-custom": "kept" } });
+    });
+  });
+  const landed = seen.find((r) => r.path === "/landed");
+  assert.equal(landed.authorization, undefined);
+  assert.equal(landed.cookie, undefined);
+  assert.equal(landed.custom, "kept");
+  const sameLanded = seen.find((r) => r.path === "/same-landed");
+  assert.equal(sameLanded.authorization, "Bearer placeholder");
+  assert.equal(sameLanded.cookie, "c=placeholder");
+  const afterPost = seen.find((r) => r.path === "/after-post");
+  assert.equal(afterPost.method, "GET");
+  assert.equal(afterPost.contentType, undefined);
+  assert.equal(afterPost.custom, "kept");
+});
+
+test("inherited state-path overrides and credentials cannot escape the temp home (external sentinel)", () => {
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "sl-external-sentinel-"));
+  try {
+    const env = {
+      ...process.env,
+      SENTINELAYER_CIRCUIT_STATE_DIR: outside,
+      SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE: path.join(outside, "breaker.json"),
+      SENTINELAYER_SECRET_SINK_FILE: path.join(outside, "sink.txt"),
+      SENTINELAYER_TOKEN: "inherited-placeholder",
+      SENTINELAYER_API_TOKEN: "inherited-placeholder",
+    };
+    const out = runChild(
+      `await import(${JSON.stringify(SETUP_URL)});
+       await import(${JSON.stringify(HTTP_URL)});
+       const os = await import("node:os");
+       console.log(JSON.stringify({
+         home: os.homedir(),
+         circuit: process.env.SENTINELAYER_CIRCUIT_STATE_DIR,
+         breaker: process.env.SENTINELAYER_AUTH_AUDIT_BREAKER_STATE_FILE,
+         sink: process.env.SENTINELAYER_SECRET_SINK_FILE ?? null,
+         token: process.env.SENTINELAYER_TOKEN ?? null,
+         apiToken: process.env.SENTINELAYER_API_TOKEN ?? null,
+       }));`,
+      env,
+    );
+    const seen = JSON.parse(out);
+    assert.ok(path.resolve(seen.circuit).startsWith(path.resolve(seen.home)), `circuit dir ${seen.circuit} escaped ${seen.home}`);
+    assert.ok(path.resolve(seen.breaker).startsWith(path.resolve(seen.home)), `breaker file ${seen.breaker} escaped`);
+    assert.equal(seen.sink, null);
+    assert.equal(seen.token, null);
+    assert.equal(seen.apiToken, null);
+    assert.deepEqual(fs.readdirSync(outside), [], "nothing may be written to the inherited external path");
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
 });
 
 test("positive control: a loopback server is still reachable through the guard", async () => {

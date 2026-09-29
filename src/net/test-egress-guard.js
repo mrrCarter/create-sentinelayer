@@ -23,10 +23,11 @@
 //   *.test, *.invalid, *.localhost) are refused: a name is not proof of loopback
 //   routing, and tests that use fixture names replace globalThis.fetch with a mock.
 // - redirects in the default "follow" mode are walked manually and EVERY hop is
-//   checked against the same policy. A 303, or a 301/302 after POST, is followed
-//   as GET; a 307/308 that would re-send a body is refused (use redirect:
-//   "manual" in such a test). Explicit "manual"/"error" modes pass through
-//   unchanged (fetch does not auto-follow them).
+//   checked against the same policy. Only 301/302/303/307/308 are followed. A
+//   303, or a 301/302 after POST, becomes GET (body headers dropped); a 307/308
+//   that would re-send a body is refused (use redirect: "manual" in such a test).
+//   On an origin change Authorization/Proxy-Authorization/Cookie are dropped, as
+//   native fetch does. Explicit "manual"/"error" modes pass through unchanged.
 // - data: and blob: never leave the process and are allowed.
 //
 // Activation: NODE_TEST_CONTEXT (set by `node --test` for test files) or
@@ -38,6 +39,12 @@
 const GUARD_MARKER = Symbol.for("sentinelayer.testEgressGuard");
 const NUMERIC_LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]"]);
 const MAX_REDIRECTS = 20;
+// Only these are redirects (as in native fetch); a 300/304/305/306 with a Location header is returned as-is.
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+// Dropped when a redirect changes origin (as native undici does), so credentials never cross origins.
+const CROSS_ORIGIN_STRIPPED_HEADERS = ["authorization", "proxy-authorization", "cookie"];
+// Dropped when a redirect turns the request into a body-less GET (fetch spec request-body-header names).
+const BODY_HEADERS = ["content-type", "content-length", "content-encoding", "content-language", "content-location"];
 
 export class TestEgressBlockedError extends Error {
   constructor(target, detail = "") {
@@ -99,7 +106,7 @@ export function installTestEgressGuard({ env = process.env, force = false } = {}
   async function followChecked(thisArg, request, hops) {
     const response = await nativeFetch.call(thisArg, new NativeRequest(request, { redirect: "manual" }));
     const location = response.headers.get("location");
-    if (response.status < 300 || response.status > 399 || location === null) return response;
+    if (!REDIRECT_STATUSES.has(response.status) || location === null) return response;
     let next;
     try {
       next = new URL(location, request.url).href;
@@ -114,9 +121,16 @@ export function installTestEgressGuard({ env = process.env, force = false } = {}
     if (!toGet && request.body !== null && method !== "GET" && method !== "HEAD") {
       throw block(next, `redirect ${response.status} would re-send a request body; use redirect: "manual"`);
     }
+    const headers = new Headers(request.headers);
+    if (new URL(next).origin !== new URL(request.url).origin) {
+      for (const name of CROSS_ORIGIN_STRIPPED_HEADERS) headers.delete(name);
+    }
+    if (toGet) {
+      for (const name of BODY_HEADERS) headers.delete(name);
+    }
     const nextRequest = new NativeRequest(next, {
       method: toGet ? "GET" : method,
-      headers: request.headers,
+      headers,
       signal: request.signal,
       redirect: "manual",
     });
