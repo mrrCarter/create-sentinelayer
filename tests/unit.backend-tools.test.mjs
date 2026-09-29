@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Maya's backend-persona domain tools (#A14).
 
 import test from "node:test";

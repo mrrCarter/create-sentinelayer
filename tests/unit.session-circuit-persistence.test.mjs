@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Audit §2.9 regression fence — circuit state must survive a process
 // restart, otherwise a degraded API induces thundering-herd retries from
 // every fresh CLI invocation. This exercises:

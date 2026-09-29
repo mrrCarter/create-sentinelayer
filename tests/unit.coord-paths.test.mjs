@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for coord/paths.js (#A9 filesystem layout + path normalization).
 
 import test from "node:test";

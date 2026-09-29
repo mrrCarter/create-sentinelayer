@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for live LLM-interaction usage emission + aggregation.
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Noah's reliability domain tools (#A18).
 
 import test from "node:test";

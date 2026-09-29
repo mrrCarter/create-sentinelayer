@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for session history (listAllSessions + archive surfacing).
 
 import test from "node:test";

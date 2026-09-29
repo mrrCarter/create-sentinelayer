@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Ethan's code-quality domain tools (#A16).
 
 import test from "node:test";

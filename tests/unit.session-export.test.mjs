@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for `slc session export` shape.
 
 import test from "node:test";

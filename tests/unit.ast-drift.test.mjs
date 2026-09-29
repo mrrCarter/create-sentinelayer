@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for src/daemon/ast-drift.js (#A11 AST-based ingest drift detection).
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the iMessage-style session transcript renderer.
 
 import test from "node:test";

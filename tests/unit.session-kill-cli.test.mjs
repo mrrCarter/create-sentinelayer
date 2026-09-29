@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // CLI-driven kill-switch tests for PR 6-16 daemons.
 //
 // Audit finding §2.4: kill-switch tests for the new daemons (PR 346 context

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Invariant: the authoritative FULL_DEPTH_PERSONAS list in scan-modes.js
 // must match exactly the keys in PERSONA_PROMPTS and SWE_FRAMEWORK_CHECKLIST
 // in persona-prompts.js. Any drift means a persona either:

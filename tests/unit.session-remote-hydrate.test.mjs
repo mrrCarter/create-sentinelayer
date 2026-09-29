@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the on-demand remote hydrator.
 
 import test from "node:test";

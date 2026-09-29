@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the HTML report generator (#investor-dd-18b).
 
 import test from "node:test";

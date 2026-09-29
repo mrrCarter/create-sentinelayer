@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Contract tests between CLI session sync (src/session/sync.js) and the
 // sentinelayer-api session relay endpoints (src/routes/sessions.py).
 //

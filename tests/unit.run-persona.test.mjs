@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for src/agents/run-persona.js (#A27 runtime integration).
 
 import test from "node:test";

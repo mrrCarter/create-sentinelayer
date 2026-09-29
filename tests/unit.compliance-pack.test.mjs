@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the compliance pack (#investor-dd-20..24).
 
 import test from "node:test";

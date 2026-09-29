@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for Arjun's performance domain tools (#A16).
 
 import test from "node:test";

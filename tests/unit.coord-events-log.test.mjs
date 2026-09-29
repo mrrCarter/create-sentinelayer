@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for coord/events-log.js (#A9 append-only events.jsonl).
 
 import test from "node:test";

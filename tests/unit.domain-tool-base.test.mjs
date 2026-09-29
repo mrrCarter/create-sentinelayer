@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import os from "node:os";

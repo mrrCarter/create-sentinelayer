@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Mid-session sidecar snapshot test (audit finding §2.6).
 // Spec §PR 10 line 1451-1453 requires analytics.json + artifact-chain.json
 // observability across the session lifecycle, not only at archive time.

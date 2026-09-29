@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // §21.3 SUBSTRATE CONFORMANCE HARNESS — respawn contract §21 (Carter-ratified, room seq 430717/430718).
 //
 // STATUS BY DESIGN: gates (i)-(iii) are EXPECTED RED on today's main. They are the executable form of the

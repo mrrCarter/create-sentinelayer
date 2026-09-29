@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for src/agents/mode.js (#A27 audit|codegen invariance).
 //
 // The goal: show that every persona's surface is identical between modes

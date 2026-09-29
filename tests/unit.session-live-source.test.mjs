@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the SSE + fs.watch composed live source.
 
 import test from "node:test";

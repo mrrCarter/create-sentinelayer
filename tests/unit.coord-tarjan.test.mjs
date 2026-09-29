@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for coord/tarjan.js (#A9 SCC + deadlock detection).
 
 import test from "node:test";

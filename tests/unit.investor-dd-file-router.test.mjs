@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the per-persona deterministic file router (#investor-dd-3).
 
 import test from "node:test";

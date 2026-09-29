@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";

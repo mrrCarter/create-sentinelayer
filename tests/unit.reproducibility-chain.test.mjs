@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the reproducibility chain (#investor-dd-17).
 
 import test from "node:test";

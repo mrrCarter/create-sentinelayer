@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for the Kai Chen orchestrator definition + prompt builder.
 
 import test from "node:test";

@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Unit tests for src/cost/tokenizer.js (#A12 provider-aware token estimator).
 
 import test from "node:test";
