@@ -528,3 +528,118 @@ test("an UNCLASSIFIED subcommand with a stored admission fails closed", async ()
     /not classified.*Refusing/s
   );
 });
+
+// ---------------- the selector can never disagree with execution (Verity 6ae95c3 P1)
+
+const { assertDispatchMatchesScope, withAgentAdmission } = await import("../src/session/admission-auth.js");
+
+for (const [label, argv] of [
+  ["repeated --agent", (ws) => ["session", "post-agent", SID, "m", "--agent", "unheld-probe", "--agent", "dup-expired", "--json", "--path", ws]],
+  ["--agent then --agent=", (ws) => ["session", "observe", SID, "o", "--agent", "unheld-probe", "--agent=dup-expired", "--json", "--path", ws]],
+  ["repeated --path", (ws) => ["session", "say", SID, "m", "--agent", "dup-expired", "--path", ws, "--path", ws]],
+  ["repeated --session", (ws) => ["session", "listen", "--session", SID, "--session", SID, "--agent", "dup-expired", "--path", ws]],
+]) {
+  test(`${label} is refused before any request (Commander would act on the LAST value)`, async () => {
+    const { ws, api } = await joinAdmitted("dup-expired");
+    await expire("dup-expired");
+    const mark = api.requests.length;
+    const ran = await viaCli(argv(ws));
+    assert.match(String(ran.error?.message), /is given 2 times/);
+    assert.deepEqual(since(api, mark), []);
+  });
+}
+
+test("after the `--` terminator, --agent is message text, not an identity", async () => {
+  const { ws, api } = await joinAdmitted("terminator-agent");
+  const mark = api.requests.length;
+  const ran = await viaCli(["session", "say", SID, "--agent", "terminator-agent", "--json", "--path", ws, "--", "--agent", "someone-else"]);
+  assert.equal(ran.error, null, String(ran.error?.stack || ran.error));
+  const calls = since(api, mark);
+  assert.ok(calls.length >= 1);
+  assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), [], "ran as terminator-agent, on its admission");
+});
+
+function fakeCommand({ path: names, opts, sources = {}, args = [] }) {
+  let parent = { name: () => "sl", parent: null };
+  let node = null;
+  for (const name of names) {
+    node = { name: () => name, parent };
+    parent = node;
+  }
+  node.opts = () => opts;
+  node.getOptionValueSource = (key) => sources[key];
+  node.processedArgs = args;
+  return node;
+}
+
+test("the preAction guard refuses when Commander's identity differs from the scope in force", async () => {
+  const { ws } = await joinAdmitted("guard-a");
+  await joinAdmitted("guard-b");
+  const actingAsB = fakeCommand({
+    path: ["session", "post-agent"],
+    opts: { agent: "guard-b", path: ws },
+    sources: { agent: "cli" },
+    args: [SID, "m"],
+  });
+  // Dispatched under guard-a's scope, executing as guard-b: refused.
+  await assert.rejects(
+    withAgentAdmission(SID, "guard-a", () => assertDispatchMatchesScope(actingAsB)),
+    /resolved to .*guard-b but was dispatched under .*guard-a/
+  );
+  // Dispatched under NO scope, executing as an admitted agent: refused.
+  await assert.rejects(assertDispatchMatchesScope(actingAsB), /dispatched under none/);
+  // The matching scope passes.
+  await withAgentAdmission(SID, "guard-b", () => assertDispatchMatchesScope(actingAsB));
+});
+
+test("the guard counts only options given on the command line, not defaults", async () => {
+  const { ws } = await joinAdmitted("default-agent");
+  // read's --agent defaults to cli-user; with no admission for cli-user and no scope, fine.
+  const readWithDefault = fakeCommand({
+    path: ["session", "read"],
+    opts: { agent: "cli-user", path: ws },
+    sources: { agent: "default" },
+    args: [SID],
+  });
+  delete process.env.SENTINELAYER_AGENT_ID;
+  // The implicit identity is the sole joined agent, default-agent, which IS admitted:
+  // the guard therefore expects its scope and refuses the unscoped dispatch.
+  await assert.rejects(assertDispatchMatchesScope(readWithDefault), /resolved to .*default-agent/);
+  await withAgentAdmission(SID, "default-agent", () => assertDispatchMatchesScope(readWithDefault));
+});
+
+test("a target command (kill) is never compared against an agent scope", async () => {
+  const { ws } = await joinAdmitted("kill-target");
+  const kill = fakeCommand({
+    path: ["session", "kill"],
+    opts: { agent: "kill-target", session: SID, path: ws },
+    sources: { agent: "cli", session: "cli" },
+  });
+  await assertDispatchMatchesScope(kill);
+});
+
+test("runCli's preAction guard catches argv/Commander divergence: message text naming another room", async () => {
+  // The agent holds an admission in OTHER_ROOM only. The message text IS that room's
+  // id, so an argv reading scopes to OTHER_ROOM, while Commander posts to SID.
+  const OTHER_ROOM = "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b";
+  const ws = await workspace();
+  const api = fakeApi();
+  const file = admissionCredentialPath(OTHER_ROOM, "wiring-agent", { homeDir });
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      sessionId: OTHER_ROOM,
+      agentId: "wiring-agent",
+      apiUrl: API,
+      admissionId: "other",
+      token: `sladm_${"W".repeat(43)}`,
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    })
+  );
+  const mark = api.requests.length;
+  const ran = await viaCli(["session", "post-agent", SID, OTHER_ROOM, "--agent", "wiring-agent", "--json", "--path", ws]);
+  assert.match(String(ran.error?.message), /resolved to none but was dispatched under .*wiring-agent/);
+  assert.deepEqual(since(api, mark), [], "refused before the action ran");
+});

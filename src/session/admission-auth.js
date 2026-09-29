@@ -45,13 +45,42 @@ const REFUSAL_HINT = {
   no_issuing_authority: "its stored admission credential does not record the API that issued it",
 };
 
+// Options whose value decides WHICH identity, and so which credential, a command
+// runs as. Given more than once they are ambiguous (Commander keeps the LAST value),
+// so they are refused outright rather than guessed at.
+const IDENTITY_OPTIONS = ["--agent", "--session", "--id", "--path"];
+
+// Options end at a bare `--`; everything after it is an operand, as Commander reads it.
+function optionTokens(args) {
+  const tokens = args.map((arg) => String(arg ?? ""));
+  const end = tokens.indexOf("--");
+  return end < 0 ? tokens : tokens.slice(0, end);
+}
+
 function optionValue(args, name) {
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = String(args[i] || "");
-    if (arg === name) return String(args[i + 1] || "").trim();
+  const tokens = optionTokens(args);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const arg = tokens[i];
+    if (arg === name) return String(tokens[i + 1] || "").trim();
     if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1).trim();
   }
   return "";
+}
+
+/** Refuse a `session` command that gives an identity-deciding option more than once. */
+export function assertUnambiguousIdentityOptions(args = []) {
+  if (String(args[0] || "").trim().toLowerCase() !== "session") return;
+  const tokens = optionTokens(args);
+  for (const name of IDENTITY_OPTIONS) {
+    const count = tokens.filter((t) => t === name || t.startsWith(`${name}=`)).length;
+    if (count > 1) {
+      throw new AdmissionCredentialRefused(
+        `${name} is given ${count} times. It decides which identity and credential this ` +
+          `command runs as, so it may be given at most once.`,
+        { reason: "ambiguous_identity_option" }
+      );
+    }
+  }
 }
 
 // Who `--agent` names, per `session` subcommand ("group sub" for nested groups).
@@ -95,12 +124,11 @@ export const SESSION_AGENT_PRINCIPAL = Object.freeze({
 });
 const SESSION_COMMAND_GROUPS = new Set(["checkpoint"]);
 
-async function implicitAgent(sessionId, args, env) {
+async function implicitAgent(sessionId, targetPath, env) {
   // The same identity the command itself resolves when --agent is omitted
   // (SENTINELAYER_AGENT_ID, then the sole joined local agent). Imported lazily:
   // the commands module imports this one.
   const { resolveSessionSayIdentity } = await import("../commands/session.js");
-  const targetPath = path.resolve(process.cwd(), optionValue(args, "--path") || ".");
   const identity = await resolveSessionSayIdentity({ sessionId, agentId: "", targetPath, env }).catch(() => null);
   const agentId = String(identity?.agentId || "").trim();
   return agentId && agentId !== "cli-user" ? agentId : "";
@@ -122,7 +150,13 @@ async function implicitAgent(sessionId, args, env) {
  */
 export async function resolveAgentAdmissionTarget(args = [], { env = process.env, homeDir } = {}) {
   if (String(args[0] || "").trim().toLowerCase() !== "session") return null;
-  const positional = args.slice(1).map((a) => String(a || "").trim()).filter((a) => a && !a.startsWith("-"));
+  assertUnambiguousIdentityOptions(args);
+  const tokens = args.map((a) => String(a ?? "").trim());
+  const terminator = tokens.indexOf("--");
+  const positional = [
+    ...(terminator < 0 ? tokens : tokens.slice(0, terminator)).slice(1).filter((a) => a && !a.startsWith("-")),
+    ...(terminator < 0 ? [] : tokens.slice(terminator + 1).filter(Boolean)),
+  ];
   if (!positional.length) return null;
   let command = positional[0].toLowerCase();
   let rest = positional.slice(1);
@@ -139,7 +173,8 @@ export async function resolveAgentAdmissionTarget(args = [], { env = process.env
   const explicitAgent = flagAgent || String(env.SENTINELAYER_AGENT_ID || "").trim();
   const candidates = [optionValue(args, "--session"), optionValue(args, "--id"), ...rest].filter(Boolean);
   for (const sessionId of candidates) {
-    const agentId = explicitAgent || (await implicitAgent(sessionId, args, env));
+    const targetPath = path.resolve(process.cwd(), optionValue(args, "--path") || ".");
+    const agentId = explicitAgent || (await implicitAgent(sessionId, targetPath, env));
     if (!agentId) continue;
     const held = await readAdmissionCredentialState(sessionId, agentId, { homeDir }).catch(() => ({ state: "none" }));
     if (held.state === "none") continue;
@@ -153,6 +188,46 @@ export async function resolveAgentAdmissionTarget(args = [], { env = process.env
     return { sessionId, agentId };
   }
   return null;
+}
+
+/**
+ * preAction guard: the identity Commander ACTUALLY resolved for this action must be
+ * the one whose admission scope (if any) the dispatch was wrapped in. Computed from
+ * Commander's own resolved options -- counting only values given on the command line,
+ * not defaults such as read's `--agent cli-user` -- so no argv reading of ours can
+ * disagree with execution. A mismatch refuses before the action runs.
+ */
+export async function assertDispatchMatchesScope(actionCommand, { env = process.env, homeDir } = {}) {
+  const names = [];
+  for (let cmd = actionCommand; cmd && cmd.parent; cmd = cmd.parent) names.unshift(cmd.name());
+  if (String(names[0] || "").toLowerCase() !== "session") return;
+  const command = names.slice(1).join(" ").toLowerCase();
+  const principal = SESSION_AGENT_PRINCIPAL[command];
+  const opts = actionCommand.opts();
+  const given = (key) =>
+    actionCommand.getOptionValueSource?.(key) === "cli" ? String(opts[key] ?? "").trim() : "";
+  let actual = null;
+  if (principal === "actor" || (!principal && given("agent"))) {
+    const sessionId = given("session") || given("id") || String(actionCommand.processedArgs?.[0] ?? "").trim();
+    const targetPath = path.resolve(process.cwd(), String(opts.path || "."));
+    const agentId =
+      given("agent") ||
+      String(env.SENTINELAYER_AGENT_ID || "").trim() ||
+      (sessionId ? await implicitAgent(sessionId, targetPath, env) : "");
+    if (sessionId && agentId) {
+      const held = await readAdmissionCredentialState(sessionId, agentId, { homeDir }).catch(() => ({ state: "none" }));
+      if (held.state !== "none") actual = { sessionId, agentId };
+    }
+  }
+  const inForce = currentAdmittedAgent();
+  const key = (pair) => (pair ? `${String(pair.sessionId).toLowerCase()}/${String(pair.agentId).toLowerCase()}` : "none");
+  if (key(actual) !== key(inForce)) {
+    throw new AdmissionCredentialRefused(
+      `Refusing: \`sl session ${command}\` resolved to ${key(actual)} but was dispatched under ` +
+        `${key(inForce)}. Authorization and execution must name the same identity.`,
+      { reason: "scope_mismatch" }
+    );
+  }
 }
 
 /** Run `fn` with the right credential for (sessionId, agentId). See the module header. */
