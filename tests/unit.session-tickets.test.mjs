@@ -98,7 +98,11 @@ function fakeApi({ loseClaimResponses = 0, decoyCursor = false, brokenContinuati
       if (op === "claim") {
         if (t.lease?.live) return json({ error: { code: "TICKET_CONFLICT" } }, 409);
         state.leases += 1;
-        t.lease = { holder: AGENT, live: true, leaseId: `L${state.leases}`, fence: (t.lease?.fence || 0) + 1 };
+        // What the API returns: the holder is taken from the CREDENTIAL. `misattribute` models a
+        // server that recorded someone else (e.g. the human behind a label).
+        t.lease = state.misattribute
+          ? { holderKind: "human", holder: "human-user-id", live: true, leaseId: `L${state.leases}`, fence: (t.lease?.fence || 0) + 1 }
+          : { holderKind: "agent", holder: AGENT, live: true, leaseId: `L${state.leases}`, fence: (t.lease?.fence || 0) + 1 };
         t.status = "working";
         t.version += 1;
         out = { ticket: { ...t }, version: t.version, cursor: 8, lease: { leaseId: t.lease.leaseId, fence: t.lease.fence, expiresAt: "2026-09-29T08:00:00Z" } };
@@ -258,4 +262,75 @@ test("a snapshot that cannot be continued is refused, never shown partial", asyn
   fakeApi({ brokenContinuation: true });
   const ran = await sl(["session", "ticket", "list", SID, "--agent", AGENT, "--json"]);
   assert.match(String(ran.error?.message), /refusing a partial list/);
+});
+
+// ------------- reviewer holds on ac7298ea: malformed snapshots, and ticket authority
+
+const { listTickets } = await import("../src/session/tickets.js");
+
+const A = { id: "00000000-0000-4000-8000-000000000001", title: "a", status: "open" };
+const B = { ...A, id: "00000000-0000-4000-8000-000000000002", title: "b" };
+const FIRST = { items: [A], cursor: 7, hasMore: true, nextAfterId: A.id };
+
+async function listFrom(pages) {
+  let call = 0;
+  return listTickets(SID, {
+    resolveAuthSession: async () => ({ token: "synthetic", apiUrl: API }),
+    requestRead: async () => {
+      if (call >= pages.length) throw new Error("unexpected fixture request");
+      return structuredClone(pages[call++]);
+    },
+    maxPages: 8,
+  });
+}
+
+test("CONTROL: a well-formed two-page snapshot is complete, with the first cursor", async () => {
+  const listed = await listFrom([FIRST, { items: [B], hasMore: false, nextAfterId: null }]);
+  assert.equal(listed.cursor, 7);
+  assert.equal(listed.complete, true);
+  assert.deepEqual(listed.items.map((t) => t.id).sort(), [A.id, B.id]);
+});
+
+// Each case isolates ONE guard and asserts ITS reason, so no guard is covered by another.
+for (const [name, pages, reason] of [
+  ["a page that is not an object", [FIRST, null], /a page is not an object/],
+  ["an empty second response", [FIRST, {}], /a page has no items list/],
+  ["items that are not a list", [FIRST, { items: { id: B.id }, hasMore: false, nextAfterId: null }], /a page has no items list/],
+  ["hasMore that is not a boolean", [{ items: [A], cursor: 7, hasMore: "true", nextAfterId: A.id }], /does not say whether there is more/],
+  ["no cursor on the first page", [{ items: [A], hasMore: false, nextAfterId: null }], /no room cursor/],
+  ["a page that goes backwards (token cycle)", [FIRST, { items: [B], hasMore: true, nextAfterId: B.id }, { items: [A], hasMore: false, nextAfterId: null }], /a page went backwards/],
+  ["a ticket twice on one page", [{ items: [A, B, B], cursor: 7, hasMore: false, nextAfterId: null }], /a ticket appeared twice/],
+  ["more, with no way to continue", [{ items: [A], cursor: 7, hasMore: true, nextAfterId: null }], /no way to continue/],
+  ["a continuation that does not move forward", [FIRST, { items: [B], hasMore: true, nextAfterId: A.id }], /did not move forward/],
+  ["an empty page that claims more", [{ items: [], cursor: 7, hasMore: true, nextAfterId: A.id }], /an empty page claims there is more/],
+]) {
+  test(`a malformed snapshot is refused, never listed: ${name}`, async () => {
+    await assert.rejects(listFrom(pages), (error) => {
+      assert.match(String(error.message), reason);
+      assert.match(String(error.message), /refusing a partial list/);
+      return true;
+    });
+  });
+}
+
+test("ticket work as an agent with NO admission is refused before any request", async () => {
+  await reset();
+  const api = fakeApi();
+  const ran = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", "not-admitted", "--json"]);
+  assert.match(String(ran.error?.message), /"not-admitted" has no live admission.*would act as you/s);
+  assert.deepEqual(api.requests, []);
+});
+
+test("a claim the server records for someone else is not recorded as ours", async () => {
+  await reset();
+  await storeAdmission();
+  const api = fakeApi();
+  api.misattribute = true;
+  const ran = await sl(["session", "ticket", "claim", SID, "t-open", "--agent", AGENT, "--json"]);
+  assert.match(String(ran.error?.message), /recorded this lease for human.*not for "ticket-agent"/s);
+  // Only the pending idempotency key may be on disk (it is written before the request, so a
+  // lost response replays); no lease is recorded as ours.
+  const local = JSON.parse(await fsp.readFile(ticketLeasePath(SID, "t-open", AGENT, { homeDir }), "utf-8"));
+  assert.equal(local.leaseId, undefined);
+  assert.equal(api.requests.filter((r) => r.path.endsWith("/claim")).length, 1);
 });

@@ -6738,10 +6738,23 @@ export function registerSessionCommand(program) {
     .command("ticket")
     .description("The room's shared backlog: list, claim, renew, release and submit tickets");
 
+  // Ticket work is attributed by the CREDENTIAL, never by a label: the lease routes take the
+  // holder from authentication alone. So an agent identity is allowed only with that agent's
+  // live admission in scope; without it, the request would go out on the human token and
+  // claim as the PERSON while this command reported the agent. Refused before any request.
   async function ticketIdentity(sessionId, options, targetPath) {
     const identity = await resolveSessionSayIdentity({ sessionId, agentId: options.agent, targetPath });
     const agent = normalizeString(identity.agentId);
-    return agent && agent !== "cli-user" ? agent : "human";
+    if (!agent || agent === "cli-user") return "human";
+    const admitted = currentAdmittedAgent();
+    if (!admitted || admitted.sessionId !== sessionId || admitted.agentId !== agent) {
+      throw new Error(
+        `Agent "${agent}" has no live admission in this room. Ticket work is attributed by the credential, so ` +
+          `without one this would act as you, not as "${agent}". Admit it first: ` +
+          `sl session join ${sessionId} --agent ${agent} --goal "<what it is here to do>"`
+      );
+    }
+    return agent;
   }
 
   function ticketOutput(options, command, payload, line) {

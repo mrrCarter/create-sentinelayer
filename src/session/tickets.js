@@ -104,6 +104,38 @@ function leaseState(response) {
 const SNAPSHOT_PAGE = 200;
 const SNAPSHOT_MAX_PAGES = 50;
 
+function malformedSnapshot(reason) {
+  return new Error(`The ticket snapshot is malformed (${reason}); refusing a partial list.`);
+}
+
+/**
+ * One snapshot page, validated before anything in it is believed. The snapshot is keyset by
+ * ticket id, so every id on a page is above the previous page's `nextAfterId`, ids never
+ * repeat, and a continuation token only moves forward. Anything else is not a complete list.
+ */
+function validatedSnapshotPage(body, { first, afterId, seen }) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw malformedSnapshot("a page is not an object");
+  if (!Array.isArray(body.items)) throw malformedSnapshot("a page has no items list");
+  if (typeof body.hasMore !== "boolean") throw malformedSnapshot("a page does not say whether there is more");
+  if (first && !(Number.isSafeInteger(body.cursor) && body.cursor >= 0)) {
+    throw malformedSnapshot("the first page has no room cursor to follow events from");
+  }
+  for (const item of body.items) {
+    const id = item && typeof item === "object" ? item.id : null;
+    if (typeof id !== "string" || !id) throw malformedSnapshot("a ticket has no id");
+    if (afterId && !(id > afterId)) throw malformedSnapshot("a page went backwards");
+    if (seen.has(id)) throw malformedSnapshot("a ticket appeared twice");
+    seen.add(id);
+  }
+  if (body.hasMore) {
+    const next = body.nextAfterId;
+    if (typeof next !== "string" || !next) throw malformedSnapshot("there is more but no way to continue");
+    if (afterId && !(next > afterId)) throw malformedSnapshot("the continuation did not move forward");
+    if (!body.items.length) throw malformedSnapshot("an empty page claims there is more");
+  }
+  return body;
+}
+
 /**
  * The room's COMPLETE backlog, from GET /tickets/snapshot paged to the end. The board read
  * (GET /tickets) is a bounded, newest-first page: filtering it for "available" could miss
@@ -124,25 +156,24 @@ export async function listTickets(
 ) {
   const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
   const items = [];
+  const seen = new Set();
   let cursor = null;
   let afterId = null;
   let complete = false;
   for (let page = 0; page < maxPages && !complete; page += 1) {
     const query = new URLSearchParams({ limit: String(pageSize) });
     if (afterId) query.set("afterId", afterId);
-    const body = await requestRead(`${ticketsUrl(apiUrl, sessionId, "/snapshot")}?${query}`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (page === 0) cursor = body?.cursor ?? null; // ONLY the first page's cursor is the baseline
-    items.push(...(Array.isArray(body?.items) ? body.items : []));
-    if (body?.hasMore !== true) {
-      complete = true;
-    } else if (!normalizeString(body?.nextAfterId) || body.nextAfterId === afterId) {
-      throw new Error("The ticket snapshot said there is more but gave no way to continue; refusing a partial list.");
-    } else {
-      afterId = body.nextAfterId;
-    }
+    const body = validatedSnapshotPage(
+      await requestRead(`${ticketsUrl(apiUrl, sessionId, "/snapshot")}?${query}`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }),
+      { first: page === 0, afterId, seen },
+    );
+    if (page === 0) cursor = body.cursor; // ONLY the first page's cursor is the baseline
+    items.push(...body.items);
+    if (!body.hasMore) complete = true;
+    else afterId = body.nextAfterId;
   }
   if (!complete) {
     throw new Error(`The room has more than ${maxPages * pageSize} tickets; refusing a partial list.`);
@@ -197,6 +228,17 @@ export async function claimTicket(
     token, key, operation: "claim", requestMutation,
     body: expectedVersion == null ? {} : { expectedVersion: Number(expectedVersion) },
   });
+  // The lease is recorded here only if the server says it is held by the identity that
+  // asked: an agent by its own id, a person as a human. Anything else is not this lease.
+  const holder = response?.ticket?.lease;
+  const heldByIdentity =
+    identity === "human" ? holder?.holderKind === "human" : holder?.holderKind === "agent" && holder?.holder === identity;
+  if (!heldByIdentity) {
+    throw new Error(
+      `The server recorded this lease for ${holder?.holderKind || "nobody"} "${holder?.holder || ""}", not for "${identity}". ` +
+        "Nothing was recorded locally; release it from the web if it is not yours."
+    );
+  }
   await writeState(statePath, leaseState(response));
   return response;
 }
