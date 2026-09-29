@@ -427,6 +427,7 @@ export async function appendToStream(
     maxEvents = DEFAULT_MAX_STREAM_EVENTS,
     syncRemote = true,
     awaitRemoteSync = false,
+    lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
     mergeExisting = false,
   } = {}
 ) {
@@ -457,7 +458,7 @@ export async function appendToStream(
   const nowIso = new Date().toISOString();
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_MAX_STREAM_EVENTS);
 
-  await acquireLock(paths.lockPath);
+  await acquireLock(paths.lockPath, { timeoutMs: lockTimeoutMs });
   try {
     await fsp.mkdir(paths.sessionDir, { recursive: true });
     await appendOrMergeCurrentStreamEvent(paths, canonicalEvent, { mergeExisting });

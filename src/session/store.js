@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { buildArtifactLineageIndex, verifyArtifactChain } from "../daemon/artifact-lineage.js";
-import { collectCodebaseIngest } from "../ingest/engine.js";
+import { readSessionCodebaseContext } from "./codebase-context.js";
 import { computeSessionAnalytics } from "./analytics.js";
 import { resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
 import { appendToStream } from "./stream.js";
@@ -247,13 +247,7 @@ function normalizeSessionTemplate(raw = null) {
 }
 
 async function collectSessionCodebaseContext(targetPath) {
-  const cachedIngestPath = path.join(targetPath, ".sentinelayer", "CODEBASE_INGEST.json");
-  const cachedIngest = await readJsonFile(cachedIngestPath, { allowMissing: true });
-  if (cachedIngest && typeof cachedIngest === "object") {
-    return normalizeCodebaseContext(cachedIngest);
-  }
-  const ingest = await collectCodebaseIngest({ rootPath: targetPath });
-  return normalizeCodebaseContext(ingest);
+  return normalizeCodebaseContext(await readSessionCodebaseContext(targetPath));
 }
 
 async function buildArchiveSidecars(

@@ -1,3 +1,28 @@
+# 2026-09-28 - Bounded session start (`roadmap/pr-800-session-start-bounded`)
+
+## Plan
+
+- [x] Isolate from the dirty user checkout; reconcile main `899aeb3` with npm 0.41.0 (six startup files identical; registry gitHead absent).
+- [x] Reproduce cold-context and post-JSON process stalls using isolated subprocesses and loopback-only HTTP.
+- [x] Bound optional context with an owned, terminable read-only worker; cancel full resume requests and dispose acknowledgement bodies.
+- [x] Await bounded startup synchronization; preserve JSON, auth, membership, local durability and existing reuse semantics.
+- [x] Add regressions for deadlines, true process exit, JSON and denied/failed remote verification.
+- [ ] Run proportional required gates; obtain independent exact-head review before any push/release.
+
+## Review
+
+Baseline subprocesses both failed after 4s: slow recursive read emitted no JSON;
+HTTP 200 metadata/events with unfinished bodies emitted JSON but did not exit.
+Initial fixed runs finish below 800ms; forced cached-read delay terminates around
+1.2s, singleton stalls cancel both attempts and retain the existing ID, denied
+401/403/404/503 joins make no writes. Full gates and peer review pending.
+
+AI change class D (authenticated transport lifecycle); no prompt/model changes.
+Security boundary: bearer auth, server membership and identity-forgery grant
+checks remain; no auth bypass, no session creation in live tests, no credentials
+in JSON/logs. Synthetic credentials and isolated homes are used for loopback
+subprocesses. No package publication or release bypass authorized.
+
 # 2026-07-29 - Senti Presence/Cursor Noise Cutover (`fix/session-presence-cursor-cutover-20260729`)
 
 ## Plan

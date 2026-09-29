@@ -1,5 +1,6 @@
 import { createAgentEvent } from "../events/schema.js";
 import { appendToStream } from "./stream.js";
+import { syncSessionEventToApi } from "./sync.js";
 
 export const FIRST_MESSAGE_AGENT = Object.freeze({
   id: "senti",
@@ -72,7 +73,7 @@ export function buildFirstSentiMessage({ sessionId } = {}) {
 
 /**
  * Post the first-Senti-message as the opening event of a freshly created
- * session. Best-effort + non-blocking — a failure never fails session
+ * session. Best-effort with bounded remote sync — a failure never fails session
  * creation. Returns { posted, reason }.
  */
 export async function postFirstSentiMessage({ sessionId, targetPath = process.cwd() } = {}) {
@@ -91,8 +92,15 @@ export async function postFirstSentiMessage({ sessionId, targetPath = process.cw
     },
   });
   try {
-    await appendToStream(sid, event, { targetPath, awaitRemoteSync: true });
-    return { posted: true, reason: "posted" };
+    const persisted = await appendToStream(sid, event, {
+      targetPath, syncRemote: false, lockTimeoutMs: 500,
+    });
+    const remoteSync = await syncSessionEventToApi(sid, persisted, {
+      targetPath, timeoutMs: 2_000,
+    }).catch(() => ({ synced: false, reason: "sync_failed" }));
+    // Keep posted's existing local-durability meaning; remote acknowledgement
+    // is explicit and must never be inferred from this compatibility field.
+    return { posted: true, reason: "posted", remoteSynced: Boolean(remoteSync.synced), remoteSync };
   } catch (error) {
     return { posted: false, reason: normalizeString(error?.message) || "append_failed" };
   }

@@ -634,12 +634,12 @@ async function readResponseJsonSafely(response, timeoutMs = DEFAULT_SYNC_TIMEOUT
   }
 }
 
-async function fetchJsonWithFullTimeout(
+export async function fetchJsonWithFullTimeout(
   url,
   options,
   timeoutMs,
   fetchImpl = fetchWithTimeout,
-  { readErrorBody = false } = {},
+  { readErrorBody = false, readSuccessBody = true, errorBodyStatuses = [] } = {},
 ) {
   const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
   const controller = new AbortController();
@@ -660,13 +660,15 @@ async function fetchJsonWithFullTimeout(
   );
 
   let payload = {};
-  if (response?.ok || readErrorBody) {
+  if ((response?.ok && readSuccessBody) || readErrorBody || errorBodyStatuses.includes(response?.status)) {
     const elapsedMs = Math.max(0, Date.now() - startedAtMs);
     const remainingMs = Math.max(1, resolvedTimeoutMs - elapsedMs);
     payload = await readResponseJsonWithTimeout(response, remainingMs, {
       fallback: {},
       onTimeout: () => abortRequestController(controller, "response_body_timeout"),
     });
+  } else {
+    cancelResponseBody(response);
   }
   return { response, payload };
 }
@@ -982,9 +984,14 @@ export async function syncSessionEventToApi(
     body: requestBody,
   };
   const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
+  const deadlineMs = Date.now() + resolvedTimeoutMs;
+  const remainingMs = () => Math.max(1, deadlineMs - Date.now());
 
   try {
-    const response = await fetchImpl(endpoint, requestInit, resolvedTimeoutMs);
+    const { response, payload: forbiddenBody } = await fetchJsonWithFullTimeout(
+      endpoint, requestInit, remainingMs(), fetchImpl,
+      { readSuccessBody: false, errorBodyStatuses: [403] },
+    );
 
     if (response && response.ok) {
       recordCircuitSuccess(outboundCircuit);
@@ -1000,7 +1007,7 @@ export async function syncSessionEventToApi(
     // their agents "talking" locally while the API has zero record. We attempt
     // the grant once per agentId per process, then retry the event POST once.
     if (response && response.status === 403) {
-      const body = await readResponseJsonSafely(response);
+      const body = forbiddenBody;
       if (isIdentityForgeryBody(body)) {
         const agentId = normalizeString(event?.agent?.id);
         if (!agentId || isReservedAgentIdForGrant(agentId)) {
@@ -1022,7 +1029,7 @@ export async function syncSessionEventToApi(
         const grantEndpoint = `${apiBaseUrl}/api/v1/sessions/agent-grants`;
         let grantResponse = null;
         try {
-          grantResponse = await fetchImpl(
+          ({ response: grantResponse } = await fetchJsonWithFullTimeout(
             grantEndpoint,
             {
               method: "POST",
@@ -1035,8 +1042,8 @@ export async function syncSessionEventToApi(
                 role: grantRole,
               }),
             },
-            resolvedTimeoutMs
-          );
+            remainingMs(), fetchImpl, { readSuccessBody: false },
+          ));
         } catch (grantError) {
           recordCircuitFailure(outboundCircuit, normalizedNowMs);
           return {
@@ -1060,7 +1067,9 @@ export async function syncSessionEventToApi(
         // Retry the original event POST exactly once.
         let retryResponse;
         try {
-          retryResponse = await fetchImpl(endpoint, requestInit, resolvedTimeoutMs);
+          ({ response: retryResponse } = await fetchJsonWithFullTimeout(
+            endpoint, requestInit, remainingMs(), fetchImpl, { readSuccessBody: false },
+          ));
         } catch (retryError) {
           recordCircuitFailure(outboundCircuit, normalizedNowMs);
           return {
@@ -1156,7 +1165,7 @@ async function syncSessionAuxPayload(
   const apiBaseUrl = resolveApiBaseUrl(session);
   const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}${pathSuffix}`;
   try {
-    const response = await fetchImpl(
+    const { response } = await fetchJsonWithFullTimeout(
       endpoint,
       {
         method: "POST",
@@ -1169,7 +1178,9 @@ async function syncSessionAuxPayload(
           source: "cli",
         }),
       },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)
+      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      fetchImpl,
+      { readSuccessBody: false },
     );
     if (!response || !response.ok) {
       recordCircuitFailure(outboundCircuit, normalizedNowMs);
