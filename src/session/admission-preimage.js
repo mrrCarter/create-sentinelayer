@@ -18,6 +18,9 @@
 //   - a named field absent from the payload is an error, never an omission
 //   - object keys are ASCII, so UTF-16 and code-point key order agree
 //   - no floats: integers must be safe integers (enforced by the encoder)
+//   - every key is an OWN data property, "__proto__" included. Objects built here
+//     have a null prototype, so assigning that key defines it rather than invoking
+//     the legacy prototype setter (which would silently drop it from the bytes).
 //
 // Conformance: tests/fixtures/admission/canonical-preimage-vectors-v1.json is
 // generated FROM the Python implementation; tests/unit.admission-preimage.test.mjs
@@ -33,7 +36,7 @@ function nfcDeep(value, path) {
   if (typeof value === "string") return value.normalize("NFC");
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map((item, i) => nfcDeep(item, `${path}[${i}]`));
-  const out = {};
+  const out = Object.create(null);
   for (const [key, item] of Object.entries(value)) {
     if (!ASCII.test(key)) {
       throw new CanonicalPreimageError(`object keys must be ASCII at ${path}: ${JSON.stringify(key)}`);
@@ -56,7 +59,7 @@ export function canonicalPreimage(payload, { domain, fields }) {
   if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
     throw new CanonicalPreimageError("payload must be an object");
   }
-  const selected = {};
+  const selected = Object.create(null);
   const missing = [];
   for (const name of fields) {
     if (typeof name !== "string" || !ASCII.test(name)) {

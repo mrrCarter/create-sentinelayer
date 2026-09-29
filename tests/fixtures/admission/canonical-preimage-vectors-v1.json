@@ -102,6 +102,35 @@
       },
       "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2d6772616e742e7631007b22616374696f6e73223a5b2273657373696f6e2e72656164222c2273657373696f6e2e706f7374225d2c2262223a747275652c226e223a313738383637313539382c226f223a7b2261223a5b312c7b2278223a66616c73652c2279223a22c3a9227d5d2c2262223a327d2c227a223a6e756c6c7d",
       "sha256": "f29fe7fae51ad986eeebf43305299f123244c4e658659fd89ca9d9511dc52d94"
+    },
+    {
+      "name": "proto-key-top-level",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "__proto__",
+        "agentId"
+      ],
+      "payload": {
+        "__proto__": "first",
+        "agentId": "a"
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b225f5f70726f746f5f5f223a226669727374222c226167656e744964223a2261227d",
+      "sha256": "8ff9e5a50fd487e814ae699a3daa9790d4103d4c31af424631a04b9ab6371df6"
+    },
+    {
+      "name": "proto-key-nested",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "claim"
+      ],
+      "payload": {
+        "claim": {
+          "__proto__": "nested",
+          "x": 1
+        }
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b22636c61696d223a7b225f5f70726f746f5f5f223a226e6573746564222c2278223a317d7d",
+      "sha256": "71366c00f141c0746294c9d8b52f792545fac17a9493dad4c3d3cdb78531b6fd"
     }
   ]
 }
