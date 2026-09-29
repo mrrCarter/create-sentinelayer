@@ -138,6 +138,24 @@ daemon per session is enforced via `senti-daemon.json` in the session directory
 (logs in `senti-daemon.log` next to it), and the daemon exits on its own when
 the session expires.
 
+Startup uses optional cached `.sentinelayer/CODEBASE_INGEST.json` context only;
+it does not recursively scan your working directory. A missing, invalid, oversized
+or slow cache yields empty context. Run `sl ingest map --path .` separately
+when you need a full scan. The cache reader has a 750ms budget and is terminated
+before returning; resume probes have a 2s deadline per attempt (one retry), while
+the existing workspace-list lookup keeps its 5s deadline. Optional title,
+metadata and welcome synchronization are bounded; startup does not rotate auth
+or wait through a title `Retry-After` retry. No hard wall-clock guarantee applies
+to required local filesystem writes or a stalled OS filesystem.
+
+With `--json`, stdout remains one JSON document. `remoteSync.status` reports
+`synced` only after metadata acknowledgement, otherwise `degraded` (or the
+existing `disabled`/`auth_required` states). `firstMessage.posted` retains its
+**local stream durability** meaning; `firstMessage.remoteSynced` and
+`firstMessage.remoteSync` separately report API acknowledgement/failure. An
+acknowledgement is not a browser or teammate-access test. A transient resume
+timeout keeps the existing local ID rather than minting a duplicate.
+
 Then point your agents at it:
 
 ```bash

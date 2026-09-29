@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import {
   FIRST_MESSAGE_AGENT,
@@ -73,4 +73,19 @@ test("Unit first-message: missing session id is a no-op, not a throw", async () 
   const result = await postFirstSentiMessage({ sessionId: "" });
   assert.equal(result.posted, false);
   assert.equal(result.reason, "missing_session_id");
+});
+
+test("Unit first-message: contended stream lock is bounded and never removed by the waiter", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sl-first-message-lock-"));
+  try {
+    const session = await createSession({ targetPath: root });
+    const lock = path.join(session.sessionDir, ".stream.lock");
+    await mkdir(lock);
+    await writeFile(path.join(lock, "owner"), "another-writer");
+    const result = await postFirstSentiMessage({ sessionId: session.sessionId, targetPath: root });
+    assert.equal(result.posted, false);
+    assert.match(result.reason, /Timed out waiting/);
+    assert.equal(await readFile(path.join(lock, "owner"), "utf8"), "another-writer");
+    assert.equal(await readFile(session.streamPath, "utf8"), "");
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

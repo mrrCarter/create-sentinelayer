@@ -259,7 +259,8 @@ test("Unit session ensure: server-missing local resume is expired and a fresh se
     assert.equal(second.staleResume.sessionId, first.sessionId);
     assert.equal(second.staleResume.reason, "not_found");
     assert.equal(second.staleResume.action, "expired_local_and_created_new");
-    assert.equal(second.remoteSync.status, "background_sync_queued");
+    assert.equal(second.remoteSync.status, "synced");
+    assert.equal(second.remoteSync.metadataSynced, true);
     assert.equal(calls.some((call) => call.endpoint.includes(`/api/v1/sessions/${first.sessionId}`)), true);
 
     const oldStored = await getSession(first.sessionId, { targetPath: tempRoot });

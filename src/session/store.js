@@ -4,10 +4,10 @@ import path from "node:path";
 import process from "node:process";
 
 import { buildArtifactLineageIndex, verifyArtifactChain } from "../daemon/artifact-lineage.js";
-import { collectCodebaseIngest } from "../ingest/engine.js";
+import { readSessionCodebaseContext } from "./codebase-context.js";
 import { computeSessionAnalytics } from "./analytics.js";
 import { resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
-import { appendToStream } from "./stream.js";
+import { appendToStream, withSessionStreamLock } from "./stream.js";
 
 const SESSION_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
@@ -247,13 +247,7 @@ function normalizeSessionTemplate(raw = null) {
 }
 
 async function collectSessionCodebaseContext(targetPath) {
-  const cachedIngestPath = path.join(targetPath, ".sentinelayer", "CODEBASE_INGEST.json");
-  const cachedIngest = await readJsonFile(cachedIngestPath, { allowMissing: true });
-  if (cachedIngest && typeof cachedIngest === "object") {
-    return normalizeCodebaseContext(cachedIngest);
-  }
-  const ingest = await collectCodebaseIngest({ rootPath: targetPath });
-  return normalizeCodebaseContext(ingest);
+  return normalizeCodebaseContext(await readSessionCodebaseContext(targetPath));
 }
 
 async function buildArchiveSidecars(
@@ -507,11 +501,16 @@ export async function createSession({
     }
   );
 
-  await fsp.mkdir(paths.agentsDir, { recursive: true });
-  await saveMetadata(metadata, paths);
-  await fsp.writeFile(paths.streamPath, "", { encoding: "utf-8", flag: "a" });
-
-  return buildSessionPayload(metadata, paths, nowIso);
+  return withSessionStreamLock(sessionId, async () => {
+    // A concurrent materializer may have won while optional context was read.
+    // Never reset its title/TTL/status or race its first billing append.
+    const existing = await loadMetadata(sessionId, { targetPath: resolvedTargetPath });
+    if (existing) return buildSessionPayload(existing.metadata, paths, nowIso);
+    await fsp.mkdir(paths.agentsDir, { recursive: true });
+    await saveMetadata(metadata, paths);
+    await fsp.writeFile(paths.streamPath, "", { encoding: "utf-8", flag: "a" });
+    return buildSessionPayload(metadata, paths, nowIso);
+  }, { targetPath: resolvedTargetPath });
 }
 
 export async function updateSessionTitle(

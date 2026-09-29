@@ -38,6 +38,7 @@ export async function pushSessionTitleToApi(
     timeoutMs = DEFAULT_TITLE_SYNC_TIMEOUT_MS,
     maxRetries = 1,
     retryDelayMs = DEFAULT_TITLE_SYNC_RETRY_DELAY_MS,
+    autoRotate = true,
     resolveAuthSession = resolveActiveAuthSession,
     requestMutation = requestJsonMutation,
     recordRemoteTitleSync = recordSessionRemoteTitleSync,
@@ -63,7 +64,7 @@ export async function pushSessionTitleToApi(
     const session = await resolveAuthSession({
       cwd: targetPath,
       env,
-      autoRotate: true,
+      autoRotate,
     });
     if (!session?.token || !session?.apiUrl) {
       await recordRemoteTitleSync(normalizedSessionId, {

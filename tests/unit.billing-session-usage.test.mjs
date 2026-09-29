@@ -22,6 +22,22 @@ async function makeRoot() {
   return fsp.mkdtemp(path.join(os.tmpdir(), "billing-session-usage-"));
 }
 
+test("Unit billing session usage: concurrent missing-session writers preserve every ledger event", { timeout: 15_000 }, async () => {
+  const root = await makeRoot();
+  try {
+    const results = await Promise.all(Array.from({ length: 16 }, (_, index) => recordSessionUsage(
+      "sess-concurrent-materialization",
+      { agentId: `persona-${index}`, action: "omargate_deep", model: "gpt-4.1-mini", inputTokens: 10, outputTokens: 5, idempotencyKey: `concurrent-${index}` },
+      { targetPath: root, syncRemote: false },
+    )));
+    assert.equal(results.length, 16);
+    assert.equal(results.every((result) => result.ok), true);
+    const events = await readStream("sess-concurrent-materialization", { targetPath: root, tail: 0 });
+    assert.equal(events.length, 16);
+    assert.equal(new Set(events.map((event) => event.payload.ledgerEntryId)).size, 16);
+  } finally { await fsp.rm(root, { recursive: true, force: true }); }
+});
+
 test("Unit billing price book: computes known, unknown, and zero-token costs", () => {
   const codex = computeProviderCost({
     model: "gpt-5.3-codex",

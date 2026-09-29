@@ -104,6 +104,7 @@ import {
 import { readSessionPreview } from "../session/preview.js";
 import {
   createSessionMessageAction,
+  fetchJsonWithFullTimeout,
   fetchSessionUsageLedger,
   fetchSessionPinnedMessages,
   listSessionMessageActions,
@@ -1404,19 +1405,22 @@ async function findReusableSessionCandidate({
 //     can exercise the local materialization path without a real API.
 async function fetchRemoteSessionDetail(endpoint, headers) {
   let response;
+  let payload;
   try {
-    response = await fetch(endpoint, { method: "GET", headers });
+    ({ response, payload } = await fetchJsonWithFullTimeout(
+      endpoint, { method: "GET", headers, redirect: "error" }, 2_000,
+    ));
   } catch (err) {
     return {
       ok: false,
       response: null,
       status: 0,
-      reason: normalizeString(err?.message) || "fetch_failed",
+      reason: err?.name === "AbortError" ? "request_timeout" : (normalizeString(err?.message) || "fetch_failed"),
       retryable: true,
     };
   }
   if (response && response.ok) {
-    return { ok: true, response, status: response.status, reason: "", retryable: false };
+    return { ok: true, payload, status: response.status, reason: "", retryable: false };
   }
   if (!response) {
     return { ok: false, response: null, status: 0, reason: "no_response", retryable: true };
@@ -1431,8 +1435,7 @@ async function fetchRemoteSessionDetail(endpoint, headers) {
   };
 }
 
-async function parseRemoteSessionDetailResponse(response) {
-  const body = await response.json().catch(() => ({}));
+function parseRemoteSessionDetailResponse(body) {
   return body && body.session && typeof body.session === "object"
     ? body.session
     : body && typeof body === "object"
@@ -1475,7 +1478,7 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
     return {
       ok: true,
       source: "singleton",
-      session: await parseRemoteSessionDetailResponse(detail.response),
+      session: parseRemoteSessionDetailResponse(detail.payload),
       status: detail.status,
     };
   }
@@ -1769,7 +1772,13 @@ export async function ensureWorkspaceSession({
   );
   let titleSync = null;
   if (shouldPushTitle) {
-    titleSync = await pushSessionTitleToApi(created.sessionId, effectiveTitle, { targetPath });
+    titleSync = await pushSessionTitleToApi(created.sessionId, effectiveTitle, {
+      targetPath,
+      // Startup uses the already validated credential; rotation and Retry-After
+      // sleeps belong to explicit auth/title operations, not optional startup.
+      autoRotate: false,
+      maxRetries: 0,
+    });
   }
 
   return {
@@ -2923,8 +2932,9 @@ export function registerSessionCommand(program) {
       };
 
       // Best-effort admin visibility sync. Session creation remains local-first.
+      let metadataSync = Promise.resolve(null);
       if (remoteSync.attempted) {
-        void syncSessionMetadataToApi(created.sessionId, {
+        metadataSync = syncSessionMetadataToApi(created.sessionId, {
           targetPath,
           sessionId: created.sessionId,
           status: created.status,
@@ -2934,7 +2944,7 @@ export function registerSessionCommand(program) {
           ttlSeconds,
           template: created.template,
           codebaseContext: created.codebaseContext,
-        }).catch(() => {});
+        }, { targetPath, timeoutMs: 2_000 }).catch(() => null);
       }
 
       // Make the session managed by default: spawn the Senti daemon as a
@@ -2971,6 +2981,14 @@ export function registerSessionCommand(program) {
         }).catch((error) => ({ posted: false, reason: normalizeString(error?.message) || "error" }));
       }
       payload.firstMessage = firstMessage;
+      // Own the request lifecycle; do not leave a referenced fetch running
+      // after emitting the single JSON document (even with --no-daemon).
+      const metadataResult = await metadataSync;
+      if (remoteSync.attempted) {
+        remoteSync.status = metadataResult?.synced ? "synced" : "degraded";
+        remoteSync.metadataSynced = Boolean(metadataResult?.synced);
+        remoteSync.reason = metadataResult?.synced ? "metadata_acknowledged" : (metadataResult?.reason || "metadata_sync_failed");
+      }
 
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));

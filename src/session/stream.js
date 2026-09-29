@@ -287,6 +287,23 @@ async function releaseLock(lockPath) {
   await fsp.rm(lockPath, { recursive: true, force: true }).catch(() => {});
 }
 
+// Creation and append must coordinate on the SAME lock. In particular, two
+// billing writers may both observe a missing session before either creates it.
+// The callback must not append (append acquires this lock independently).
+export async function withSessionStreamLock(sessionId, operation, {
+  targetPath = process.cwd(),
+  timeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
+} = {}) {
+  const paths = resolveSessionPaths(sessionId, { targetPath });
+  await fsp.mkdir(paths.sessionDir, { recursive: true });
+  await acquireLock(paths.lockPath, { timeoutMs });
+  try {
+    return await operation();
+  } finally {
+    await releaseLock(paths.lockPath);
+  }
+}
+
 async function readEventsFromFile(filePath) {
   try {
     const raw = await fsp.readFile(filePath, "utf-8");
@@ -427,6 +444,7 @@ export async function appendToStream(
     maxEvents = DEFAULT_MAX_STREAM_EVENTS,
     syncRemote = true,
     awaitRemoteSync = false,
+    lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS,
     mergeExisting = false,
   } = {}
 ) {
@@ -457,7 +475,7 @@ export async function appendToStream(
   const nowIso = new Date().toISOString();
   const normalizedMaxEvents = normalizePositiveInteger(maxEvents, DEFAULT_MAX_STREAM_EVENTS);
 
-  await acquireLock(paths.lockPath);
+  await acquireLock(paths.lockPath, { timeoutMs: lockTimeoutMs });
   try {
     await fsp.mkdir(paths.sessionDir, { recursive: true });
     await appendOrMergeCurrentStreamEvent(paths, canonicalEvent, { mergeExisting });
