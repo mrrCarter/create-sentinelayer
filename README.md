@@ -140,7 +140,7 @@ the session expires.
 
 Startup uses optional cached `.sentinelayer/CODEBASE_INGEST.json` context only;
 it does not recursively scan your working directory. A missing, invalid, oversized
-or slow cache yields empty context. Run `sl ingest codebase --path .` separately
+or slow cache yields empty context. Run `sl ingest map --path .` separately
 when you need a full scan. The cache reader has a 750ms budget and is terminated
 before returning; resume probes have a 2s deadline per attempt (one retry), while
 the existing workspace-list lookup keeps its 5s deadline. Optional title,
