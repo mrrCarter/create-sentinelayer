@@ -91,6 +91,27 @@ import {
   normalizeSessionOnboarding,
   writeSessionOnboardingBrief,
 } from "../session/invitations.js";
+import {
+  cancelAdmission,
+  fetchOwnAdmissionReceipt,
+  parseScope as parseAdmissionScope,
+  parseTtlSeconds as parseAdmissionTtlSeconds,
+  runAdmissionJoin,
+} from "../session/admission.js";
+import {
+  assertCanonicalAgentId,
+  canonicalAgentId,
+  currentAdmittedAgent,
+  withAgentAdmission,
+} from "../session/admission-auth.js";
+import {
+  claimTicket,
+  listTickets,
+  releaseTicketLease,
+  renewTicketLease,
+  submitTicket,
+  ticketEvents,
+} from "../session/tickets.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -1797,11 +1818,8 @@ export async function ensureWorkspaceSession({
 }
 
 function normalizeAgentId(value, fallbackValue = "cli-user") {
-  const normalized = normalizeString(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || fallbackValue;
+  // One canonicalisation for authorisation and execution (see admission-auth.js).
+  return canonicalAgentId(value) || fallbackValue;
 }
 
 function canPublishListenerPresence(agentId) {
@@ -2818,6 +2836,43 @@ async function emitAgentKilledEvent(sessionId, agentId, {
   return event;
 }
 
+function collectOption(value, previous) {
+  return [...(previous || []), value];
+}
+
+/**
+ * Wrap a command action so it runs as its agent: inside that agent's admission when
+ * this machine holds one (every session API call then uses the admission credential
+ * and never the human token), on the legacy path when it holds none, and refused when
+ * what it holds is expired or unusable. `resolveIds` names the (session, agent) pair
+ * exactly the way the action itself resolves it.
+ */
+function asAdmittedAgent(resolveIds, action) {
+  return async (...args) => {
+    const { sessionId, agentId } = await resolveIds(...args);
+    return withAgentAdmission(sessionId, agentId, () => action(...args));
+  };
+}
+
+async function sessionSayAgent(sessionId, _messageParts, options) {
+  const sid = normalizeString(sessionId);
+  const identity = await resolveSessionSayIdentity({
+    sessionId: sid,
+    agentId: options.agent,
+    targetPath: path.resolve(process.cwd(), String(options.path || ".")),
+  });
+  return { sessionId: sid, agentId: identity.agentId };
+}
+
+async function sessionReadAgent(sessionId, options) {
+  const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+  return { sessionId: normalizeString(sessionId), agentId: await defaultAgentId(options.agent, targetPath) };
+}
+
+async function sessionListenAgent(options) {
+  return { sessionId: resolveSessionIdOption(options), agentId: normalizeAgentId(options.agent, "cli-user") };
+}
+
 export function registerSessionCommand(program) {
   const session = program
     .command("session")
@@ -3337,6 +3392,21 @@ export function registerSessionCommand(program) {
     .option("--role <role>", "Agent role: coder, reviewer, tester, observer", "coder")
     .option("--model <model>", "Agent model hint", "cli")
     .option("--path <path>", "Workspace path for the session", ".")
+    .option(
+      "--goal <text>",
+      "Request goal-and-scope admission: say what this agent is coming to do. A room owner approves it on the web; the agent then receives its own scoped, expiring identity.",
+    )
+    .option("--deliverable <text>", "An output this agent will produce (repeatable)", collectOption, [])
+    .option("--stop-when <text>", "A condition that ends this agent's work (repeatable)", collectOption, [])
+    .option(
+      "--scope <actions>",
+      "Comma-separated actions to request: session.read, session.post, session.react, tickets.read, tickets.work",
+    )
+    .option("--ttl <duration>", "How long the grant should last, e.g. 90m or 2h (5m..24h)", "2h")
+    .option("--provider <name>", "Model provider hint for the admission request")
+    .option("--no-wait", "Request admission and return immediately with the approval URL")
+    .option("--wait-seconds <n>", "How long to wait for approval before returning pending", "900")
+    .option("--cancel-admission", "Cancel this workspace's pending admission request for the session")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -3347,6 +3417,34 @@ export function registerSessionCommand(program) {
       const explicitAgent = normalizeString(options.agent);
       const legacyName = normalizeString(options.name);
       const inviteToken = normalizeString(options.inviteToken);
+      const emitJson = shouldEmitJson(options, command);
+      // ONE requested identity for the whole join, validated before any side effect.
+      // --name is the identity only when --agent is absent (its legacy alias); beside an
+      // explicit --agent it is a free-text display label. Either way the identity is
+      // used in its canonical spelling from here on, so the admission, its receipt,
+      // the local registration and every later implicit command name the same agent.
+      if (!explicitAgent) assertCanonicalAgentId(legacyName, "--name");
+      const requestedAgent = canonicalAgentId(explicitAgent || legacyName);
+      if (options.cancelAdmission) {
+        const cancelled = await cancelAdmission(normalizedSessionId, {
+          agentId: requestedAgent,
+          targetPath,
+        });
+        const payload = {
+          command: "session join",
+          joined: false,
+          sessionId: normalizedSessionId,
+          admission: {
+            status: cancelled?.status || "cancelled",
+            admissionId: cancelled?.admissionId || null,
+          },
+        };
+        if (emitJson) console.log(JSON.stringify(payload, null, 2));
+        else console.log(`Admission request ${payload.admission.admissionId || ""} cancelled.`);
+        return;
+      }
+      // Membership first. Only a member may ask for an agent to be admitted, so an
+      // invitation is accepted BEFORE the admission request, never after.
       let invitationAccept = null;
       let invitationAcceptResult = null;
       if (inviteToken) {
@@ -3354,13 +3452,62 @@ export function registerSessionCommand(program) {
           targetPath,
           invitationToken: inviteToken,
           seatKey: options.seatKey,
-          agentId: explicitAgent || legacyName,
+          agentId: requestedAgent,
           idempotencyKey: options.idempotencyKey,
         });
         invitationAcceptResult =
           invitationAccept?.result && typeof invitationAccept.result === "object"
             ? invitationAccept.result
             : null;
+      }
+      let admission = null;
+      if (normalizeString(options.goal)) {
+        const admissionAgent = requestedAgent;
+        if (!admissionAgent) {
+          throw new Error("--goal requires --agent <id>: admission is requested for one named agent.");
+        }
+        const waitSeconds = Number.parseInt(String(options.waitSeconds ?? "900"), 10);
+        admission = await runAdmissionJoin(normalizedSessionId, {
+          agentId: admissionAgent,
+          displayName: legacyName && explicitAgent ? legacyName : "",
+          model: options.model,
+          provider: options.provider,
+          goal: options.goal,
+          deliverables: options.deliverable || [],
+          stopConditions: options.stopWhen || [],
+          actions: parseAdmissionScope(options.scope),
+          ttlSeconds: parseAdmissionTtlSeconds(options.ttl),
+          wait: options.wait !== false,
+          waitTimeoutMs: (Number.isFinite(waitSeconds) && waitSeconds >= 0 ? waitSeconds : 900) * 1000,
+          targetPath,
+          onPending: ({ approveUrl }) => {
+            // stderr, so --json stdout stays a single parseable document.
+            const line = `Waiting for a room owner to approve this agent: ${approveUrl}`;
+            if (emitJson) process.stderr.write(`${line}\n`);
+            else console.log(pc.yellow(line));
+          },
+        });
+        if (admission.status !== "active") {
+          // Only an ACTIVE admission joins. Pending, denied, cancelled or expired never
+          // registers the agent or materializes the room for it.
+          process.exitCode = admission.status === "pending" ? 3 : 4;
+          const payload = {
+            command: "session join",
+            joined: false,
+            sessionId: normalizedSessionId,
+            agentId: admissionAgent,
+            invitationAccepted: Boolean(invitationAcceptResult),
+            admission,
+          };
+          if (emitJson) {
+            console.log(JSON.stringify(payload, null, 2));
+          } else if (admission.status === "pending") {
+            console.log(pc.yellow(`Admission pending. A room owner approves it here: ${admission.approveUrl || "(see the session page)"}`));
+          } else {
+            console.log(pc.red(`Admission ${admission.status}. The agent was not joined.`));
+          }
+          return;
+        }
       }
 
       // PR #483 contract: verify the session exists and the caller has access
@@ -3373,7 +3520,48 @@ export function registerSessionCommand(program) {
       // before the invite is accepted the user may legitimately receive 403,
       // so --invite-token performs the guarded accept mutation first and this
       // verification proves membership immediately afterward.
-      const verification = await verifyRemoteSession(normalizedSessionId, { targetPath });
+      // An admitted agent proves its grant is live with ITS OWN credential, via the
+      // grant's receipt, and never with the human token. A cached "active" is not
+      // reported until this succeeds (a revoked grant is not joined), and nothing
+      // about the room is fetched on the human's authority.
+      const admittedAgentId = admission ? requestedAgent : "";
+      let admissionReceipt = null;
+      if (admission) {
+        try {
+          admissionReceipt = await withAgentAdmission(normalizedSessionId, admittedAgentId, () =>
+            fetchOwnAdmissionReceipt(normalizedSessionId, { targetPath }),
+          );
+          // The grant must be for EXACTLY the identity this join registers, byte for
+          // byte: a receipt for any other spelling is a different agent's authority.
+          const receiptAgent = String(admissionReceipt?.agentId ?? "");
+          if (receiptAgent !== admittedAgentId) {
+            throw new Error(
+              `the admission is for agent "${receiptAgent || "(none)"}", not "${admittedAgentId}"`,
+            );
+          }
+        } catch (error) {
+          process.exitCode = 4;
+          const payload = {
+            command: "session join",
+            joined: false,
+            sessionId: normalizedSessionId,
+            agentId: admittedAgentId,
+            admission: {
+              ...admission,
+              status: "not_accepted",
+              verified: false,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          };
+          if (emitJson) console.log(JSON.stringify(payload, null, 2));
+          else console.log(pc.red(`The API no longer accepts this agent's admission; it was not joined.`));
+          return;
+        }
+        admission = { ...admission, verified: true, receipt: admissionReceipt };
+      }
+      const verification = admission
+        ? { ok: true, source: "admission_receipt", session: { sessionId: normalizedSessionId } }
+        : await verifyRemoteSession(normalizedSessionId, { targetPath });
       if (!verification.ok) {
         if (verification.status === 404 || verification.reason === "not_found") {
           throw new Error(
@@ -3400,17 +3588,31 @@ export function registerSessionCommand(program) {
         skipRemoteProbe: true,
         remoteSession,
       });
-      const joinHydration = await hydrateJoinBriefingContext(normalizedSessionId, {
-        targetPath,
-      });
+      // History only for a grant that may read it, and then on the admission.
+      const joinHydration = !admission
+        ? await hydrateJoinBriefingContext(normalizedSessionId, { targetPath })
+        : (admissionReceipt?.actions || []).includes("session.read")
+          ? await withAgentAdmission(normalizedSessionId, admittedAgentId, () =>
+              hydrateJoinBriefingContext(normalizedSessionId, { targetPath }),
+            )
+          : { skipped: true, reason: "the grant does not include session.read" };
 
       const acceptedOnboarding = normalizeSessionOnboarding(
         invitationAcceptResult?.onboarding,
         invitationAcceptResult?.claimedSeat,
       );
       const acceptedAgentId = normalizeString(acceptedOnboarding?.agentId);
-      const agentSeed = explicitAgent || acceptedAgentId || legacyName;
+      // An admitted join registers the admitted identity and nothing else. Otherwise an
+      // invitation's onboarding agent id is the identity only when none was given, and
+      // it is held to the same canonical rule before anything is registered locally.
+      if (!admission && !explicitAgent && acceptedAgentId) {
+        assertCanonicalAgentId(acceptedAgentId, "the invitation's agent id");
+      }
+      const agentSeed = admission ? admittedAgentId : explicitAgent || acceptedAgentId || legacyName;
       const resolvedAgentId = await defaultAgentId(agentSeed, targetPath);
+      if (admission && resolvedAgentId !== admittedAgentId) {
+        throw new Error(`join would register "${resolvedAgentId}", not the admitted agent "${admittedAgentId}".`);
+      }
       const roleWasExplicit = optionWasSetByCli(command, "role");
       const role =
         normalizeString(roleWasExplicit ? options.role : acceptedOnboarding?.role || options.role) ||
@@ -3503,6 +3705,7 @@ export function registerSessionCommand(program) {
               jsonPath: onboardingBrief.jsonPath,
             }
           : null,
+        admission,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -3523,6 +3726,23 @@ export function registerSessionCommand(program) {
         console.log(pc.green(`Invitation accepted${seatLabel}`));
       }
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
+      if (admission) {
+        if (admission.status === "active") {
+          const expires = new Date(admission.grant.expiresAt * 1000).toISOString();
+          console.log(
+            pc.green(
+              `Admitted${admission.reused ? " (existing grant)" : ""}: ${admission.grant.actions.join(", ")} until ${expires}`,
+            ),
+          );
+          if (admission.identity?.subject) console.log(pc.gray(`identity=${admission.identity.subject}`));
+          console.log(pc.gray(`credential stored at ${admission.credential.storage} (never printed)`));
+        } else if (admission.status === "pending") {
+          console.log(pc.yellow(`Admission pending approval: ${admission.approveUrl}`));
+          console.log(pc.gray("Re-run the same command to resume waiting."));
+        } else {
+          console.log(pc.red(`Admission ${admission.status}.`));
+        }
+      }
       if (payload.onboardingGuide?.markdownPath) {
         console.log(pc.gray(`onboarding=${payload.onboardingGuide.markdownPath}`));
       }
@@ -3562,7 +3782,7 @@ export function registerSessionCommand(program) {
     .option("--local-only", "Append only to the local session cache without remote send confirmation")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, messageParts, options, command) => {
+    .action(asAdmittedAgent(sessionSayAgent, async (sessionId, messageParts, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
       if (!normalizedSessionId) {
         throw new Error("session id is required.");
@@ -3690,7 +3910,7 @@ export function registerSessionCommand(program) {
         console.error(pc.yellow(`Identity warning: ${identity.identityWarning}`));
       }
       console.log(formatEventLine(persisted));
-    });
+    }));
 
   session
     .command("post-agent <sessionId> <message>")
@@ -3980,7 +4200,20 @@ export function registerSessionCommand(program) {
       console.log(formatEventLine(persisted));
     });
 
-  async function runMessageActionCommand({
+  // Every message-action command (react, reply, ack, ...) runs as its authoring
+  // agent: inside that agent's admission when this machine holds one.
+  async function runMessageActionCommand(args = {}) {
+    const sid = normalizeString(args.sessionId);
+    const identity = await resolveMessageActionIdentity({
+      sessionId: sid,
+      optionAgent: args.options?.agent,
+      targetPath: path.resolve(process.cwd(), String(args.options?.path || ".")),
+      env: process.env,
+    });
+    return withAgentAdmission(sid, identity.agentId, () => runMessageActionCommandUnscoped(args));
+  }
+
+  async function runMessageActionCommandUnscoped({
     sessionId,
     actionType,
     options,
@@ -4969,7 +5202,7 @@ export function registerSessionCommand(program) {
       `Total log files to retain including the active file (default ${DEFAULT_ROTATING_LOG_MAX_FILES})`,
       String(DEFAULT_ROTATING_LOG_MAX_FILES),
     )
-    .action(async (options) => {
+    .action(asAdmittedAgent(sessionListenAgent, async (options) => {
       const normalizedSessionId = resolveSessionIdOption(options);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const agentId = normalizeAgentId(options.agent, "cli-user");
@@ -5061,9 +5294,15 @@ export function registerSessionCommand(program) {
         options.maxPolls === undefined
           ? null
           : parsePositiveInteger(options.maxPolls, "max-polls", 1);
-      const listenTransport = requestedTransport === "auto" && maxPolls !== null
-        ? "poll"
-        : requestedTransport;
+      if (currentAdmittedAgent() && requestedTransport === "stream") {
+        throw new Error(
+          "An admitted agent listens by polling: the event stream is not part of an admission grant, so a revoke never has to chase an open stream. Use --transport poll.",
+        );
+      }
+      const listenTransport =
+        requestedTransport === "auto" && (maxPolls !== null || currentAdmittedAgent())
+          ? "poll"
+          : requestedTransport;
       const since = options.since === undefined ? undefined : String(options.since);
       if (options.fromNow && options.since !== undefined) {
         throw new Error("Use either --from-now or --since, not both.");
@@ -5385,7 +5624,7 @@ export function registerSessionCommand(program) {
           }).catch(() => {});
         }
       }
-    });
+    }));
 
   session
     .command("daemon [sessionId]")
@@ -5957,7 +6196,7 @@ export function registerSessionCommand(program) {
     .option("--include-control-events", "Include listener lifecycle/control-plane events in transcript output")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, options, command) => {
+    .action(asAdmittedAgent(sessionReadAgent, async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
       if (!normalizedSessionId) {
         throw new Error("session id is required.");
@@ -6301,7 +6540,7 @@ export function registerSessionCommand(program) {
           console.log(formatEventLine(event));
         }
       }
-    });
+    }));
 
   session
     .command("search <sessionId> <query>")
@@ -6508,6 +6747,147 @@ export function registerSessionCommand(program) {
           ),
         );
       }
+    });
+
+  // ---------------------------------------------------------------- tickets
+  // The room's shared backlog (API "Ticket Lease Contract (T2)"). Every subcommand is
+  // an ACTOR command: the runCli choke point runs it on the agent's admission.
+  const ticket = session
+    .command("ticket")
+    .description("The room's shared backlog: list, claim, renew, release and submit tickets");
+
+  // Ticket work is attributed by the CREDENTIAL, never by a label: the lease routes take the
+  // holder from authentication alone. So an agent identity is allowed only with that agent's
+  // live admission in scope; without it, the request would go out on the human token and
+  // claim as the PERSON while this command reported the agent. Refused before any request.
+  async function ticketIdentity(sessionId, options, targetPath) {
+    const identity = await resolveSessionSayIdentity({ sessionId, agentId: options.agent, targetPath });
+    const agent = normalizeString(identity.agentId);
+    if (!agent || agent === "cli-user") return "human";
+    const admitted = currentAdmittedAgent();
+    if (!admitted || admitted.sessionId !== sessionId || admitted.agentId !== agent) {
+      throw new Error(
+        `Agent "${agent}" has no live admission in this room. Ticket work is attributed by the credential, so ` +
+          `without one this would act as you, not as "${agent}". Admit it first: ` +
+          `sl session join ${sessionId} --agent ${agent} --goal "<what it is here to do>"`
+      );
+    }
+    return agent;
+  }
+
+  function ticketOutput(options, command, payload, line) {
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(line);
+  }
+
+  ticket
+    .command("list <sessionId>")
+    .description("List the room's tickets (--available: only those claimable now)")
+    .option("--available", "Only tickets that can be claimed now (never blocked work)")
+    .option("--agent <id>", "Agent id reading the backlog (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await listTickets(normalizeString(sessionId), { targetPath, available: Boolean(options.available) });
+      const lines = result.items.map((t) => {
+        const holder = t.lease ? ` · ${t.lease.live ? "leased by" : "lease EXPIRED, was"} ${t.lease.holder}` : "";
+        const done = t.completion && !t.completion.verified ? " (manual, unverified)" : "";
+        return `${t.id}  ${t.status}${done}  v${t.version}  ${t.title}${holder}`;
+      });
+      ticketOutput(options, command, { command: "session ticket list", ...result }, lines.join("\n") || "No tickets.");
+    });
+
+  ticket
+    .command("claim <sessionId> <ticketId>")
+    .description("Claim a ticket: take its fenced lease")
+    .option("--expected-version <n>", "Refuse if the ticket has changed since this version")
+    .option("--agent <id>", "Agent id claiming the ticket (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const expectedVersion =
+        options.expectedVersion === undefined ? null : parsePositiveInteger(options.expectedVersion, "expected-version", 1);
+      const result = await claimTicket(sid, normalizeString(ticketId), { identity, expectedVersion, targetPath });
+      ticketOutput(options, command, { command: "session ticket claim", identity, ...result },
+        `Claimed ${ticketId} (fence ${result.lease.fence}, until ${result.lease.expiresAt}).`);
+    });
+
+  ticket
+    .command("renew <sessionId> <ticketId>")
+    .description("Renew the lease this identity holds on a ticket")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const result = await renewTicketLease(sid, normalizeString(ticketId), { identity, targetPath });
+      ticketOutput(options, command, { command: "session ticket renew", identity, ...result },
+        `Renewed ${ticketId} until ${result.lease.expiresAt}.`);
+    });
+
+  ticket
+    .command("release <sessionId> <ticketId>")
+    .description("Give a ticket back: it returns to open for the next claimant")
+    .option("--reason <text>", "Why it is being released")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      const result = await releaseTicketLease(sid, normalizeString(ticketId), {
+        identity, targetPath, reason: normalizeString(options.reason) || null,
+      });
+      ticketOutput(options, command, { command: "session ticket release", identity, ...result }, `Released ${ticketId}.`);
+    });
+
+  ticket
+    .command("submit <sessionId> <ticketId>")
+    .description("Submit the work for review (in_review). Completion needs verification; this is not done.")
+    .option("--sha <sha>", "The implementation commit")
+    .option("--evidence-file <path>", "JSON array of re-checkable evidence claims")
+    .option("--agent <id>", "Agent id holding the lease (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, ticketId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const identity = await ticketIdentity(sid, options, targetPath);
+      let evidence = [];
+      if (options.evidenceFile) {
+        evidence = JSON.parse(await fsp.readFile(path.resolve(targetPath, String(options.evidenceFile)), "utf8"));
+        if (!Array.isArray(evidence)) throw new Error("--evidence-file must contain a JSON array.");
+      }
+      const result = await submitTicket(sid, normalizeString(ticketId), {
+        identity, targetPath, implementationSha: normalizeString(options.sha) || null, evidence,
+      });
+      ticketOutput(options, command, { command: "session ticket submit", identity, ...result },
+        `Submitted ${ticketId} for review.`);
+    });
+
+  ticket
+    .command("events <sessionId>")
+    .description("The room's ticket events after a cursor, in commit order")
+    .option("--after <cursor>", "Only events after this cursor", "0")
+    .option("--agent <id>", "Agent id reading the feed (defaults to the joined session agent)")
+    .option("--path <path>", "Workspace path for the session", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const after = Number.parseInt(String(options.after ?? "0"), 10) || 0;
+      const result = await ticketEvents(normalizeString(sessionId), { after, targetPath });
+      const lines = (result.events || []).map((e) => `#${e.cursor} ${e.kind} ${e.ticketId} v${e.ticketVersion} by ${e.actorId}`);
+      ticketOutput(options, command, { command: "session ticket events", ...result }, lines.join("\n") || "No new ticket events.");
     });
 
   const checkpoint = session

@@ -1,0 +1,136 @@
+{
+  "source": "sentinelayer-api src/services/canonical_preimage.py",
+  "generatedFrom": "python canonical_preimage()",
+  "vectors": [
+    {
+      "name": "claim-ascii",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "admissionId",
+        "sessionId",
+        "agentId",
+        "publicKey",
+        "keyThumbprint",
+        "nonce"
+      ],
+      "payload": {
+        "admissionId": "8bd27fb8-c69c-4008-8c39-3e09669ef0bc",
+        "sessionId": "e9e8dc5e-8d57-4603-975f-09156e3b4473",
+        "agentId": "claude-warden",
+        "publicKey": "A5f_-kQ1aB0cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV1wX",
+        "keyThumbprint": "abababababababababababababababababababababababababababababababab",
+        "nonce": "n0nce-_Value"
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b2261646d697373696f6e4964223a2238626432376662382d633639632d343030382d386333392d336530393636396566306263222c226167656e744964223a22636c617564652d77617264656e222c226b65795468756d627072696e74223a2261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162222c226e6f6e6365223a226e306e63652d5f56616c7565222c227075626c69634b6579223a224135665f2d6b5131614230634432654633674834694a356b4c366d4e376f50387152397354307556317758222c2273657373696f6e4964223a2265396538646335652d386435372d343630332d393735662d303931353665336234343733227d",
+      "sha256": "83d28188b4b2aebfd5cf9440b6c8866aba307f40a25943154d5843394501ed01"
+    },
+    {
+      "name": "field-order-ignored",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "nonce",
+        "keyThumbprint",
+        "publicKey",
+        "agentId",
+        "sessionId",
+        "admissionId"
+      ],
+      "payload": {
+        "admissionId": "a",
+        "sessionId": "s",
+        "agentId": "x",
+        "publicKey": "p",
+        "keyThumbprint": "t",
+        "nonce": "n",
+        "extra": "not-covered"
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b2261646d697373696f6e4964223a2261222c226167656e744964223a2278222c226b65795468756d627072696e74223a2274222c226e6f6e6365223a226e222c227075626c69634b6579223a2270222c2273657373696f6e4964223a2273227d",
+      "sha256": "0295a40d19679318e3eafde09f565c27001063cf67973d0d741e9c127684aa68"
+    },
+    {
+      "name": "nfd-input-is-nfc-normalised",
+      "domain": "sentinelayer.test.v1",
+      "fields": [
+        "name"
+      ],
+      "payload": {
+        "name": "Café Zoë"
+      },
+      "preimageHex": "73656e74696e656c617965722e746573742e7631007b226e616d65223a22436166c3a9205a6fc3ab227d",
+      "sha256": "e26ad4ea3b6c4a3498e147c430053b6b51ef47ee63359b74924a8c65a79e5c61"
+    },
+    {
+      "name": "escapes-and-controls",
+      "domain": "sentinelayer.test.v1",
+      "fields": [
+        "s"
+      ],
+      "payload": {
+        "s": "quote\" back\\ nl\n tab\t cr\r bell\u0007 del u2028  emoji😀"
+      },
+      "preimageHex": "73656e74696e656c617965722e746573742e7631007b2273223a2271756f74655c22206261636b5c5c206e6c5c6e207461625c742063725c722062656c6c5c75303030372064656c7f207532303238e280a820656d6f6a69f09f9880227d",
+      "sha256": "d772aea28fc0a2ee3ca774816f97acda3feba33b07824cb3ce1828130e583230"
+    },
+    {
+      "name": "nested-array-object-int-bool-null",
+      "domain": "sentinelayer.admission-grant.v1",
+      "fields": [
+        "actions",
+        "n",
+        "b",
+        "z",
+        "o"
+      ],
+      "payload": {
+        "actions": [
+          "session.read",
+          "session.post"
+        ],
+        "n": 1788671598,
+        "b": true,
+        "z": null,
+        "o": {
+          "b": 2,
+          "a": [
+            1,
+            {
+              "y": "é",
+              "x": false
+            }
+          ]
+        }
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2d6772616e742e7631007b22616374696f6e73223a5b2273657373696f6e2e72656164222c2273657373696f6e2e706f7374225d2c2262223a747275652c226e223a313738383637313539382c226f223a7b2261223a5b312c7b2278223a66616c73652c2279223a22c3a9227d5d2c2262223a327d2c227a223a6e756c6c7d",
+      "sha256": "f29fe7fae51ad986eeebf43305299f123244c4e658659fd89ca9d9511dc52d94"
+    },
+    {
+      "name": "proto-key-top-level",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "__proto__",
+        "agentId"
+      ],
+      "payload": {
+        "__proto__": "first",
+        "agentId": "a"
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b225f5f70726f746f5f5f223a226669727374222c226167656e744964223a2261227d",
+      "sha256": "8ff9e5a50fd487e814ae699a3daa9790d4103d4c31af424631a04b9ab6371df6"
+    },
+    {
+      "name": "proto-key-nested",
+      "domain": "sentinelayer.admission.claim.v1",
+      "fields": [
+        "claim"
+      ],
+      "payload": {
+        "claim": {
+          "__proto__": "nested",
+          "x": 1
+        }
+      },
+      "preimageHex": "73656e74696e656c617965722e61646d697373696f6e2e636c61696d2e7631007b22636c61696d223a7b225f5f70726f746f5f5f223a226e6573746564222c2278223a317d7d",
+      "sha256": "71366c00f141c0746294c9d8b52f792545fac17a9493dad4c3d3cdb78531b6fd"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
+import { resolveAgentAdmissionTarget } from "../session/admission-auth.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
 /**
@@ -383,6 +384,11 @@ export async function checkAuthGate(args) {
     resolveError = error instanceof Error ? `session_read_error: ${error.message}` : "session_read_error";
   }
 
+  // An agent command whose admission is stored here: its credential IS the admission
+  // (runCli then dispatches it inside that scope, or it refuses a tombstone).
+  if (await resolveAgentAdmissionTarget(args)) {
+    return { authenticated: true, session: null, bypassReason: "session_admission", failureReason: null };
+  }
   return { authenticated: false, session: null, bypassReason: null, failureReason: resolveError };
 }
 
