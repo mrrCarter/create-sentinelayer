@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Cross-language conformance: the CLI must produce the SAME bytes as the API's
 // Python canonical_preimage(), or no admission claim signature ever verifies.
 // The vectors are generated from the Python implementation, never hand-written.

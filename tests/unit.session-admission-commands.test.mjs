@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // Real Commander commands, run as an admitted agent, against a fake API that is
 // FAITHFUL to the admission allowlist: an `sladm_` credential is refused (401) on
 // every endpoint the real API does not open to it, and once revoked it is refused

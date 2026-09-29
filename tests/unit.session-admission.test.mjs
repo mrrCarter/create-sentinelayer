@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // The CLI side of agent admission against a FAITHFUL fake API. The fake verifies
 // what the real API verifies: the per-route HMAC CSRF token on every mutation, and
 // the Ed25519 claim signature over the canonical preimage with the key stored at

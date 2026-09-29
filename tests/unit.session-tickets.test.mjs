@@ -1,3 +1,4 @@
+import "./setup-env.mjs";
 // `sl session ticket ...` through the real runCli, as an admitted agent, against a
 // fake API that implements the T2 ticket routes the way the API does (idempotent
 // replay by key; a live lease conflicts; submit needs the current lease + version).
