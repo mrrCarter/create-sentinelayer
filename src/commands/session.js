@@ -91,6 +91,11 @@ import {
   normalizeSessionOnboarding,
   writeSessionOnboardingBrief,
 } from "../session/invitations.js";
+import {
+  parseScope as parseAdmissionScope,
+  parseTtlSeconds as parseAdmissionTtlSeconds,
+  runAdmissionJoin,
+} from "../session/admission.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -2809,6 +2814,10 @@ async function emitAgentKilledEvent(sessionId, agentId, {
   return event;
 }
 
+function collectOption(value, previous) {
+  return [...(previous || []), value];
+}
+
 export function registerSessionCommand(program) {
   const session = program
     .command("session")
@@ -3319,6 +3328,20 @@ export function registerSessionCommand(program) {
     .option("--role <role>", "Agent role: coder, reviewer, tester, observer", "coder")
     .option("--model <model>", "Agent model hint", "cli")
     .option("--path <path>", "Workspace path for the session", ".")
+    .option(
+      "--goal <text>",
+      "Request goal-and-scope admission: say what this agent is coming to do. A room owner approves it on the web; the agent then receives its own scoped, expiring identity.",
+    )
+    .option("--deliverable <text>", "An output this agent will produce (repeatable)", collectOption, [])
+    .option("--stop-when <text>", "A condition that ends this agent's work (repeatable)", collectOption, [])
+    .option(
+      "--scope <actions>",
+      "Comma-separated actions to request: session.read, session.post, session.react, tickets.read, tickets.work",
+    )
+    .option("--ttl <duration>", "How long the grant should last, e.g. 90m or 2h (5m..24h)", "2h")
+    .option("--provider <name>", "Model provider hint for the admission request")
+    .option("--no-wait", "Request admission and return immediately with the approval URL")
+    .option("--wait-seconds <n>", "How long to wait for approval before returning pending", "900")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -3329,6 +3352,37 @@ export function registerSessionCommand(program) {
       const explicitAgent = normalizeString(options.agent);
       const legacyName = normalizeString(options.name);
       const inviteToken = normalizeString(options.inviteToken);
+      const emitJson = shouldEmitJson(options, command);
+      let admission = null;
+      if (normalizeString(options.goal)) {
+        const admissionAgent = explicitAgent || legacyName;
+        if (!admissionAgent) {
+          throw new Error("--goal requires --agent <id>: admission is requested for one named agent.");
+        }
+        const waitSeconds = Number.parseInt(String(options.waitSeconds ?? "900"), 10);
+        admission = await runAdmissionJoin(normalizedSessionId, {
+          agentId: admissionAgent,
+          displayName: legacyName && explicitAgent ? legacyName : "",
+          model: options.model,
+          provider: options.provider,
+          goal: options.goal,
+          deliverables: options.deliverable || [],
+          stopConditions: options.stopWhen || [],
+          actions: parseAdmissionScope(options.scope),
+          ttlSeconds: parseAdmissionTtlSeconds(options.ttl),
+          wait: options.wait !== false,
+          waitTimeoutMs: (Number.isFinite(waitSeconds) && waitSeconds >= 0 ? waitSeconds : 900) * 1000,
+          targetPath,
+          onPending: ({ approveUrl }) => {
+            // stderr, so --json stdout stays a single parseable document.
+            const line = `Waiting for a room owner to approve this agent: ${approveUrl}`;
+            if (emitJson) process.stderr.write(`${line}\n`);
+            else console.log(pc.yellow(line));
+          },
+        });
+        if (admission.status === "pending") process.exitCode = 3;
+        else if (admission.status !== "active") process.exitCode = 4;
+      }
       let invitationAccept = null;
       let invitationAcceptResult = null;
       if (inviteToken) {
@@ -3485,6 +3539,7 @@ export function registerSessionCommand(program) {
               jsonPath: onboardingBrief.jsonPath,
             }
           : null,
+        admission,
       };
       if (shouldEmitJson(options, command)) {
         console.log(JSON.stringify(payload, null, 2));
@@ -3505,6 +3560,23 @@ export function registerSessionCommand(program) {
         console.log(pc.green(`Invitation accepted${seatLabel}`));
       }
       console.log(pc.gray(`agent=${joined.agentId} role=${joined.role} model=${joined.model}`));
+      if (admission) {
+        if (admission.status === "active") {
+          const expires = new Date(admission.grant.expiresAt * 1000).toISOString();
+          console.log(
+            pc.green(
+              `Admitted${admission.reused ? " (existing grant)" : ""}: ${admission.grant.actions.join(", ")} until ${expires}`,
+            ),
+          );
+          if (admission.identity?.subject) console.log(pc.gray(`identity=${admission.identity.subject}`));
+          console.log(pc.gray(`credential stored at ${admission.credential.storage} (never printed)`));
+        } else if (admission.status === "pending") {
+          console.log(pc.yellow(`Admission pending approval: ${admission.approveUrl}`));
+          console.log(pc.gray("Re-run the same command to resume waiting."));
+        } else {
+          console.log(pc.red(`Admission ${admission.status}.`));
+        }
+      }
       if (payload.onboardingGuide?.markdownPath) {
         console.log(pc.gray(`onboarding=${payload.onboardingGuide.markdownPath}`));
       }
