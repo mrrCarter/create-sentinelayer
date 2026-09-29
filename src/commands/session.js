@@ -93,6 +93,7 @@ import {
 } from "../session/invitations.js";
 import {
   cancelAdmission,
+  fetchOwnAdmissionReceipt,
   parseScope as parseAdmissionScope,
   parseTtlSeconds as parseAdmissionTtlSeconds,
   runAdmissionJoin,
@@ -3484,7 +3485,40 @@ export function registerSessionCommand(program) {
       // before the invite is accepted the user may legitimately receive 403,
       // so --invite-token performs the guarded accept mutation first and this
       // verification proves membership immediately afterward.
-      const verification = await verifyRemoteSession(normalizedSessionId, { targetPath });
+      // An admitted agent proves its grant is live with ITS OWN credential, via the
+      // grant's receipt, and never with the human token. A cached "active" is not
+      // reported until this succeeds (a revoked grant is not joined), and nothing
+      // about the room is fetched on the human's authority.
+      const admittedAgentId = admission ? (explicitAgent || legacyName).toLowerCase() : "";
+      let admissionReceipt = null;
+      if (admission) {
+        try {
+          admissionReceipt = await withAgentAdmission(normalizedSessionId, admittedAgentId, () =>
+            fetchOwnAdmissionReceipt(normalizedSessionId, { targetPath }),
+          );
+        } catch (error) {
+          process.exitCode = 4;
+          const payload = {
+            command: "session join",
+            joined: false,
+            sessionId: normalizedSessionId,
+            agentId: admittedAgentId,
+            admission: {
+              ...admission,
+              status: "not_accepted",
+              verified: false,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          };
+          if (emitJson) console.log(JSON.stringify(payload, null, 2));
+          else console.log(pc.red(`The API no longer accepts this agent's admission; it was not joined.`));
+          return;
+        }
+        admission = { ...admission, verified: true, receipt: admissionReceipt };
+      }
+      const verification = admission
+        ? { ok: true, source: "admission_receipt", session: { sessionId: normalizedSessionId } }
+        : await verifyRemoteSession(normalizedSessionId, { targetPath });
       if (!verification.ok) {
         if (verification.status === 404 || verification.reason === "not_found") {
           throw new Error(
@@ -3511,9 +3545,14 @@ export function registerSessionCommand(program) {
         skipRemoteProbe: true,
         remoteSession,
       });
-      const joinHydration = await hydrateJoinBriefingContext(normalizedSessionId, {
-        targetPath,
-      });
+      // History only for a grant that may read it, and then on the admission.
+      const joinHydration = !admission
+        ? await hydrateJoinBriefingContext(normalizedSessionId, { targetPath })
+        : (admissionReceipt?.actions || []).includes("session.read")
+          ? await withAgentAdmission(normalizedSessionId, admittedAgentId, () =>
+              hydrateJoinBriefingContext(normalizedSessionId, { targetPath }),
+            )
+          : { skipped: true, reason: "the grant does not include session.read" };
 
       const acceptedOnboarding = normalizeSessionOnboarding(
         invitationAcceptResult?.onboarding,

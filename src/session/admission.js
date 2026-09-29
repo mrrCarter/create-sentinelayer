@@ -260,15 +260,24 @@ export async function readAdmissionCredentialState(sessionId, agentId, { homeDir
   } catch {
     return { state: "none" }; // not a storable identity, so nothing can be stored for it
   }
+  // Only a MISSING file is absence. A present file that is unreadable, or parses to
+  // null, an array or a scalar, is a tombstone: it never permits the legacy path.
+  let raw;
+  try {
+    raw = await fsp.readFile(filePath, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return { state: "none" };
+    return { state: "refused", reason: "malformed", credential: null };
+  }
   let stored;
   try {
-    stored = await readJsonFile(filePath);
+    stored = JSON.parse(raw);
   } catch {
     return { state: "refused", reason: "malformed", credential: null };
   }
-  if (stored === null) return { state: "none" };
   const refused = (reason) => ({ state: "refused", reason, credential: stored });
-  if (typeof stored !== "object" || !String(stored.token || "").startsWith("sladm_")) return refused("malformed");
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) return refused("malformed");
+  if (!String(stored.token || "").startsWith("sladm_")) return refused("malformed");
   if (!Number.isFinite(stored.expiresAt)) return refused("malformed");
   if (normalizeString(stored.sessionId).toLowerCase() !== sid || stored.agentId !== agent) {
     return refused("bound_to_another_session_or_agent");
@@ -551,6 +560,28 @@ function redacted({ status, reused, stored, claimed, sid, agent, homeDir }) {
     // A reference only. The token itself never appears in output.
     credential: { storage: admissionCredentialPath(sid, agent, { homeDir }), redacted: true },
   };
+}
+
+/**
+ * The grant's own live receipt (GET /admissions/self). Call it INSIDE the agent's
+ * admission scope: it then goes out on the admission credential, never the human
+ * token, and a narrow grant (no session.read) can still prove it is live. Throws
+ * when the API does not accept the admission (revoked, expired, wrong room).
+ */
+export async function fetchOwnAdmissionReceipt(
+  sessionId,
+  { targetPath = process.cwd(), resolveAuthSession = resolveActiveAuthSession, requestRead = requestJson } = {}
+) {
+  const sid = normalizeString(sessionId);
+  const auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false });
+  if (!auth?.token || auth.source !== "session_admission") {
+    throw new Error("The admission receipt must be fetched with the admission credential.");
+  }
+  const apiUrl = normalizeString(auth.apiUrl).replace(/\/+$/, "");
+  return requestRead(admissionUrl(apiUrl, sid, "/self"), {
+    method: "GET",
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
 }
 
 /** Cancel this agent's pending admission request filed from this workspace. */

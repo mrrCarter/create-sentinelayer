@@ -52,6 +52,7 @@ const ADMISSION_ALLOWED = [
   ["GET", /\/tickets$/],
   ["POST", /\/tickets$/],
   ["PATCH", /\/tickets\/[^/]+$/],
+  ["GET", /\/admissions\/self$/],
 ];
 
 const json = (body, status = 200) =>
@@ -87,6 +88,12 @@ function fakeApi({ decision = "approved", grantActions = null } = {}) {
       return json({ error: { code: "INVALID_TOKEN" } }, 401);
     }
 
+    // --- the grant's own receipt: admission credential only, any live grant
+    if (method === "GET" && /\/admissions\/self$/.test(p)) {
+      const adm = [...state.admissions.values()].find((a) => a.token === bearer);
+      if (!adm) return json({ error: { code: "INVALID_TOKEN" } }, 401);
+      return json({ admissionId: adm.id, sessionId: SID, agentId: adm.body.agentId, actions: adm.actions, expiresAt: Math.floor(Date.now() / 1000) + 3600, passportId: "pid", effectiveRole: "contributor", verifiedAt: Math.floor(Date.now() / 1000) });
+    }
     // --- admission management (delegator's human token)
     if (method === "POST" && /\/invitations\/accept$/.test(p)) {
       state.order.push("invite");
@@ -193,6 +200,9 @@ async function joinAdmitted(agent, { grantActions } = {}) {
   assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
   assert.equal(joined.json?.joined, true, joined.text);
   assert.equal(joined.json?.admission?.status, "active");
+  // After the claim, the join itself runs on the admission: readiness and history.
+  const claimAt = api.requests.findIndex((c) => /\/claim$/.test(c.path));
+  assert.deepEqual(api.requests.slice(claimAt + 1).filter((c) => c.bearer === HUMAN), []);
   return { ws, api };
 }
 
@@ -336,9 +346,185 @@ test("the auth gate lets an admitted agent command run with no human login, and 
     assert.equal(listen.authenticated, true);
     const stranger = await checkAuthGate(["session", "say", SID, "hi", "--agent", "not-admitted"]);
     assert.equal(stranger.authenticated, false);
-    const notAgentCommand = await checkAuthGate(["session", "archive", SID, "--agent", "gate-agent"]);
-    assert.equal(notAgentCommand.authenticated, false);
+    // Every other subcommand runs on the admission (and the API decides what it may
+    // reach); join's control plane is the human's, so it still needs a human login.
+    const other = await checkAuthGate(["session", "lock", SID, "src/a.js", "--agent", "gate-agent"]);
+    assert.equal(other.authenticated, true);
+    // A human command that names no agent still needs the human login, env or not.
+    process.env.SENTINELAYER_AGENT_ID = "gate-agent";
+    try {
+      const human = await checkAuthGate(["session", "archive", SID]);
+      assert.equal(human.authenticated, false);
+    } finally {
+      delete process.env.SENTINELAYER_AGENT_ID;
+    }
+    const join = await checkAuthGate(["session", "join", SID, "--agent", "gate-agent", "--goal", "x"]);
+    assert.equal(join.authenticated, false);
   } finally {
     process.env.SENTINELAYER_TOKEN = HUMAN;
   }
+});
+
+// ------------------------------------- through runCli: the single choke point
+
+const { runCli } = await import("../src/cli.js");
+
+async function viaCli(args) {
+  resetSessionSyncStateForTests();
+  const out = [];
+  const originalLog = console.log;
+  const originalExit = process.exitCode;
+  console.log = (...parts) => out.push(parts.join(" "));
+  let error = null;
+  let exitCode;
+  try {
+    await runCli(args);
+  } catch (err) {
+    error = err;
+  } finally {
+    console.log = originalLog;
+    exitCode = process.exitCode;
+    process.exitCode = originalExit;
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(out.join("\n"));
+  } catch {}
+  return { error, exitCode, json: parsed, text: out.join("\n") };
+}
+
+async function tombstone(agent, content) {
+  await fsp.writeFile(admissionCredentialPath(SID, agent, { homeDir }), content);
+}
+
+for (const [label, args] of [
+  ["post-agent", (ws, agent) => ["session", "post-agent", SID, "as the agent", "--agent", agent, "--json", "--path", ws]],
+  ["observe", (ws, agent) => ["session", "observe", SID, "an observation", "--agent", agent, "--json", "--path", ws]],
+]) {
+  test(`\`${label}\` with an EXPIRED admission refuses before any request, human token present`, async () => {
+    const agent = `${label}-expired`;
+    const { ws, api } = await joinAdmitted(agent);
+    const file = admissionCredentialPath(SID, agent, { homeDir });
+    const stored = JSON.parse(await fsp.readFile(file, "utf8"));
+    await fsp.writeFile(file, JSON.stringify({ ...stored, expiresAt: Math.floor(Date.now() / 1000) - 5 }));
+    const mark = api.requests.length;
+    const ran = await viaCli(args(ws, agent));
+    assert.match(String(ran.error?.message), /expired.*will not fall back/s);
+    assert.deepEqual(since(api, mark), []);
+  });
+
+  test(`\`${label}\` with a LIVE admission goes out on it, never the human`, async () => {
+    const agent = `${label}-live`;
+    const { ws, api } = await joinAdmitted(agent);
+    const mark = api.requests.length;
+    await viaCli(args(ws, agent));
+    const calls = since(api, mark);
+    assert.ok(calls.length >= 1, "the command made requests");
+    assert.deepEqual(calls.filter((c) => c.bearer === HUMAN), []);
+  });
+}
+
+for (const content of ["null", "[]", "42", "\"sladm_x\"", ""]) {
+  test(`a credential file containing ${JSON.stringify(content)} is a tombstone, never absence`, async () => {
+    const agent = "null-agent";
+    const { ws, api } = await joinAdmitted(agent);
+    await tombstone(agent, content);
+    const mark = api.requests.length;
+    const ran = await viaCli(["session", "say", SID, "hello", "--agent", agent, "--json", "--path", ws]);
+    assert.match(String(ran.error?.message), /unreadable.*will not fall back/s);
+    assert.deepEqual(since(api, mark), []);
+  });
+}
+
+// ------------------------------------------------------ join readiness (H3)
+
+test("a fresh tickets.read-only join: verified by its own receipt, no history, no human after claim", async () => {
+  const ws = await workspace();
+  const api = fakeApi({ grantActions: ["tickets.read"] });
+  const joined = await sl(["session", "join", SID, "--agent", "tickets-agent", "--goal", "Read the board", "--scope", "tickets.read", "--json", "--path", ws]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.json.joined, true);
+  assert.equal(joined.json.admission.verified, true);
+  assert.deepEqual(joined.json.admission.receipt.actions, ["tickets.read"]);
+  assert.equal(joined.json.joinHydration?.skipped, true);
+  const claimAt = api.requests.findIndex((c) => /\/claim$/.test(c.path));
+  const after = api.requests.slice(claimAt + 1);
+  assert.ok(after.some((c) => /\/admissions\/self$/.test(c.path)), "readiness was checked live");
+  assert.deepEqual(after.filter((c) => c.bearer === HUMAN), [], "nothing after the claim on the human token");
+  assert.equal(after.some((c) => /\/events/.test(c.path)), false, "no history for a tickets-only grant");
+});
+
+test("an identical rejoin after revoke is NOT joined, and asks nothing of the human", async () => {
+  const ws = await workspace();
+  const api = fakeApi();
+  const args = ["session", "join", SID, "--agent", "rejoin-agent", "--goal", "Same goal", "--json", "--path", ws];
+  const first = await sl(args);
+  assert.equal(first.json?.joined, true, first.text);
+  for (const adm of api.admissions.values()) api.revoked.add(adm.id);
+  const mark = api.requests.length;
+  const again = await sl(args);
+  assert.equal(again.json.joined, false);
+  assert.equal(again.json.admission.status, "not_accepted");
+  assert.equal(again.exitCode, 4);
+  const calls = since(api, mark);
+  assert.ok(calls.some((c) => /\/admissions\/self$/.test(c.path)), "the cached grant was checked live");
+  assert.deepEqual(calls.filter((c) => c.bearer === HUMAN), []);
+});
+
+// ------------------------------------------- actor vs target (principal metadata)
+
+const { resolveAgentAdmissionTarget, SESSION_AGENT_PRINCIPAL } = await import("../src/session/admission-auth.js");
+
+async function expire(agent) {
+  const file = admissionCredentialPath(SID, agent, { homeDir });
+  const stored = JSON.parse(await fsp.readFile(file, "utf8"));
+  await fsp.writeFile(file, JSON.stringify({ ...stored, expiresAt: Math.floor(Date.now() / 1000) - 5 }));
+}
+
+for (const [label, argv] of [
+  ["kill", (ws) => ["session", "kill", "--session", SID, "--agent", "target-agent", "--json", "--path", ws]],
+  ["stop-listener", (ws) => ["session", "stop-listener", SID, "--agent", "target-agent", "--json", "--path", ws]],
+]) {
+  test(`\`${label} --agent X\` is a human acting ON X: never scoped to X's (expired) admission`, async () => {
+    const { ws, api } = await joinAdmitted("target-agent");
+    await expire("target-agent");
+    assert.equal(await resolveAgentAdmissionTarget(argv(ws)), null);
+    const mark = api.requests.length;
+    const ran = await viaCli(argv(ws));
+    assert.doesNotMatch(String(ran.error?.message || ""), /will not fall back/, "not refused on the target's credential");
+    assert.deepEqual(since(api, mark).filter((c) => c.bearer.startsWith("sladm_")), [], "the human's own authority");
+  });
+}
+
+test("`lock` with NO --agent resolves the implicit joined identity and refuses its expired admission", async () => {
+  const { ws, api } = await joinAdmitted("implicit-agent");
+  await expire("implicit-agent");
+  const mark = api.requests.length;
+  const ran = await viaCli(["session", "lock", SID, "src/a.js", "--json", "--path", ws]);
+  assert.match(String(ran.error?.message), /implicit-agent.*expired.*will not fall back/s);
+  assert.deepEqual(since(api, mark), []);
+});
+
+test("nested `checkpoint create --agent X` is an actor command and refuses X's expired admission", async () => {
+  const { ws, api } = await joinAdmitted("checkpoint-agent");
+  await expire("checkpoint-agent");
+  const mark = api.requests.length;
+  const ran = await viaCli(["session", "checkpoint", "create", SID, "--agent", "checkpoint-agent", "--json", "--path", ws]);
+  assert.match(String(ran.error?.message), /expired.*will not fall back/s);
+  assert.deepEqual(since(api, mark), []);
+});
+
+test("boolean flags anywhere do not change the resolved (session, agent)", async () => {
+  const { ws } = await joinAdmitted("flags-agent");
+  const target = await resolveAgentAdmissionTarget(["session", "say", "--json", SID, "hi", "--agent", "flags-agent", "--path", ws]);
+  assert.deepEqual(target, { sessionId: SID, agentId: "flags-agent" });
+});
+
+test("an UNCLASSIFIED subcommand with a stored admission fails closed", async () => {
+  const { ws } = await joinAdmitted("unclassified-agent");
+  assert.equal(SESSION_AGENT_PRINCIPAL["made-up"], undefined);
+  await assert.rejects(
+    resolveAgentAdmissionTarget(["session", "made-up", SID, "--agent", "unclassified-agent", "--path", ws]),
+    /not classified.*Refusing/s
+  );
 });
