@@ -3,6 +3,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { installTestEgressGuard } from "../net/test-egress-guard.js";
+
+// No-op outside tests; see src/net/test-egress-guard.js.
+installTestEgressGuard();
 
 /**
  * Default timeout applied to Sentinelayer API requests when no override is provided.
