@@ -48,8 +48,11 @@ function fakeApi({ onPoll } = {}) {
         (a) => a.status === "active" && a.body.agentId === body.agentId && a.body.publicKey === body.publicKey
       );
       if (live) {
-        if (JSON.stringify(live.body.goal) !== JSON.stringify(body.goal)) {
-          throw new Error("409 ADMISSION_CONFLICT: cancel or revoke it before requesting a different goal, scope or key");
+        if (
+          JSON.stringify(live.body.goal) !== JSON.stringify(body.goal) ||
+          live.body.requestedScope.ttlSeconds !== body.requestedScope.ttlSeconds
+        ) {
+          throw new Error("409 ADMISSION_CONFLICT: cancel or revoke it before requesting a different goal, duration, scope or key");
         }
         return { admissionId: live.id, status: "active", reused: true, agentId: body.agentId };
       }
@@ -241,12 +244,12 @@ test("a changed goal never inherits the approval: the server's conflict surfaces
   assert.equal(api.calls.filter((c) => c.method === "POST").length, before + 1, "the server must be asked");
 });
 
-test("a changed duration alone is also a question for the server", async () => {
+test("a changed duration is a question for the server, which refuses to pass the old grant off as it", async () => {
   const dirs = await scratch();
   const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
   await runAdmissionJoin(SID, base(api, dirs, { ttlSeconds: 3600 }));
   const before = api.calls.filter((c) => c.method === "POST").length;
-  await runAdmissionJoin(SID, base(api, dirs, { ttlSeconds: 1800 }));
+  await assert.rejects(runAdmissionJoin(SID, base(api, dirs, { ttlSeconds: 1800 })), /different goal, duration/);
   assert.equal(api.calls.filter((c) => c.method === "POST").length, before + 1);
 });
 
