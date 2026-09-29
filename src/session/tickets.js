@@ -110,28 +110,29 @@ function malformedSnapshot(reason) {
 
 /**
  * One snapshot page, validated before anything in it is believed. The snapshot is keyset by
- * ticket id, so every id on a page is above the previous page's `nextAfterId`, ids never
- * repeat, and a continuation token only moves forward. Anything else is not a complete list.
+ * ticket id: ids on a page are STRICTLY ascending and above the previous continuation (so
+ * none repeats), and the continuation is exactly the LAST id returned -- a token that jumps
+ * ahead would silently skip every ticket in between. Anything else is not a complete list.
  */
-function validatedSnapshotPage(body, { first, afterId, seen }) {
+function validatedSnapshotPage(body, { first, afterId }) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw malformedSnapshot("a page is not an object");
   if (!Array.isArray(body.items)) throw malformedSnapshot("a page has no items list");
   if (typeof body.hasMore !== "boolean") throw malformedSnapshot("a page does not say whether there is more");
   if (first && !(Number.isSafeInteger(body.cursor) && body.cursor >= 0)) {
     throw malformedSnapshot("the first page has no room cursor to follow events from");
   }
+  let previous = afterId;
   for (const item of body.items) {
     const id = item && typeof item === "object" ? item.id : null;
     if (typeof id !== "string" || !id) throw malformedSnapshot("a ticket has no id");
-    if (afterId && !(id > afterId)) throw malformedSnapshot("a page went backwards");
-    if (seen.has(id)) throw malformedSnapshot("a ticket appeared twice");
-    seen.add(id);
+    if (previous && !(id > previous)) throw malformedSnapshot("ticket ids are not in ascending order");
+    previous = id;
   }
   if (body.hasMore) {
+    if (!body.items.length) throw malformedSnapshot("an empty page claims there is more");
     const next = body.nextAfterId;
     if (typeof next !== "string" || !next) throw malformedSnapshot("there is more but no way to continue");
-    if (afterId && !(next > afterId)) throw malformedSnapshot("the continuation did not move forward");
-    if (!body.items.length) throw malformedSnapshot("an empty page claims there is more");
+    if (next !== previous) throw malformedSnapshot("the continuation is not the last ticket returned");
   }
   return body;
 }
@@ -156,7 +157,6 @@ export async function listTickets(
 ) {
   const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
   const items = [];
-  const seen = new Set();
   let cursor = null;
   let afterId = null;
   let complete = false;
@@ -168,7 +168,7 @@ export async function listTickets(
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
       }),
-      { first: page === 0, afterId, seen },
+      { first: page === 0, afterId },
     );
     if (page === 0) cursor = body.cursor; // ONLY the first page's cursor is the baseline
     items.push(...body.items);

@@ -298,10 +298,12 @@ for (const [name, pages, reason] of [
   ["items that are not a list", [FIRST, { items: { id: B.id }, hasMore: false, nextAfterId: null }], /a page has no items list/],
   ["hasMore that is not a boolean", [{ items: [A], cursor: 7, hasMore: "true", nextAfterId: A.id }], /does not say whether there is more/],
   ["no cursor on the first page", [{ items: [A], hasMore: false, nextAfterId: null }], /no room cursor/],
-  ["a page that goes backwards (token cycle)", [FIRST, { items: [B], hasMore: true, nextAfterId: B.id }, { items: [A], hasMore: false, nextAfterId: null }], /a page went backwards/],
-  ["a ticket twice on one page", [{ items: [A, B, B], cursor: 7, hasMore: false, nextAfterId: null }], /a ticket appeared twice/],
+  ["a page that goes backwards (token cycle)", [FIRST, { items: [B], hasMore: true, nextAfterId: B.id }, { items: [A], hasMore: false, nextAfterId: null }], /not in ascending order/],
+  ["a ticket twice on one page", [{ items: [A, B, B], cursor: 7, hasMore: false, nextAfterId: null }], /not in ascending order/],
+  ["ids out of order within a page", [{ items: [B, A], cursor: 7, hasMore: false, nextAfterId: null }], /not in ascending order/],
   ["more, with no way to continue", [{ items: [A], cursor: 7, hasMore: true, nextAfterId: null }], /no way to continue/],
-  ["a continuation that does not move forward", [FIRST, { items: [B], hasMore: true, nextAfterId: A.id }], /did not move forward/],
+  ["a continuation behind the last ticket", [FIRST, { items: [B], hasMore: true, nextAfterId: A.id }], /not the last ticket returned/],
+  ["a continuation AHEAD of the last ticket (skips B)", [{ items: [A], cursor: 7, hasMore: true, nextAfterId: B.id }, { items: [], hasMore: false, nextAfterId: null }], /not the last ticket returned/],
   ["an empty page that claims more", [{ items: [], cursor: 7, hasMore: true, nextAfterId: A.id }], /an empty page claims there is more/],
 ]) {
   test(`a malformed snapshot is refused, never listed: ${name}`, async () => {
