@@ -45,8 +45,8 @@ async function storeAdmission({ expired = false } = {}) {
   );
 }
 
-function fakeApi({ loseClaimResponses = 0 } = {}) {
-  const state = { requests: [], tickets: new Map(), idem: new Map(), leases: 0, lose: loseClaimResponses };
+function fakeApi({ loseClaimResponses = 0, decoyCursor = false, brokenContinuation = false } = {}) {
+  const state = { requests: [], tickets: new Map(), idem: new Map(), leases: 0, lose: loseClaimResponses, decoyCursor, brokenContinuation };
   const put = (t) => state.tickets.set(t.id, t);
   put({ id: "t-open", title: "open work", status: "open", version: 1, lease: null });
   put({ id: "t-blocked", title: "blocked work", status: "blocked", version: 1, lease: null });
@@ -62,7 +62,22 @@ function fakeApi({ loseClaimResponses = 0 } = {}) {
     if (bearer !== ADMISSION_TOKEN) return json({ error: { code: "INVALID_TOKEN" } }, 401);
     const p = u.pathname;
     if (method === "GET" && p.endsWith("/tickets")) {
-      return json({ items: [...state.tickets.values()].map((t) => ({ ...t })), cursor: 7 });
+      // The bounded board page: NOT a baseline, and it would miss work. The list must not use it.
+      return json({ items: [{ id: "board-decoy", title: "board page only", status: "open", version: 1, lease: null }] });
+    }
+    if (method === "GET" && p.endsWith("/tickets/snapshot")) {
+      // Id order, capped at 2 per page whatever the client asks, so the client MUST page.
+      const all = [...state.tickets.values()].sort((a, b) => a.id.localeCompare(b.id));
+      const after = u.searchParams.get("afterId");
+      const rest = after ? all.filter((t) => t.id > after) : all;
+      const page = rest.slice(0, 2);
+      const hasMore = rest.length > 2;
+      const out = { items: page.map((t) => ({ ...t })), hasMore, nextAfterId: hasMore ? page[page.length - 1].id : null };
+      // The first page carries the baseline cursor; a later page's is a DECOY the client must ignore.
+      if (!after) out.cursor = 7;
+      else if (state.decoyCursor) out.cursor = 999;
+      if (state.brokenContinuation && after) { out.hasMore = true; out.nextAfterId = null; }
+      return json(out);
     }
     if (method === "GET" && p.endsWith("/tickets/events")) return json({ events: [], cursor: 7 });
     const m = p.match(/\/tickets\/([^/]+)\/(claim|lease\/renew|lease\/release|submit)$/);
@@ -217,4 +232,30 @@ test("a lease state path that cannot be READ (not just parsed) also refuses", as
   await fsp.mkdir(file, { recursive: true }); // a directory where the file should be: EISDIR
   const renew = await sl(["session", "ticket", "renew", SID, "t-open", "--agent", AGENT, "--json"]);
   assert.match(String(renew.error?.message), /unreadable; refusing to guess/);
+});
+
+// ------------- the list is the COMPLETE snapshot, not the bounded board page (T2-R3)
+
+test("`ticket list` pages the snapshot to the end and keeps the FIRST page's cursor", async () => {
+  await reset();
+  await storeAdmission();
+  const api = fakeApi({ decoyCursor: true });
+  for (const id of ["t-a", "t-b", "t-z"]) api.tickets.set(id, { id, title: id, status: "open", version: 1, lease: null });
+  const ran = await sl(["session", "ticket", "list", SID, "--agent", AGENT, "--json"]);
+  assert.equal(ran.error, null, String(ran.error?.stack || ran.error));
+  const ids = ran.json.items.map((t) => t.id).sort();
+  assert.deepEqual(ids, ["t-a", "t-b", "t-blocked", "t-leased", "t-open", "t-z"]);
+  assert.equal(ran.json.cursor, 7, "the baseline is the first page's cursor, never a later page's");
+  assert.equal(ran.json.complete, true);
+  const snapshotCalls = api.requests.filter((r) => r.path.endsWith("/tickets/snapshot"));
+  assert.equal(snapshotCalls.length, 3);
+  assert.equal(api.requests.some((r) => r.path.endsWith("/tickets")), false, "the bounded board page is never the list");
+});
+
+test("a snapshot that cannot be continued is refused, never shown partial", async () => {
+  await reset();
+  await storeAdmission();
+  fakeApi({ brokenContinuation: true });
+  const ran = await sl(["session", "ticket", "list", SID, "--agent", AGENT, "--json"]);
+  assert.match(String(ran.error?.message), /refusing a partial list/);
 });

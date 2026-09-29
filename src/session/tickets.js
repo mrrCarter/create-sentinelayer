@@ -101,19 +101,60 @@ function leaseState(response) {
   };
 }
 
+const SNAPSHOT_PAGE = 200;
+const SNAPSHOT_MAX_PAGES = 50;
+
+/**
+ * The room's COMPLETE backlog, from GET /tickets/snapshot paged to the end. The board read
+ * (GET /tickets) is a bounded, newest-first page: filtering it for "available" could miss
+ * claimable work beyond the page. `cursor` is the FIRST page's room cursor, taken with that
+ * page; `sl session ticket events --after <cursor>` continues from exactly there. A snapshot
+ * that cannot be completed is refused, never returned partial.
+ */
 export async function listTickets(
   sessionId,
-  { targetPath = process.cwd(), available = false, resolveAuthSession = resolveActiveAuthSession, requestRead = requestJson } = {}
+  {
+    targetPath = process.cwd(),
+    available = false,
+    resolveAuthSession = resolveActiveAuthSession,
+    requestRead = requestJson,
+    pageSize = SNAPSHOT_PAGE,
+    maxPages = SNAPSHOT_MAX_PAGES,
+  } = {}
 ) {
   const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
-  const body = await requestRead(ticketsUrl(apiUrl, sessionId), { method: "GET", headers: { Authorization: `Bearer ${token}` } });
-  const items = Array.isArray(body?.items) ? body.items : [];
+  const items = [];
+  let cursor = null;
+  let afterId = null;
+  let complete = false;
+  for (let page = 0; page < maxPages && !complete; page += 1) {
+    const query = new URLSearchParams({ limit: String(pageSize) });
+    if (afterId) query.set("afterId", afterId);
+    const body = await requestRead(`${ticketsUrl(apiUrl, sessionId, "/snapshot")}?${query}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (page === 0) cursor = body?.cursor ?? null; // ONLY the first page's cursor is the baseline
+    items.push(...(Array.isArray(body?.items) ? body.items : []));
+    if (body?.hasMore !== true) {
+      complete = true;
+    } else if (!normalizeString(body?.nextAfterId) || body.nextAfterId === afterId) {
+      throw new Error("The ticket snapshot said there is more but gave no way to continue; refusing a partial list.");
+    } else {
+      afterId = body.nextAfterId;
+    }
+  }
+  if (!complete) {
+    throw new Error(`The room has more than ${maxPages * pageSize} tickets; refusing a partial list.`);
+  }
+  // Newest first for people; the snapshot itself is in id order.
+  items.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")) || String(a.id).localeCompare(String(b.id)));
   // Available = claimable by someone now: open, or working with an expired lease.
   // Never blocked work: the MVP has no dependencies, and blocked is never available.
   const filtered = available
     ? items.filter((t) => t.status === "open" || (t.status === "working" && t.lease && !t.lease.live))
     : items;
-  return { items: filtered, cursor: body?.cursor ?? null, count: filtered.length };
+  return { items: filtered, cursor, count: filtered.length, complete: true };
 }
 
 export async function ticketEvents(
