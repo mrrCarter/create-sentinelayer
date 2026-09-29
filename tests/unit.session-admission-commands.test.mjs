@@ -643,3 +643,65 @@ test("runCli's preAction guard catches argv/Commander divergence: message text n
   assert.match(String(ran.error?.message), /resolved to none but was dispatched under .*wiring-agent/);
   assert.deepEqual(since(api, mark), [], "refused before the action ran");
 });
+
+// ------------------- one canonical actor (Verity 80c reopen: normalization alias)
+
+const { canonicalAgentId } = await import("../src/session/admission-auth.js");
+
+async function storeExpired(agent) {
+  const file = admissionCredentialPath(SID, agent, { homeDir });
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, JSON.stringify({
+    version: 2, sessionId: SID, agentId: agent, apiUrl: API, admissionId: "exp",
+    token: `sladm_${"E".repeat(43)}`, expiresAt: Math.floor(Date.now() / 1000) - 5,
+  }));
+}
+
+for (const [label, argv] of [
+  ["post-agent", (ws) => ["session", "post-agent", SID, "msg", "--agent", "normalized:post:expired", "--json", "--path", ws]],
+  ["observe", (ws) => ["session", "observe", SID, "obs", "--agent", "normalized:post:expired", "--json", "--path", ws]],
+]) {
+  test(`\`${label}\` with a spelling that normalises to ANOTHER admitted identity is refused before any request`, async () => {
+    const ws = await workspace();
+    const api = fakeApi();
+    await storeExpired("normalized-post-expired"); // the identity the command would act as
+    const mark = api.requests.length;
+    const ran = await viaCli(argv(ws));
+    assert.match(String(ran.error?.message), /not a canonical agent id.*normalized-post-expired/s);
+    assert.deepEqual(since(api, mark), []);
+  });
+}
+
+test("join refuses a non-canonical agent id, so no admitted identity can be rewritten later", async () => {
+  const ws = await workspace();
+  const api = fakeApi();
+  const ran = await viaCli(["session", "join", SID, "--agent", "a:b", "--goal", "g", "--no-wait", "--json", "--path", ws]);
+  assert.match(String(ran.error?.message), /not a canonical agent id/);
+  assert.deepEqual(api.requests, []);
+});
+
+test("a non-canonical SENTINELAYER_AGENT_ID is refused too", async () => {
+  const ws = await workspace();
+  const api = fakeApi();
+  process.env.SENTINELAYER_AGENT_ID = "env:agent";
+  try {
+    const ran = await viaCli(["session", "say", SID, "hi", "--json", "--path", ws]);
+    assert.match(String(ran.error?.message), /SENTINELAYER_AGENT_ID "env:agent" is not a canonical/);
+    assert.deepEqual(api.requests, []);
+  } finally {
+    delete process.env.SENTINELAYER_AGENT_ID;
+  }
+});
+
+test("case alone is not a different identity: Mixed-Case runs as its admission", async () => {
+  const { ws, api } = await joinAdmitted("mixed-case");
+  const mark = api.requests.length;
+  const ran = await viaCli(["session", "say", SID, "hello", "--agent", "Mixed-Case", "--json", "--path", ws]);
+  assert.equal(ran.error, null, String(ran.error?.stack || ran.error));
+  assert.deepEqual(since(api, mark).filter((c) => !c.bearer.startsWith("sladm_")), []);
+});
+
+test("commands and authorisation share ONE canonicalisation", () => {
+  assert.equal(canonicalAgentId("Normalized:Post:Expired"), "normalized-post-expired");
+  assert.equal(canonicalAgentId("  ok-agent_1.x "), "ok-agent_1.x");
+});

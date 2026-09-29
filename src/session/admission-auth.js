@@ -45,6 +45,37 @@ const REFUSAL_HINT = {
   no_issuing_authority: "its stored admission credential does not record the API that issued it",
 };
 
+/**
+ * THE canonical agent id: exactly what every session command acts as. Commands
+ * canonicalise through this (normalizeAgentId delegates here), so the identity that
+ * authorises and the identity that executes are computed by one function.
+ */
+export function canonicalAgentId(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Refuse, before any I/O, an agent id whose canonical form is a DIFFERENT identity than
+ * its spelling (case folding aside): "a:b" would act as "a-b", a separate identity with
+ * its own key and credential. Two spellings are never silently aliased.
+ */
+export function assertCanonicalAgentId(value, source) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return;
+  const canonical = canonicalAgentId(raw);
+  if (canonical !== raw.toLowerCase()) {
+    throw new AdmissionCredentialRefused(
+      `${source} "${raw}" is not a canonical agent id: commands would act as "${canonical || "(none)"}", ` +
+        `a different identity. Use the canonical spelling.`,
+      { reason: "non_canonical_agent_id" }
+    );
+  }
+}
+
 // Options whose value decides WHICH identity, and so which credential, a command
 // runs as. Given more than once they are ambiguous (Commander keeps the LAST value),
 // so they are refused outright rather than guessed at.
@@ -158,6 +189,10 @@ export async function resolveAgentAdmissionTarget(args = [], { env = process.env
     ...(terminator < 0 ? [] : tokens.slice(terminator + 1).filter(Boolean)),
   ];
   if (!positional.length) return null;
+  // Every `session` subcommand, join included: an identity-changing spelling is refused
+  // before any lookup, dispatch or request.
+  assertCanonicalAgentId(optionValue(args, "--agent"), "--agent");
+  assertCanonicalAgentId(env.SENTINELAYER_AGENT_ID, "SENTINELAYER_AGENT_ID");
   let command = positional[0].toLowerCase();
   let rest = positional.slice(1);
   if (SESSION_COMMAND_GROUPS.has(command) && rest.length) {

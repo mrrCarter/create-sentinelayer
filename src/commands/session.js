@@ -98,7 +98,7 @@ import {
   parseTtlSeconds as parseAdmissionTtlSeconds,
   runAdmissionJoin,
 } from "../session/admission.js";
-import { currentAdmittedAgent, withAgentAdmission } from "../session/admission-auth.js";
+import { canonicalAgentId, currentAdmittedAgent, withAgentAdmission } from "../session/admission-auth.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -1796,11 +1796,8 @@ export async function ensureWorkspaceSession({
 }
 
 function normalizeAgentId(value, fallbackValue = "cli-user") {
-  const normalized = normalizeString(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return normalized || fallbackValue;
+  // One canonicalisation for authorisation and execution (see admission-auth.js).
+  return canonicalAgentId(value) || fallbackValue;
 }
 
 function canPublishListenerPresence(agentId) {
