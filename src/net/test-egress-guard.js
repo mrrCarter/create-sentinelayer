@@ -11,15 +11,22 @@
 // At the time of writing, src/ makes its network calls through globalThis.fetch
 // (and injected fetchImpl defaults to it).
 //
+// One normalization, validated AND dispatched: every call is converted ONCE with
+// native Request semantics (`new Request(input, init)`, the same conversion fetch
+// itself performs), then that exact Request's URL is checked and that exact
+// Request is what reaches the network. The guard never validates one URL
+// representation and dispatches another (e.g. an object whose .url and
+// toString() disagree, or a getter that answers differently on a second read).
+//
 // Policy, inside a test process:
-// - a native request may go ONLY to numeric loopback: 127.0.0.1 or [::1].
-//   Hostnames (localhost, *.test, *.invalid, *.localhost) are refused natively:
-//   a name is not proof of loopback routing, and tests that use fixture names
-//   replace globalThis.fetch with a mock anyway.
-// - redirects in the default "follow" mode are walked manually, and EVERY hop is
-//   checked against the same policy. A 307/308 that would re-send a body is
-//   refused (use redirect: "manual" in such a test). Explicit "manual" and
-//   "error" modes pass through unchanged (fetch does not auto-follow them).
+// - natively, only numeric loopback: 127.0.0.1 or [::1]. Host names (localhost,
+//   *.test, *.invalid, *.localhost) are refused: a name is not proof of loopback
+//   routing, and tests that use fixture names replace globalThis.fetch with a mock.
+// - redirects in the default "follow" mode are walked manually and EVERY hop is
+//   checked against the same policy. A 303, or a 301/302 after POST, is followed
+//   as GET; a 307/308 that would re-send a body is refused (use redirect:
+//   "manual" in such a test). Explicit "manual"/"error" modes pass through
+//   unchanged (fetch does not auto-follow them).
 // - data: and blob: never leave the process and are allowed.
 //
 // Activation: NODE_TEST_CONTEXT (set by `node --test` for test files) or
@@ -48,22 +55,18 @@ export function isTestEgressGuardRequested(env = process.env) {
     String(env.SENTINELAYER_TEST_EGRESS_GUARD || "").trim() === "1";
 }
 
-function requestUrl(input) {
-  if (input && typeof input === "object" && "url" in input) return String(input.url);
-  return String(input);
-}
-
-export function isAllowedTestDestination(input) {
-  let url;
+// Policy on an already-canonical URL string (a Request's .url, or a redirect target resolved with new URL()).
+export function isAllowedTestDestination(url) {
+  let parsed;
   try {
-    url = new URL(requestUrl(input));
+    parsed = new URL(String(url));
   } catch {
     return false; // unparseable: refuse rather than guess
   }
-  if (url.protocol === "data:" || url.protocol === "blob:") return true; // never leaves the process
-  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (parsed.protocol === "data:" || parsed.protocol === "blob:") return true; // never leaves the process
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
   // WHATWG URL canonicalizes IPv4 forms (127.1, 0x7f.0.0.1) to dotted decimal.
-  return NUMERIC_LOOPBACK_HOSTS.has(url.hostname.toLowerCase());
+  return NUMERIC_LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase());
 }
 
 const blockedForTests = [];
@@ -72,73 +75,64 @@ export function getBlockedTestEgress() {
   return blockedForTests.slice();
 }
 
-function originOf(target) {
+function originOf(url) {
   try {
-    return new URL(requestUrl(target)).origin;
+    return new URL(String(url)).origin;
   } catch {
     return "<unparseable>";
   }
 }
 
-function block(target, detail) {
-  const origin = originOf(target);
+function block(url, detail) {
+  const origin = originOf(url);
   blockedForTests.push(origin);
   return new TestEgressBlockedError(origin, detail);
-}
-
-function redirectModeOf(input, init) {
-  if (init && init.redirect) return String(init.redirect);
-  if (input && typeof input === "object" && typeof input.redirect === "string") return input.redirect;
-  return "follow";
-}
-
-function methodOf(input, init) {
-  if (init && init.method) return String(init.method).toUpperCase();
-  if (input && typeof input === "object" && typeof input.method === "string") return input.method.toUpperCase();
-  return "GET";
-}
-
-function hasBody(input, init) {
-  if (init && init.body !== undefined && init.body !== null) return true;
-  return Boolean(input && typeof input === "object" && "body" in input && input.body);
 }
 
 export function installTestEgressGuard({ env = process.env, force = false } = {}) {
   if (!force && !isTestEgressGuardRequested(env)) return false;
   const nativeFetch = globalThis.fetch;
-  if (typeof nativeFetch !== "function") return false;
+  const NativeRequest = globalThis.Request;
+  if (typeof nativeFetch !== "function" || typeof NativeRequest !== "function") return false;
   if (nativeFetch[GUARD_MARKER]) return true; // idempotent
 
-  async function followChecked(thisArg, input, init, hops) {
-    const response = await nativeFetch.call(thisArg, input, { ...(init || {}), redirect: "manual" });
+  async function followChecked(thisArg, request, hops) {
+    const response = await nativeFetch.call(thisArg, new NativeRequest(request, { redirect: "manual" }));
     const location = response.headers.get("location");
-    if (response.status < 300 || response.status > 399 || !location) return response;
-    const base = response.url || requestUrl(input);
+    if (response.status < 300 || response.status > 399 || location === null) return response;
     let next;
     try {
-      next = new URL(location, base).href;
+      next = new URL(location, request.url).href;
     } catch {
       throw block(location, "unparseable redirect location");
     }
     if (!isAllowedTestDestination(next)) throw block(next, `redirect hop ${hops + 1}`);
     if (hops + 1 > MAX_REDIRECTS) throw new TypeError("test fetch: too many redirects");
-    const method = methodOf(input, init);
-    const headers = (init && init.headers) || (input && typeof input === "object" ? input.headers : undefined);
+    const method = request.method.toUpperCase();
     const toGet = response.status === 303 ? method !== "HEAD"
       : (response.status === 301 || response.status === 302) && method === "POST";
-    if (toGet) {
-      return followChecked(thisArg, next, { ...(init || {}), method: "GET", body: undefined, headers }, hops + 1);
-    }
-    if (hasBody(input, init) && method !== "GET" && method !== "HEAD") {
+    if (!toGet && request.body !== null && method !== "GET" && method !== "HEAD") {
       throw block(next, `redirect ${response.status} would re-send a request body; use redirect: "manual"`);
     }
-    return followChecked(thisArg, next, { ...(init || {}), method, headers }, hops + 1);
+    const nextRequest = new NativeRequest(next, {
+      method: toGet ? "GET" : method,
+      headers: request.headers,
+      signal: request.signal,
+      redirect: "manual",
+    });
+    return followChecked(thisArg, nextRequest, hops + 1);
   }
 
   const guarded = function guardedTestFetch(input, init) {
-    if (!isAllowedTestDestination(input)) return Promise.reject(block(input));
-    if (redirectModeOf(input, init) !== "follow") return nativeFetch.call(this, input, init);
-    return followChecked(this, input, init, 0);
+    let request;
+    try {
+      request = new NativeRequest(input, init); // the ONE conversion; exactly what fetch would do
+    } catch (error) {
+      return Promise.reject(error); // the same TypeError native fetch would raise
+    }
+    if (!isAllowedTestDestination(request.url)) return Promise.reject(block(request.url));
+    if (request.redirect !== "follow") return nativeFetch.call(this, request);
+    return followChecked(this, request, 0);
   };
   Object.defineProperty(guarded, GUARD_MARKER, { value: true });
   globalThis.fetch = guarded;

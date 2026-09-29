@@ -109,6 +109,56 @@ async function withLoopbackServer(handler, fn) {
   }
 }
 
+test("one normalization: string, URL and Request inputs reach loopback; what is checked is what is dispatched", async () => {
+  await withLoopbackServer((req, res) => {
+    res.writeHead(200);
+    res.end(req.url);
+  }, async (base, hits) => {
+    assert.equal(await (await fetch(`${base}/s`)).text(), "/s");
+    assert.equal(await (await fetch(new URL(`${base}/u`))).text(), "/u");
+    assert.equal(await (await fetch(new Request(`${base}/r`))).text(), "/r");
+    // An object whose .url and toString() disagree is converted exactly as native fetch converts it
+    // (toString), so an allowed-looking .url cannot smuggle a disallowed destination...
+    const smuggle = { url: `${base}/looks-allowed`, toString: () => "http://127.0.0.2:9/actual" };
+    const before = getBlockedTestEgress().length;
+    await assert.rejects(fetch(smuggle), { code: "TEST_EGRESS_BLOCKED" });
+    assert.deepEqual(getBlockedTestEgress().slice(before), ["http://127.0.0.2:9"]);
+    // ...and the reverse goes where toString() points, which is where the check looked.
+    const reverse = { url: "https://api.sentinelayer.com/x", toString: () => `${base}/actual-loopback` };
+    assert.equal(await (await fetch(reverse)).text(), "/actual-loopback");
+    assert.deepEqual(hits, ["GET /s", "GET /u", "GET /r", "GET /actual-loopback"]);
+  });
+});
+
+test("an init getter cannot answer the check and the dispatch differently", async () => {
+  await withLoopbackServer((req, res) => {
+    res.writeHead(302, { location: "https://api.sentinelayer.com/api/v1/sessions" });
+    res.end();
+  }, async (base, hits) => {
+    let reads = 0;
+    const init = {
+      get redirect() {
+        reads += 1;
+        return reads === 1 ? "manual" : "follow";
+      },
+    };
+    const before = getBlockedTestEgress().length;
+    let outcome;
+    try {
+      outcome = (await fetch(`${base}/start`, init)).status;
+    } catch (error) {
+      outcome = error.code;
+    }
+    // Read once by the single Request conversion: either manual (the 302 is returned, not followed) or
+    // follow (walked by the guard and refused at the hop). Never an unchecked follow to prod.
+    assert.ok(outcome === 302 || outcome === "TEST_EGRESS_BLOCKED", `unexpected outcome ${outcome}`);
+    assert.equal(reads, 1);
+    const blocked = getBlockedTestEgress().slice(before);
+    assert.ok(blocked.every((origin) => origin === "https://api.sentinelayer.com"));
+    assert.deepEqual(hits, ["GET /start"]);
+  });
+});
+
 test("redirects: every hop is checked; a loopback-to-loopback redirect is followed", async () => {
   await withLoopbackServer((req, res) => {
     if (req.url === "/start") {
