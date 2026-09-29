@@ -5,6 +5,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import open from "open";
 
 import { loadConfig } from "../config/service.js";
+import { scopedAdmissionAuth } from "./admission-scope.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
@@ -667,6 +668,11 @@ export async function resolveActiveAuthSession({
   tokenTtlDays = DEFAULT_API_TOKEN_TTL_DAYS,
   homeDir,
 } = {}) {
+  // Inside an admitted agent's command the ONLY credential is its admission (or,
+  // once expired, none). The human token is never reachable from there.
+  const scoped = scopedAdmissionAuth();
+  if (scoped !== undefined) return scoped;
+
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
 
   const envToken = String(env.SENTINELAYER_TOKEN || "").trim();

@@ -327,6 +327,11 @@ function isApiHostAllowed(urlString) {
 function resolveApiBaseUrl(session = {}) {
   const apiUrl = normalizeString(session.apiUrl) || DEFAULT_API_BASE_URL;
   const normalized = apiUrl.replace(/\/+$/, "");
+  if (!isApiHostAllowed(normalized) && session.source === "session_admission") {
+    // An admission credential is bound to the API that issued it. Redirecting it to
+    // the default host would hand it to an API it was never meant for: refuse.
+    throw new Error("Refusing to send an agent admission credential to a host other than the API that issued it.");
+  }
   if (!isApiHostAllowed(normalized)) {
     // Reject tampered session.apiUrl and fall back to the default.
     // Caller will see API calls land on the canonical host, not an attacker's.

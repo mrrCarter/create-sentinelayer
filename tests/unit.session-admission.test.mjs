@@ -15,9 +15,11 @@ import {
   CLAIM_DOMAIN,
   CLAIM_FIELDS,
   admissionCredentialPath,
-  loadAdmissionCredential,
+  agentKeyPath,
+  readAdmissionCredentialState,
   loadOrCreateAgentKey,
   parseScope,
+  publishKeyFile,
   parseTtlSeconds,
   runAdmissionJoin,
 } from "../src/session/admission.js";
@@ -40,6 +42,17 @@ function fakeApi({ onPoll } = {}) {
     const base = `https://api.test/api/v1/sessions/${SID}/admissions`;
     if (url === base) {
       expectCsrf(headers, "POST /api/v1/sessions/{session_id}/admissions", idempotencyKey);
+      // The API's R1 rule: a live grant for this agent and key is reused only for the
+      // SAME purpose; a different goal is a 409, never a silent inheritance.
+      const live = [...admissions.values()].find(
+        (a) => a.status === "active" && a.body.agentId === body.agentId && a.body.publicKey === body.publicKey
+      );
+      if (live) {
+        if (JSON.stringify(live.body.goal) !== JSON.stringify(body.goal)) {
+          throw new Error("409 ADMISSION_CONFLICT: cancel or revoke it before requesting a different goal, scope or key");
+        }
+        return { admissionId: live.id, status: "active", reused: true, agentId: body.agentId };
+      }
       const id = randomUUID();
       admissions.set(id, { id, status: "pending", body, nonce: null });
       return { admissionId: id, status: "pending", agentId: body.agentId, approveUrl: `https://web.test/?admission=${id}`, pollAfterSeconds: 5 };
@@ -130,7 +143,8 @@ test("full flow: request, wait, approve, claim; credential stored and never outp
   assert.ok(pending[0].approveUrl.includes("admission="));
   assert.equal(JSON.stringify(result).includes("sladm_"), false, "token leaked into output");
   assert.equal(result.credential.redacted, true);
-  const stored = await loadAdmissionCredential(SID, "builder-1", { homeDir: dirs.homeDir });
+  const { state, credential: stored } = await readAdmissionCredentialState(SID, "builder-1", { homeDir: dirs.homeDir });
+  assert.equal(state, "live");
   assert.ok(stored.token.startsWith("sladm_"));
   if (process.platform !== "win32") {
     const mode = fs.statSync(admissionCredentialPath(SID, "builder-1", { homeDir: dirs.homeDir })).mode & 0o777;
@@ -194,14 +208,67 @@ test("a bounded wait times out as pending and keeps state to resume", async () =
   assert.equal(resumed.admissionId, result.admissionId);
 });
 
-test("a live stored credential covering the scope is reused without any request", async () => {
+test("only the IDENTICAL request is reused locally, with no request at all", async () => {
   const dirs = await scratch();
   const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
   await runAdmissionJoin(SID, base(api, dirs));
   const before = api.calls.length;
-  const reused = await runAdmissionJoin(SID, base(api, dirs, { actions: ["session.read"] }));
+  const reused = await runAdmissionJoin(SID, base(api, dirs));
   assert.equal(reused.reused, true);
   assert.equal(api.calls.length, before);
+});
+
+test("a narrower scope for the same goal asks the server, which reuses the held grant", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
+  const first = await runAdmissionJoin(SID, base(api, dirs));
+  const before = api.calls.filter((c) => c.method === "POST").length;
+  const again = await runAdmissionJoin(SID, base(api, dirs, { actions: ["session.read"] }));
+  assert.equal(api.calls.filter((c) => c.method === "POST").length, before + 1, "the server must be asked");
+  assert.equal(again.reused, true);
+  assert.equal(again.admissionId, first.admissionId);
+});
+
+test("a changed goal never inherits the approval: the server's conflict surfaces", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
+  await runAdmissionJoin(SID, base(api, dirs, { goal: "Read source only" }));
+  const before = api.calls.filter((c) => c.method === "POST").length;
+  await assert.rejects(
+    runAdmissionJoin(SID, base(api, dirs, { goal: "Delete all project resources", ttlSeconds: 300 })),
+    /different goal/
+  );
+  assert.equal(api.calls.filter((c) => c.method === "POST").length, before + 1, "the server must be asked");
+});
+
+test("a changed duration alone is also a question for the server", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
+  await runAdmissionJoin(SID, base(api, dirs, { ttlSeconds: 3600 }));
+  const before = api.calls.filter((c) => c.method === "POST").length;
+  await runAdmissionJoin(SID, base(api, dirs, { ttlSeconds: 1800 }));
+  assert.equal(api.calls.filter((c) => c.method === "POST").length, before + 1);
+});
+
+test("a different request while one is pending is refused, not silently resumed", async () => {
+  const dirs = await scratch();
+  const api = fakeApi();
+  await runAdmissionJoin(SID, base(api, dirs, { wait: false }));
+  await assert.rejects(
+    runAdmissionJoin(SID, base(api, dirs, { wait: false, goal: "Something else" })),
+    /already waiting.*--cancel-admission/s
+  );
+  assert.equal(api.calls.filter((c) => c.method === "POST").length, 1);
+});
+
+test("two agents in one workspace keep separate pending requests", async () => {
+  const dirs = await scratch();
+  const api = fakeApi();
+  const one = await runAdmissionJoin(SID, base(api, dirs, { wait: false, agentId: "agent-one" }));
+  const two = await runAdmissionJoin(SID, base(api, dirs, { wait: false, agentId: "agent-two" }));
+  assert.notEqual(one.admissionId, two.admissionId);
+  const oneAgain = await runAdmissionJoin(SID, base(api, dirs, { wait: false, agentId: "agent-one" }));
+  assert.equal(oneAgain.admissionId, one.admissionId, "agent-one resumes its own request");
 });
 
 test("the agent key is created once and reused", async () => {
@@ -222,4 +289,111 @@ test("scope and TTL parsing refuse out-of-contract input", () => {
   assert.equal(parseTtlSeconds("90m"), 5400);
   assert.throws(() => parseTtlSeconds("1m"), /between 5m and 24h/);
   assert.throws(() => parseTtlSeconds("2w"), /--ttl must look like/);
+});
+
+// ------------------------------------------------------------ identity storage
+
+test("concurrent first use in ONE process: every caller gets the persisted key", async () => {
+  const dirs = await scratch();
+  const settled = await Promise.allSettled(
+    Array.from({ length: 24 }, () => loadOrCreateAgentKey("same-agent", { homeDir: dirs.homeDir }))
+  );
+  const rejected = settled.filter((r) => r.status === "rejected");
+  assert.deepEqual(rejected.map((r) => String(r.reason)), []);
+  const persisted = await loadOrCreateAgentKey("same-agent", { homeDir: dirs.homeDir });
+  assert.equal(persisted.created, false);
+  for (const { value } of settled) assert.equal(value.publicKey, persisted.publicKey);
+  assert.equal(settled.filter((r) => r.value.created).length, 1, "exactly one caller created it");
+});
+
+test("concurrent first use across PROCESSES: every process gets the persisted key", async () => {
+  const dirs = await scratch();
+  const moduleUrl = new URL("../src/session/admission.js", import.meta.url).href;
+  const script =
+    `const m = await import(${JSON.stringify(moduleUrl)});` +
+    `const k = await m.loadOrCreateAgentKey("same-agent", { homeDir: ${JSON.stringify(dirs.homeDir)} });` +
+    `process.stdout.write(k.publicKey);`;
+  const { spawn } = await import("node:child_process");
+  const run = () =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+      let out = "";
+      let err = "";
+      child.stdout.on("data", (d) => (out += d));
+      child.stderr.on("data", (d) => (err += d));
+      child.on("close", (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`exit ${code}: ${err}`))));
+    });
+  const keys = await Promise.all(Array.from({ length: 8 }, run));
+  const persisted = await loadOrCreateAgentKey("same-agent", { homeDir: dirs.homeDir });
+  assert.deepEqual([...new Set(keys)], [persisted.publicKey]);
+});
+
+test("a key file that is not this agent's, or is inconsistent, is refused", async () => {
+  const dirs = await scratch();
+  const mine = await loadOrCreateAgentKey("agent-a", { homeDir: dirs.homeDir });
+  const keyPath = mine.keyPath;
+  const record = JSON.parse(await fsp.readFile(keyPath, "utf8"));
+  await fsp.writeFile(keyPath, JSON.stringify({ ...record, agentId: "agent-b" }));
+  await assert.rejects(loadOrCreateAgentKey("agent-a", { homeDir: dirs.homeDir }), /does not belong/);
+  const other = await loadOrCreateAgentKey("agent-c", { homeDir: dirs.homeDir });
+  await fsp.writeFile(keyPath, JSON.stringify({ ...record, publicKey: other.publicKey }));
+  await assert.rejects(loadOrCreateAgentKey("agent-a", { homeDir: dirs.homeDir }), /inconsistent/);
+});
+
+test("storage paths are one identity each: injective, and case-folded", () => {
+  const homeDir = path.join(os.tmpdir(), "sl-path-probe");
+  assert.notEqual(agentKeyPath("agent:one", { homeDir }), agentKeyPath("agent_one", { homeDir }));
+  assert.equal(agentKeyPath("Agent-One", { homeDir }), agentKeyPath("agent-one", { homeDir }));
+  assert.notEqual(
+    admissionCredentialPath(SID, "agent:one", { homeDir }),
+    admissionCredentialPath(SID, "agent_one", { homeDir })
+  );
+  assert.throws(() => agentKeyPath("../escape", { homeDir }), /not a valid identifier/);
+});
+
+async function storeCredential(homeDir, overrides = {}) {
+  const filePath = admissionCredentialPath(SID, "builder-1", { homeDir });
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const record = {
+    version: 2,
+    sessionId: SID,
+    agentId: "builder-1",
+    apiUrl: "https://api.test",
+    admissionId: "a",
+    token: `sladm_${"S".repeat(43)}`,
+    expiresAt: Math.floor(Date.now() / 1000) + 3600,
+    ...overrides,
+  };
+  await fsp.writeFile(filePath, typeof overrides === "string" ? overrides : JSON.stringify(record));
+  return filePath;
+}
+
+test("a stored admission is live, absent, or a TOMBSTONE, never quietly absent", async () => {
+  const cases = [
+    [{}, "live", undefined],
+    [{ expiresAt: Math.floor(Date.now() / 1000) - 1 }, "refused", "expired"],
+    [{ sessionId: "00000000-0000-0000-0000-000000000000" }, "refused", "bound_to_another_session_or_agent"],
+    [{ apiUrl: "" }, "refused", "no_issuing_authority"],
+    [{ token: "not-an-admission" }, "refused", "malformed"],
+    ["{ not json", "refused", "malformed"],
+  ];
+  for (const [overrides, state, reason] of cases) {
+    const dirs = await scratch();
+    await storeCredential(dirs.homeDir, overrides);
+    const held = await readAdmissionCredentialState(SID, "builder-1", { homeDir: dirs.homeDir });
+    assert.equal(held.state, state, JSON.stringify(overrides));
+    assert.equal(held.reason, reason, JSON.stringify(overrides));
+  }
+  const empty = await scratch();
+  assert.equal((await readAdmissionCredentialState(SID, "builder-1", { homeDir: empty.homeDir })).state, "none");
+});
+
+test("publishing a key NEVER replaces an existing identity (the property the race depends on)", async () => {
+  const dirs = await scratch();
+  const keyPath = path.join(dirs.homeDir, "agents", "probe", "identity-ed25519.json");
+  await publishKeyFile(keyPath, { agentId: "probe", publicKey: "first" });
+  await publishKeyFile(keyPath, { agentId: "probe", publicKey: "second" });
+  assert.equal(JSON.parse(await fsp.readFile(keyPath, "utf8")).publicKey, "first");
+  const leftovers = (await fsp.readdir(path.dirname(keyPath))).filter((name) => name.endsWith(".tmp"));
+  assert.deepEqual(leftovers, [], "no temp files left behind");
 });

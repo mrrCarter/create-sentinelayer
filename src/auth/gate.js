@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
+import { readAdmissionCredentialState } from "../session/admission.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
 /**
@@ -242,6 +243,46 @@ function isSessionNoAuthCommand(args = []) {
   return SESSION_NO_AUTH_SUBCOMMANDS.has(subcommand);
 }
 
+// Session subcommands that run AS an agent, and so can run on that agent's admission.
+const SESSION_AGENT_SUBCOMMANDS = new Set(["say", "read", "listen", "react", "reply", "comment", "view", "action"]);
+
+function optionValue(args, name) {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = String(args[i] || "");
+    if (arg === name) return String(args[i + 1] || "").trim();
+    if (arg.startsWith(`${name}=`)) return arg.slice(name.length + 1).trim();
+  }
+  return "";
+}
+
+function positionalAfter(args, index) {
+  for (let i = index + 1; i < args.length; i += 1) {
+    const arg = String(args[i] || "").trim();
+    const previous = String(args[i - 1] || "").trim();
+    if (!arg || arg.startsWith("-")) continue;
+    if (i - 1 > index && previous.startsWith("-") && !previous.includes("=")) continue; // an option's value
+    return arg;
+  }
+  return "";
+}
+
+/**
+ * An agent command whose (session, agent) has an admission stored on this machine
+ * needs no human login: its credential IS the admission. The command itself then
+ * uses that credential, or refuses with the specific reason (expired, unusable).
+ */
+async function hasStoredAgentAdmission(args) {
+  if (String(args[0] || "").trim().toLowerCase() !== "session") return false;
+  const subIndex = args.findIndex((arg, i) => i > 0 && !String(arg || "").startsWith("-"));
+  const sub = String(args[subIndex] || "").trim().toLowerCase();
+  if (!SESSION_AGENT_SUBCOMMANDS.has(sub)) return false;
+  const agent = optionValue(args, "--agent") || String(process.env.SENTINELAYER_AGENT_ID || "").trim();
+  const sessionId = sub === "listen" ? optionValue(args, "--session") : positionalAfter(args, subIndex);
+  if (!agent || !sessionId) return false;
+  const held = await readAdmissionCredentialState(sessionId, agent).catch(() => ({ state: "none" }));
+  return held.state !== "none";
+}
+
 function hasTrustedBypassExecutableContext() {
   const argvPath = String(process.argv[1] || "").trim();
   if (!argvPath) {
@@ -383,6 +424,9 @@ export async function checkAuthGate(args) {
     resolveError = error instanceof Error ? `session_read_error: ${error.message}` : "session_read_error";
   }
 
+  if (await hasStoredAgentAdmission(args)) {
+    return { authenticated: true, session: null, bypassReason: "session_admission", failureReason: null };
+  }
   return { authenticated: false, session: null, bypassReason: null, failureReason: resolveError };
 }
 

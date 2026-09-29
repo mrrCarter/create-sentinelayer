@@ -92,10 +92,12 @@ import {
   writeSessionOnboardingBrief,
 } from "../session/invitations.js";
 import {
+  cancelAdmission,
   parseScope as parseAdmissionScope,
   parseTtlSeconds as parseAdmissionTtlSeconds,
   runAdmissionJoin,
 } from "../session/admission.js";
+import { currentAdmittedAgent, withAgentAdmission } from "../session/admission-auth.js";
 import { postFirstSentiMessage } from "../session/first-message.js";
 import { createListenerHostWake } from "../session/wake/listen-wake.js";
 import { appendToStream, readStream, tailStream } from "../session/stream.js";
@@ -2818,6 +2820,39 @@ function collectOption(value, previous) {
   return [...(previous || []), value];
 }
 
+/**
+ * Wrap a command action so it runs as its agent: inside that agent's admission when
+ * this machine holds one (every session API call then uses the admission credential
+ * and never the human token), on the legacy path when it holds none, and refused when
+ * what it holds is expired or unusable. `resolveIds` names the (session, agent) pair
+ * exactly the way the action itself resolves it.
+ */
+function asAdmittedAgent(resolveIds, action) {
+  return async (...args) => {
+    const { sessionId, agentId } = await resolveIds(...args);
+    return withAgentAdmission(sessionId, agentId, () => action(...args));
+  };
+}
+
+async function sessionSayAgent(sessionId, _messageParts, options) {
+  const sid = normalizeString(sessionId);
+  const identity = await resolveSessionSayIdentity({
+    sessionId: sid,
+    agentId: options.agent,
+    targetPath: path.resolve(process.cwd(), String(options.path || ".")),
+  });
+  return { sessionId: sid, agentId: identity.agentId };
+}
+
+async function sessionReadAgent(sessionId, options) {
+  const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+  return { sessionId: normalizeString(sessionId), agentId: await defaultAgentId(options.agent, targetPath) };
+}
+
+async function sessionListenAgent(options) {
+  return { sessionId: resolveSessionIdOption(options), agentId: normalizeAgentId(options.agent, "cli-user") };
+}
+
 export function registerSessionCommand(program) {
   const session = program
     .command("session")
@@ -3342,6 +3377,7 @@ export function registerSessionCommand(program) {
     .option("--provider <name>", "Model provider hint for the admission request")
     .option("--no-wait", "Request admission and return immediately with the approval URL")
     .option("--wait-seconds <n>", "How long to wait for approval before returning pending", "900")
+    .option("--cancel-admission", "Cancel this workspace's pending admission request for the session")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
@@ -3353,6 +3389,41 @@ export function registerSessionCommand(program) {
       const legacyName = normalizeString(options.name);
       const inviteToken = normalizeString(options.inviteToken);
       const emitJson = shouldEmitJson(options, command);
+      if (options.cancelAdmission) {
+        const cancelled = await cancelAdmission(normalizedSessionId, {
+          agentId: explicitAgent || legacyName,
+          targetPath,
+        });
+        const payload = {
+          command: "session join",
+          joined: false,
+          sessionId: normalizedSessionId,
+          admission: {
+            status: cancelled?.status || "cancelled",
+            admissionId: cancelled?.admissionId || null,
+          },
+        };
+        if (emitJson) console.log(JSON.stringify(payload, null, 2));
+        else console.log(`Admission request ${payload.admission.admissionId || ""} cancelled.`);
+        return;
+      }
+      // Membership first. Only a member may ask for an agent to be admitted, so an
+      // invitation is accepted BEFORE the admission request, never after.
+      let invitationAccept = null;
+      let invitationAcceptResult = null;
+      if (inviteToken) {
+        invitationAccept = await acceptSessionInvitation(normalizedSessionId, {
+          targetPath,
+          invitationToken: inviteToken,
+          seatKey: options.seatKey,
+          agentId: explicitAgent || legacyName,
+          idempotencyKey: options.idempotencyKey,
+        });
+        invitationAcceptResult =
+          invitationAccept?.result && typeof invitationAccept.result === "object"
+            ? invitationAccept.result
+            : null;
+      }
       let admission = null;
       if (normalizeString(options.goal)) {
         const admissionAgent = explicitAgent || legacyName;
@@ -3380,23 +3451,27 @@ export function registerSessionCommand(program) {
             else console.log(pc.yellow(line));
           },
         });
-        if (admission.status === "pending") process.exitCode = 3;
-        else if (admission.status !== "active") process.exitCode = 4;
-      }
-      let invitationAccept = null;
-      let invitationAcceptResult = null;
-      if (inviteToken) {
-        invitationAccept = await acceptSessionInvitation(normalizedSessionId, {
-          targetPath,
-          invitationToken: inviteToken,
-          seatKey: options.seatKey,
-          agentId: explicitAgent || legacyName,
-          idempotencyKey: options.idempotencyKey,
-        });
-        invitationAcceptResult =
-          invitationAccept?.result && typeof invitationAccept.result === "object"
-            ? invitationAccept.result
-            : null;
+        if (admission.status !== "active") {
+          // Only an ACTIVE admission joins. Pending, denied, cancelled or expired never
+          // registers the agent or materializes the room for it.
+          process.exitCode = admission.status === "pending" ? 3 : 4;
+          const payload = {
+            command: "session join",
+            joined: false,
+            sessionId: normalizedSessionId,
+            agentId: admissionAgent.toLowerCase(),
+            invitationAccepted: Boolean(invitationAcceptResult),
+            admission,
+          };
+          if (emitJson) {
+            console.log(JSON.stringify(payload, null, 2));
+          } else if (admission.status === "pending") {
+            console.log(pc.yellow(`Admission pending. A room owner approves it here: ${admission.approveUrl || "(see the session page)"}`));
+          } else {
+            console.log(pc.red(`Admission ${admission.status}. The agent was not joined.`));
+          }
+          return;
+        }
       }
 
       // PR #483 contract: verify the session exists and the caller has access
@@ -3616,7 +3691,7 @@ export function registerSessionCommand(program) {
     .option("--local-only", "Append only to the local session cache without remote send confirmation")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, messageParts, options, command) => {
+    .action(asAdmittedAgent(sessionSayAgent, async (sessionId, messageParts, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
       if (!normalizedSessionId) {
         throw new Error("session id is required.");
@@ -3744,7 +3819,7 @@ export function registerSessionCommand(program) {
         console.error(pc.yellow(`Identity warning: ${identity.identityWarning}`));
       }
       console.log(formatEventLine(persisted));
-    });
+    }));
 
   session
     .command("post-agent <sessionId> <message>")
@@ -4034,7 +4109,20 @@ export function registerSessionCommand(program) {
       console.log(formatEventLine(persisted));
     });
 
-  async function runMessageActionCommand({
+  // Every message-action command (react, reply, ack, ...) runs as its authoring
+  // agent: inside that agent's admission when this machine holds one.
+  async function runMessageActionCommand(args = {}) {
+    const sid = normalizeString(args.sessionId);
+    const identity = await resolveMessageActionIdentity({
+      sessionId: sid,
+      optionAgent: args.options?.agent,
+      targetPath: path.resolve(process.cwd(), String(args.options?.path || ".")),
+      env: process.env,
+    });
+    return withAgentAdmission(sid, identity.agentId, () => runMessageActionCommandUnscoped(args));
+  }
+
+  async function runMessageActionCommandUnscoped({
     sessionId,
     actionType,
     options,
@@ -5023,7 +5111,7 @@ export function registerSessionCommand(program) {
       `Total log files to retain including the active file (default ${DEFAULT_ROTATING_LOG_MAX_FILES})`,
       String(DEFAULT_ROTATING_LOG_MAX_FILES),
     )
-    .action(async (options) => {
+    .action(asAdmittedAgent(sessionListenAgent, async (options) => {
       const normalizedSessionId = resolveSessionIdOption(options);
       const targetPath = path.resolve(process.cwd(), String(options.path || "."));
       const agentId = normalizeAgentId(options.agent, "cli-user");
@@ -5115,9 +5203,15 @@ export function registerSessionCommand(program) {
         options.maxPolls === undefined
           ? null
           : parsePositiveInteger(options.maxPolls, "max-polls", 1);
-      const listenTransport = requestedTransport === "auto" && maxPolls !== null
-        ? "poll"
-        : requestedTransport;
+      if (currentAdmittedAgent() && requestedTransport === "stream") {
+        throw new Error(
+          "An admitted agent listens by polling: the event stream is not part of an admission grant, so a revoke never has to chase an open stream. Use --transport poll.",
+        );
+      }
+      const listenTransport =
+        requestedTransport === "auto" && (maxPolls !== null || currentAdmittedAgent())
+          ? "poll"
+          : requestedTransport;
       const since = options.since === undefined ? undefined : String(options.since);
       if (options.fromNow && options.since !== undefined) {
         throw new Error("Use either --from-now or --since, not both.");
@@ -5439,7 +5533,7 @@ export function registerSessionCommand(program) {
           }).catch(() => {});
         }
       }
-    });
+    }));
 
   session
     .command("daemon [sessionId]")
@@ -6011,7 +6105,7 @@ export function registerSessionCommand(program) {
     .option("--include-control-events", "Include listener lifecycle/control-plane events in transcript output")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, options, command) => {
+    .action(asAdmittedAgent(sessionReadAgent, async (sessionId, options, command) => {
       const normalizedSessionId = normalizeString(sessionId);
       if (!normalizedSessionId) {
         throw new Error("session id is required.");
@@ -6355,7 +6449,7 @@ export function registerSessionCommand(program) {
           console.log(formatEventLine(event));
         }
       }
-    });
+    }));
 
   session
     .command("search <sessionId> <query>")

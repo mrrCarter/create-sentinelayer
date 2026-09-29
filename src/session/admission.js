@@ -16,7 +16,14 @@
 //     non-secret state is persisted per room so a re-run continues the same
 //     request instead of filing a new one.
 
-import { createPrivateKey, generateKeyPairSync, sign as signBytes } from "node:crypto";
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  generateKeyPairSync,
+  randomUUID,
+  sign as signBytes,
+} from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -25,6 +32,7 @@ import { setTimeout as sleepMs } from "node:timers/promises";
 
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
+import { canonicalize } from "../engram/canonical.js";
 import { canonicalPreimage } from "./admission-preimage.js";
 import {
   SESSION_MUTATION_ORIGIN,
@@ -63,12 +71,16 @@ function normalizeString(value) {
   return String(value ?? "").trim();
 }
 
+// One identity, one path, on every filesystem. Ids are case-folded (the API folds
+// agent ids to lowercase, and Windows paths fold case anyway), and ":" -- legal in
+// an id, illegal in a Windows file name -- becomes "%3a". "%" can never appear in
+// an id, so the mapping is injective: "agent:one" and "agent_one" stay distinct.
 function safeSegment(value, label) {
-  const text = normalizeString(value);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(text)) {
+  const text = normalizeString(value).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9._:-]{0,63}$/.test(text)) {
     throw new Error(`${label} is not a valid identifier.`);
   }
-  return text.replace(/:/g, "_");
+  return text.replace(/:/g, "%3a");
 }
 
 function sentinelayerHome(homeDir) {
@@ -77,8 +89,8 @@ function sentinelayerHome(homeDir) {
 
 async function writeSecretFile(filePath, data) {
   await fsp.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600 });
+  const tmp = `${filePath}.${randomUUID()}.tmp`;
+  await fsp.writeFile(tmp, `${JSON.stringify(data, null, 2)}\n`, { mode: 0o600, flag: "wx" });
   await fsp.rename(tmp, filePath);
   // rename preserves the tmp file's mode; chmod again in case the file pre-existed
   // with a looser mode on a platform where rename replaced only the contents.
@@ -127,40 +139,97 @@ export function agentKeyPath(agentId, { homeDir } = {}) {
   return path.join(sentinelayerHome(homeDir), "agents", safeSegment(agentId, "agentId"), "identity-ed25519.json");
 }
 
-/** Load this agent's Ed25519 key, creating it on first use. The private half never leaves disk. */
-export async function loadOrCreateAgentKey(agentId, { homeDir } = {}) {
-  const keyPath = agentKeyPath(agentId, { homeDir });
-  const existing = await readJsonFile(keyPath);
-  if (existing?.privateKeyPkcs8 && existing?.publicKey) {
-    return {
-      publicKey: existing.publicKey,
-      privateKey: createPrivateKey({
-        key: Buffer.from(existing.privateKeyPkcs8, "base64url"),
-        format: "der",
-        type: "pkcs8",
-      }),
-      keyPath,
-      created: false,
-    };
+const LINK_UNSUPPORTED = new Set(["ENOTSUP", "ENOSYS", "EXDEV", "EPERM"]);
+
+/** The key on disk for this agent, or null. Refuses a file that is not this agent's. */
+async function readAgentKey(keyPath, agent) {
+  // A reader can only race a writer on filesystems without hard links (see
+  // publishKeyFile), where the file may be seen part-written. Retry briefly.
+  for (let attempt = 0; ; attempt += 1) {
+    let stored;
+    try {
+      stored = await readJsonFile(keyPath);
+    } catch (error) {
+      if (error instanceof SyntaxError && attempt < 5) {
+        await sleepMs(20);
+        continue;
+      }
+      throw error;
+    }
+    if (stored === null) return null;
+    if (stored.agentId !== agent || !stored.privateKeyPkcs8 || !stored.publicKey) {
+      throw new Error(`The key file at ${keyPath} does not belong to agent "${agent}"; refusing to use it.`);
+    }
+    const privateKey = createPrivateKey({
+      key: Buffer.from(stored.privateKeyPkcs8, "base64url"),
+      format: "der",
+      type: "pkcs8",
+    });
+    if (createPublicKey(privateKey).export({ format: "jwk" }).x !== stored.publicKey) {
+      throw new Error(`The key file at ${keyPath} is inconsistent (public key does not match); refusing to use it.`);
+    }
+    return { publicKey: stored.publicKey, privateKey, keyPath, created: false };
   }
+}
+
+/**
+ * Publish a new key file exactly once. link() is atomic and fails with EEXIST when
+ * the name is taken, so of any number of concurrent first uses -- threads or
+ * processes -- one wins and nobody overwrites anybody. The file is complete
+ * before it has its final name.
+ */
+export async function publishKeyFile(keyPath, record) {
+  await fsp.mkdir(path.dirname(keyPath), { recursive: true, mode: 0o700 });
+  const body = `${JSON.stringify(record, null, 2)}\n`;
+  const tmp = `${keyPath}.${randomUUID()}.tmp`;
+  await fsp.writeFile(tmp, body, { mode: 0o600, flag: "wx" });
+  try {
+    await fsp.link(tmp, keyPath);
+  } catch (error) {
+    if (error?.code === "EEXIST") return;
+    if (!LINK_UNSUPPORTED.has(error?.code)) throw error;
+    // No hard links here: an exclusive create still guarantees a single winner.
+    try {
+      await fsp.writeFile(keyPath, body, { mode: 0o600, flag: "wx" });
+    } catch (fallbackError) {
+      if (fallbackError?.code !== "EEXIST") throw fallbackError;
+    }
+  } finally {
+    await fsp.rm(tmp, { force: true });
+  }
+}
+
+/**
+ * Load this agent's Ed25519 key, creating it on first use. The private half never
+ * leaves disk. Every caller, however many race, gets the key that is persisted.
+ */
+export async function loadOrCreateAgentKey(agentId, { homeDir } = {}) {
+  const agent = normalizeString(agentId).toLowerCase();
+  const keyPath = agentKeyPath(agent, { homeDir });
+  const existing = await readAgentKey(keyPath, agent);
+  if (existing) return existing;
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   const rawPublic = publicKey.export({ format: "jwk" }).x; // base64url, 32 raw bytes
-  await writeSecretFile(keyPath, {
+  await publishKeyFile(keyPath, {
     version: 1,
-    agentId: normalizeString(agentId),
+    agentId: agent,
     algorithm: "Ed25519",
     publicKey: rawPublic,
     privateKeyPkcs8: privateKey.export({ format: "der", type: "pkcs8" }).toString("base64url"),
     createdAt: new Date().toISOString(),
   });
-  return { publicKey: rawPublic, privateKey, keyPath, created: true };
+  const persisted = await readAgentKey(keyPath, agent);
+  if (!persisted) throw new Error(`Could not create the agent key at ${keyPath}.`);
+  return { ...persisted, created: persisted.publicKey === rawPublic };
 }
 
 // ---------------------------------------------------------------- state files
 
-function admissionStatePath(targetPath, sessionId) {
+// One in-flight request per (session, agent): two agents joining from the same
+// workspace never read or overwrite each other's pending request.
+function admissionStatePath(targetPath, sessionId, agentId) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
-  return path.join(paths.sessionDir, "admission.json");
+  return path.join(paths.sessionDir, "admissions", `${safeSegment(agentId, "agentId")}.json`);
 }
 
 export function admissionCredentialPath(sessionId, agentId, { homeDir } = {}) {
@@ -173,12 +242,53 @@ export function admissionCredentialPath(sessionId, agentId, { homeDir } = {}) {
   );
 }
 
-/** A live admission credential for (session, agent), or null. */
-export async function loadAdmissionCredential(sessionId, agentId, { homeDir, now = Date.now() } = {}) {
-  const stored = await readJsonFile(admissionCredentialPath(sessionId, agentId, { homeDir }));
-  if (!stored?.token || !Number.isFinite(stored?.expiresAt)) return null;
-  if (stored.expiresAt * 1000 <= now) return null;
-  return stored;
+/**
+ * What this machine holds for (session, agent):
+ *   { state: "none" }                        -- never admitted here: the legacy path applies
+ *   { state: "live", credential }            -- use it, and only it
+ *   { state: "refused", reason, credential } -- a TOMBSTONE: expired, malformed, or bound
+ *                                               to another session, agent or authority
+ * A refused credential is never read as absence. Absence is the only state that lets a
+ * command fall back to the human's own token.
+ */
+export async function readAdmissionCredentialState(sessionId, agentId, { homeDir, now = Date.now() } = {}) {
+  const sid = normalizeString(sessionId).toLowerCase();
+  const agent = normalizeString(agentId).toLowerCase();
+  let filePath;
+  try {
+    filePath = admissionCredentialPath(sid, agent, { homeDir });
+  } catch {
+    return { state: "none" }; // not a storable identity, so nothing can be stored for it
+  }
+  let stored;
+  try {
+    stored = await readJsonFile(filePath);
+  } catch {
+    return { state: "refused", reason: "malformed", credential: null };
+  }
+  if (stored === null) return { state: "none" };
+  const refused = (reason) => ({ state: "refused", reason, credential: stored });
+  if (typeof stored !== "object" || !String(stored.token || "").startsWith("sladm_")) return refused("malformed");
+  if (!Number.isFinite(stored.expiresAt)) return refused("malformed");
+  if (normalizeString(stored.sessionId).toLowerCase() !== sid || stored.agentId !== agent) {
+    return refused("bound_to_another_session_or_agent");
+  }
+  if (!/^https?:\/\/[^\s/]+/i.test(normalizeString(stored.apiUrl))) return refused("no_issuing_authority");
+  if (stored.expiresAt * 1000 <= now) return refused("expired");
+  return { state: "live", credential: stored };
+}
+
+/** The canonical digest of what an agent asked for. Any change means a new decision. */
+function requestFingerprint({ apiUrl, agentId, publicKey, goal, actions, ttlSeconds }) {
+  const body = canonicalize({
+    apiUrl,
+    agentId,
+    publicKey,
+    goal,
+    actions: [...actions].sort(),
+    ttlSeconds,
+  });
+  return createHash("sha256").update(body, "utf8").digest("hex");
 }
 
 // ---------------------------------------------------------------------- API
@@ -251,19 +361,38 @@ export async function runAdmissionJoin(
   const deps = { requestMutation, origin };
   const auth = await authContext({ targetPath, resolveAuthSession });
   const key = await loadOrCreateAgentKey(agent, { homeDir });
+  const goalContract = {
+    summary: goalSummary,
+    deliverables: deliverables.map(normalizeString).filter(Boolean),
+    stopConditions: stopConditions.map(normalizeString).filter(Boolean),
+  };
+  const fingerprint = requestFingerprint({
+    apiUrl: auth.apiUrl,
+    agentId: agent,
+    publicKey: key.publicKey,
+    goal: goalContract,
+    actions,
+    ttlSeconds,
+  });
 
-  const live = await loadAdmissionCredential(sid, agent, { homeDir, now: now() });
-  if (live && actions.every((action) => (live.grantedActions || []).includes(action))) {
-    return redacted({ status: "active", reused: true, stored: live, sid, agent, homeDir });
+  // Reuse locally ONLY for the identical request against the same API with the
+  // same key. A different goal, scope or duration is a question for the server,
+  // which answers with the existing grant (same purpose) or a conflict (new one).
+  const held = await readAdmissionCredentialState(sid, agent, { homeDir, now: now() });
+  if (held.state === "live" && held.credential.requestFingerprint === fingerprint) {
+    return redacted({ status: "active", reused: true, stored: held.credential, sid, agent, homeDir });
   }
 
-  const statePath = admissionStatePath(targetPath, sid);
+  const statePath = admissionStatePath(targetPath, sid, agent);
   let state = await readJsonFile(statePath);
-  const resumable =
-    state?.admissionId &&
-    state.agentId === agent &&
-    state.publicKey === key.publicKey &&
-    ["pending", "approved"].includes(state.status);
+  const inFlight = state?.admissionId && state.agentId === agent && ["pending", "approved"].includes(state.status);
+  if (inFlight && state.requestFingerprint !== fingerprint) {
+    throw new Error(
+      `A different admission request (${state.admissionId}) for "${agent}" is already waiting in this room. ` +
+        `Cancel it with \`sl session join ${sid} --agent ${agent} --cancel-admission\`, then request again.`
+    );
+  }
+  const resumable = inFlight && state.publicKey === key.publicKey;
 
   if (!resumable) {
     const created = await mutate(
@@ -279,15 +408,20 @@ export async function runAdmissionJoin(
         clientKind: "cli",
         publicKey: key.publicKey,
         popAssurance: "agent_held_key",
-        goal: {
-          summary: goalSummary,
-          deliverables: deliverables.map(normalizeString).filter(Boolean),
-          stopConditions: stopConditions.map(normalizeString).filter(Boolean),
-        },
+        goal: goalContract,
         requestedScope: { actions: [...actions], ttlSeconds },
       },
       { ...deps, operationName: "session.admission_request" }
     );
+    if (
+      created?.status === "active" &&
+      created?.reused &&
+      held.state === "live" &&
+      held.credential.admissionId === created.admissionId
+    ) {
+      // The server judged this request covered by the grant we already hold.
+      return redacted({ status: "active", reused: true, stored: held.credential, sid, agent, homeDir });
+    }
     if (created?.status === "active" && created?.reused) {
       // The server already holds a live grant for this key, but we have no stored
       // credential for it (e.g. a different machine). It cannot be re-issued.
@@ -300,6 +434,8 @@ export async function runAdmissionJoin(
       admissionId: created.admissionId,
       agentId: agent,
       publicKey: key.publicKey,
+      apiUrl: auth.apiUrl,
+      requestFingerprint: fingerprint,
       status: created.status,
       approveUrl: created.approveUrl || null,
       pendingExpiresAt: created.pendingExpiresAt || null,
@@ -364,9 +500,13 @@ export async function runAdmissionJoin(
   );
 
   const stored = {
-    version: 1,
+    version: 2,
     sessionId: sid,
     agentId: agent,
+    // The credential is only ever sent to the API that issued it.
+    apiUrl: auth.apiUrl,
+    publicKey: key.publicKey,
+    requestFingerprint: fingerprint,
     admissionId: claimed.admissionId,
     token: claimed.credential.token,
     expiresAt: claimed.grant.expiresAt,
@@ -413,10 +553,11 @@ function redacted({ status, reused, stored, claimed, sid, agent, homeDir }) {
   };
 }
 
-/** Cancel a pending admission request filed from this workspace. */
+/** Cancel this agent's pending admission request filed from this workspace. */
 export async function cancelAdmission(
   sessionId,
   {
+    agentId,
     targetPath = process.cwd(),
     origin = SESSION_MUTATION_ORIGIN,
     resolveAuthSession = resolveActiveAuthSession,
@@ -424,9 +565,11 @@ export async function cancelAdmission(
   } = {}
 ) {
   const sid = normalizeString(sessionId);
-  const statePath = admissionStatePath(targetPath, sid);
+  const agent = normalizeString(agentId).toLowerCase();
+  if (!agent) throw new Error("--agent is required to cancel its admission request.");
+  const statePath = admissionStatePath(targetPath, sid, agent);
   const state = await readJsonFile(statePath);
-  if (!state?.admissionId) throw new Error("No pending admission request in this workspace.");
+  if (!state?.admissionId) throw new Error(`No pending admission request for "${agent}" in this workspace.`);
   const auth = await authContext({ targetPath, resolveAuthSession });
   const result = await mutate(
     auth,
