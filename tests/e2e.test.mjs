@@ -1487,6 +1487,7 @@ test("CLI omargate deep diff mode routes changed files to impacted personas", as
       ".github/workflows/ci.yml",
       "src/components/Button.tsx",
     ]);
+    assert.ok(payload.personaRouting, result.stderr || JSON.stringify(payload.ai));
     assert.equal(payload.personaRouting.enabled, true);
     assert.deepEqual(payload.personaRouting.effectivePersonas, ["release", "frontend"]);
     assert.deepEqual(payload.ai.personas.map((persona) => persona.id), ["release", "frontend"]);

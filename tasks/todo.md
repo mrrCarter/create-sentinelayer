@@ -23,6 +23,16 @@ checks remain; no auth bypass, no session creation in live tests, no credentials
 in JSON/logs. Synthetic credentials and isolated homes are used for loopback
 subprocesses. No package publication or release bypass authorized.
 
+### Gate regression correction
+
+Same-environment A/B proved the Omar diff E2E failure was patch-triggered, not
+baseline: quicker context reads exposed parallel persona billing materializers
+rewriting the same metadata file (Windows EPERM). Creation now acquires the
+existing stream lock, re-reads under lock, and returns existing metadata without
+resetting title, TTL, status or other state. No append runs under the creation
+lock. Parallel billing, idempotent/expired-room preservation and lock-order
+regressions cover the correction; full gate rerun and peer re-review follow.
+
 # 2026-07-29 - Senti Presence/Cursor Noise Cutover (`fix/session-presence-cursor-cutover-20260729`)
 
 ## Plan

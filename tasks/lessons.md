@@ -2,6 +2,8 @@
 
 ## 2026-09-28
 
+- A broad-suite failure after a patch is not a baseline issue without a same-environment A/B proof. Faster optional work can expose concurrency bugs: creation must share the stream writer's lock, re-read under that lock, and preserve an already-created room rather than resetting metadata.
+
 - Trigger: `session start --no-daemon --json` still hung after daemon opt-out advice. Mistake: treating daemon suppression or JSON emission as proof of process completion. Prevention: reproduce both pre-output waits and post-output live handles in real subprocess tests; a timeout must cancel its owned work and await cleanup.
 - Session creation must never recursively ingest an arbitrary cwd. Use bounded optional cached context; full repository discovery is an explicit ingest operation.
 - A received HTTP status is not a consumed response. Cancel unused acknowledgement/error bodies, keep deadlines through required JSON bodies, and report actual sync acknowledgement separately from local durability.

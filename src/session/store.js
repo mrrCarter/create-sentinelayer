@@ -7,7 +7,7 @@ import { buildArtifactLineageIndex, verifyArtifactChain } from "../daemon/artifa
 import { readSessionCodebaseContext } from "./codebase-context.js";
 import { computeSessionAnalytics } from "./analytics.js";
 import { resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
-import { appendToStream } from "./stream.js";
+import { appendToStream, withSessionStreamLock } from "./stream.js";
 
 const SESSION_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_TTL_SECONDS = 24 * 60 * 60;
@@ -501,11 +501,16 @@ export async function createSession({
     }
   );
 
-  await fsp.mkdir(paths.agentsDir, { recursive: true });
-  await saveMetadata(metadata, paths);
-  await fsp.writeFile(paths.streamPath, "", { encoding: "utf-8", flag: "a" });
-
-  return buildSessionPayload(metadata, paths, nowIso);
+  return withSessionStreamLock(sessionId, async () => {
+    // A concurrent materializer may have won while optional context was read.
+    // Never reset its title/TTL/status or race its first billing append.
+    const existing = await loadMetadata(sessionId, { targetPath: resolvedTargetPath });
+    if (existing) return buildSessionPayload(existing.metadata, paths, nowIso);
+    await fsp.mkdir(paths.agentsDir, { recursive: true });
+    await saveMetadata(metadata, paths);
+    await fsp.writeFile(paths.streamPath, "", { encoding: "utf-8", flag: "a" });
+    return buildSessionPayload(metadata, paths, nowIso);
+  }, { targetPath: resolvedTargetPath });
 }
 
 export async function updateSessionTitle(

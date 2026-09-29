@@ -12,6 +12,7 @@ import {
   listActiveSessions,
   renewSession,
 } from "../src/session/store.js";
+import { withSessionStreamLock } from "../src/session/stream.js";
 
 async function seedWorkspace(rootPath) {
   await mkdir(path.join(rootPath, "src"), { recursive: true });
@@ -92,6 +93,64 @@ test("Unit session store: missing sessions and unsafe ids fail closed", async ()
     );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("Unit session store: requested-ID creation is idempotent and preserves the winning metadata", { timeout: 15_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sl-session-create-race-"));
+  try {
+    const results = await Promise.all(Array.from({ length: 12 }, (_, index) => createSession({
+      targetPath: root, sessionId: "same-room", title: `creator-${index}`, ttlSeconds: 600 + index,
+    })));
+    const winner = await getSession("same-room", { targetPath: root });
+    for (const result of results) {
+      assert.equal(result.title, winner.title);
+      assert.equal(result.createdAt, winner.createdAt);
+      assert.equal(result.expiresAt, winner.expiresAt);
+    }
+    await expireSession("same-room", { targetPath: root });
+    const before = await readFile(winner.metadataPath, "utf8");
+    const retry = await createSession({ targetPath: root, sessionId: "same-room", title: "must-not-reset", ttlSeconds: 99_999 });
+    assert.equal(retry.status, "expired");
+    assert.equal(retry.title, winner.title);
+    assert.equal(await readFile(winner.metadataPath, "utf8"), before);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Unit session store: materializer rechecks existence only after the stream writer releases its lock", { timeout: 5_000 }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "sl-session-create-lock-"));
+  let unlock;
+  let held;
+  try {
+    const original = await createSession({ targetPath: root, sessionId: "locked-room", title: "original" });
+    let ready;
+    const acquired = new Promise((resolve) => { ready = resolve; });
+    held = withSessionStreamLock("locked-room", async () => {
+      ready();
+      await new Promise((resolve) => { unlock = resolve; });
+    }, { targetPath: root });
+    await acquired;
+    let finished = false;
+    const retry = createSession({ targetPath: root, sessionId: "locked-room", title: "must-not-win" }).then((value) => {
+      finished = true;
+      return value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(finished, false);
+    const metadata = JSON.parse(await readFile(original.metadataPath, "utf8"));
+    metadata.title = "written-under-lock";
+    metadata.renewalCount = 3;
+    await writeFile(original.metadataPath, JSON.stringify(metadata));
+    unlock();
+    await held;
+    const result = await retry;
+    assert.equal(result.title, "written-under-lock");
+    assert.equal(result.renewalCount, 3);
+    assert.equal(await readFile(original.metadataPath, "utf8"), JSON.stringify(metadata));
+  } finally {
+    unlock?.();
+    await held;
+    await rm(root, { recursive: true, force: true });
   }
 });
 
