@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.42.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.41.0...v0.42.0) (2026-09-03)
+
+
+### Features
+
+* **board:** deterministic done-gate with a third state that refuses to collapse ([#807](https://github.com/mrrCarter/create-sentinelayer/issues/807)) ([6bafb85](https://github.com/mrrCarter/create-sentinelayer/commit/6bafb85c89a0a2e8a69e1f51119ba31fd9877edb))
+* **board:** evidence resolvers + `sl board check` — the done-gate now runs ([#810](https://github.com/mrrCarter/create-sentinelayer/issues/810)) ([899aeb3](https://github.com/mrrCarter/create-sentinelayer/commit/899aeb37841cc4be1b6d48e7fadebed16b85a32d))
+* **checkpoints:** origin:service|agent honesty — stop auto-claiming the service ([#800](https://github.com/mrrCarter/create-sentinelayer/issues/800)) ([de254a4](https://github.com/mrrCarter/create-sentinelayer/commit/de254a4df0179d4ebc67453cad1d76e001eecddc))
+* **engram:** §19.1 canonical encoder — conformance gate (i) flips GREEN ([#804](https://github.com/mrrCarter/create-sentinelayer/issues/804)) ([9e7c7ef](https://github.com/mrrCarter/create-sentinelayer/commit/9e7c7ef803774d95c2cfb37c5d7353dd7b8ec73b))
+* **engram:** build lifecycle so a partial index refuses to answer ([#806](https://github.com/mrrCarter/create-sentinelayer/issues/806)) ([52e3f04](https://github.com/mrrCarter/create-sentinelayer/commit/52e3f04b62f7b03f0d4e29b298fcc20028cd7e02))
+* **engram:** document ingestion with span-level provenance ([#805](https://github.com/mrrCarter/create-sentinelayer/issues/805)) ([806e260](https://github.com/mrrCarter/create-sentinelayer/commit/806e26007fb9921b9a5bdd8b29ad59894a485ded))
+* **engram:** invoke the readiness gate — a half-built index now actually refuses ([#808](https://github.com/mrrCarter/create-sentinelayer/issues/808)) ([d592bd2](https://github.com/mrrCarter/create-sentinelayer/commit/d592bd27f63b1758acda078a53ff61182df37fa2))
+* **engram:** the document ingest path — BUILDING becomes reachable ([#809](https://github.com/mrrCarter/create-sentinelayer/issues/809)) ([29563e7](https://github.com/mrrCarter/create-sentinelayer/commit/29563e7fbfe818d412e6e80cbe8b7f9d433d13d1))
+
+
+### Bug Fixes
+
+* **review:** close investor DD stream on failure ([#782](https://github.com/mrrCarter/create-sentinelayer/issues/782)) ([b69f577](https://github.com/mrrCarter/create-sentinelayer/commit/b69f577396731635fbae4ad95458e7b82ab623e7))
+* **session:** clarify recap source windows ([#766](https://github.com/mrrCarter/create-sentinelayer/issues/766)) ([91a07aa](https://github.com/mrrCarter/create-sentinelayer/commit/91a07aaece789d50f53a540e118e4868c4dcfc42))
+* **session:** resume the SSE stream after a reconnect instead of losing events ([#803](https://github.com/mrrCarter/create-sentinelayer/issues/803)) ([dce96e0](https://github.com/mrrCarter/create-sentinelayer/commit/dce96e070d3be54c24af5a286f1e204d4ad03417))
+
 ## [0.41.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.40.0...v0.41.0) (2026-08-05)
 
 
