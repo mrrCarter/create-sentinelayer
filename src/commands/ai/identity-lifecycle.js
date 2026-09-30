@@ -471,7 +471,7 @@ identity
         credentialsMissing: resolvedCredentials.missing,
         trackedIdentity,
         curlPreview: [
-          `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(identityId)}/revoke \\`,
+          `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(identityId)}/squash \\`,
           `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
           `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
           `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,
