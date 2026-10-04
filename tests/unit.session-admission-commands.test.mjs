@@ -48,6 +48,9 @@ const ADMISSION_ALLOWED = [
   ["PUT", /\/presence$/],
   ["PUT", /\/read-cursor$/],
   ["GET", /\/actions$/],
+  ["GET", /\/messages\/by-sequence\/\d+$/],
+  ["GET", /\/(?:messages|replies)\/[^/]+$/],
+  ["PATCH", /\/(?:messages|replies)\/[^/]+$/],
   ["POST", /\/events$/],
   ["POST", /\/actions$/],
   ["GET", /\/tickets$/],
@@ -138,6 +141,27 @@ function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = 
       });
     }
     // --- the room
+    if (method === "GET" && /\/replies\/[^/]+$/.test(p)) {
+      return json({ ok: true, event: null, reply: { id: p.split("/").pop(), actionType: "reply", actorId: "reply-edit-agent", targetSequenceId: 1,
+        note: "original reply", messageRevision: 1, canEdit: true, createdAt: new Date().toISOString() } });
+    }
+    if (method === "PATCH" && /\/replies\/[^/]+$/.test(p)) {
+      const body = JSON.parse(init.body);
+      return json({ ok: true, changed: true, replayed: false, event: null, reply: { id: p.split("/").pop(), actionType: "reply", actorId: "reply-edit-agent", targetSequenceId: 1,
+        note: body.text, messageRevision: 2, editedAt: new Date().toISOString(), createdAt: new Date().toISOString() }, notification: null });
+    }
+    if (method === "GET" && /\/messages\/(?:by-sequence\/\d+|[^/]+)$/.test(p)) {
+      return json({ ok: true, event: { stream: "sl_event", id: "10000000-0000-4000-8000-000000000001", event: "session_message", agent: { id: "edit-agent" }, sessionId: SID,
+        payload: { message: "original" }, messageRevision: 1, canEdit: true, sequenceId: 1, cursor: "c1", ts: new Date().toISOString() }, reply: null });
+    }
+    if (method === "PATCH" && /\/messages\/[^/]+$/.test(p)) {
+      const body = JSON.parse(init.body);
+      const adm = [...state.admissions.values()].find((a) => a.token === bearer);
+      if (adm && !adm.actions.includes("session.post")) return json({ detail: { code: "ADMISSION_SCOPE_DENIED" } }, 403);
+      if (body.expectedRevision !== 1) return json({ detail: { code: "MESSAGE_REVISION_CONFLICT" } }, 409);
+      return json({ ok: true, changed: true, replayed: false, event: { stream: "sl_event", id: "10000000-0000-4000-8000-000000000001", event: "session_message", agent: { id: "edit-agent" }, sessionId: SID,
+        payload: { message: body.text }, messageRevision: 2, editedAt: new Date().toISOString(), editedBy: { actorKind: "agent", actorId: "edit-agent" }, sequenceId: 1, cursor: "c1", ts: new Date().toISOString() }, reply: null, notification: null });
+    }
     if (method === "GET" && p === `/api/v1/sessions/${SID}`) {
       return json({ session: { sessionId: SID, title: "Fixture room", status: "active", eventCount: state.events.length, agentCount: 0 } });
     }
@@ -208,6 +232,74 @@ async function joinAdmitted(agent, { grantActions } = {}) {
 }
 
 const since = (api, mark) => api.requests.slice(mark);
+
+test("native edit resolves and patches on its bound admission without a human credential", async () => {
+  const { ws, api } = await joinAdmitted("edit-agent");
+  delete process.env.SENTINELAYER_TOKEN;
+  try {
+    const mark = api.requests.length;
+    const edited = await sl(["session", "edit", SID, "1", "replacement", "--agent", "edit-agent", "--json", "--path", ws]);
+    assert.equal(edited.error, null, String(edited.error?.stack));
+    assert.equal(edited.json.event.messageRevision, 2);
+    const calls = since(api, mark);
+    assert.deepEqual(calls.map((call) => call.method), ["GET", "PATCH"]);
+    assert.ok(calls.every((call) => call.bearer.startsWith("sladm_")));
+  } finally { process.env.SENTINELAYER_TOKEN = HUMAN; }
+});
+
+test("native edit refuses revoked/expired admissions rather than retrying as human", async () => {
+  const { ws, api } = await joinAdmitted("revoked-edit-agent");
+  const admission = [...api.admissions.values()][0];
+  api.revoked.add(admission.id);
+  let mark = api.requests.length;
+  let edited = await sl(["session", "edit", SID, "1", "replacement", "--agent", "revoked-edit-agent", "--json", "--path", ws]);
+  assert.match(String(edited.error?.message), /INVALID_TOKEN/);
+  assert.equal(since(api, mark).length, 1);
+  assert.ok(since(api, mark).every((call) => call.bearer.startsWith("sladm_")));
+  await expire("revoked-edit-agent");
+  mark = api.requests.length;
+  edited = await sl(["session", "edit", SID, "1", "replacement", "--agent", "revoked-edit-agent", "--json", "--path", ws]);
+  assert.match(String(edited.error?.message), /expired.*will not fall back/s);
+  assert.deepEqual(since(api, mark), []);
+});
+
+test("native edit conflicts and scope denial leave local audit byte-identical", async () => {
+  for (const [agent, revision, grantActions, code] of [["edit-conflict-agent", 99, undefined, "MESSAGE_REVISION_CONFLICT"], ["edit-reader-agent", 1, ["session.read"], "ADMISSION_SCOPE_DENIED"]]) {
+    const { ws, api } = await joinAdmitted(agent, { grantActions });
+    const streamPath = path.join(ws, ".sentinelayer", "sessions", SID, "stream.ndjson");
+    const before = await fsp.readFile(streamPath, "utf8");
+    const mark = api.requests.length;
+    const edited = await sl(["session", "edit", SID, "1", "replacement", "--expected-revision", String(revision), "--agent", agent, "--json", "--path", ws]);
+    assert.match(String(edited.error?.message), new RegExp(code));
+    assert.equal(await fsp.readFile(streamPath, "utf8"), before);
+    assert.ok(since(api, mark).every((call) => call.bearer.startsWith("sladm_")));
+  }
+});
+
+test("native reply UUID edit resolves implicit author and projects revised reply without changing thread target", async () => {
+  const { ws, api } = await joinAdmitted("reply-edit-agent");
+  const mark = api.requests.length;
+  const id = "20000000-0000-4000-8000-000000000002";
+  const edited = await sl(["session", "edit", SID, id, "replacement reply", "--json", "--path", ws]);
+  assert.equal(edited.error, null, String(edited.error?.stack));
+  assert.equal(edited.json.reply.id, id);
+  assert.equal(edited.json.reply.note, "replacement reply");
+  assert.equal(edited.json.reply.targetSequenceId, 1);
+  assert.deepEqual(since(api, mark).map((call) => call.method), ["GET", "PATCH"]);
+  assert.ok(since(api, mark).every((call) => call.bearer.startsWith("sladm_")));
+  const rows = (await fsp.readFile(path.join(ws, ".sentinelayer", "sessions", SID, "stream.ndjson"), "utf8")).trim().split(/\r?\n/).map(JSON.parse);
+  const reply = rows.find((row) => row.payload?.actionId === id);
+  assert.equal(reply.messageRevision, 2);
+  assert.equal(reply.payload.targetSequenceId, 1);
+});
+
+test("native edit rejects fractional revision guards before any request", async () => {
+  const { ws, api } = await joinAdmitted("strict-revision-agent");
+  const mark = api.requests.length;
+  const edited = await sl(["session", "edit", SID, "1", "replacement", "--expected-revision", "1.5", "--agent", "strict-revision-agent", "--json", "--path", ws]);
+  assert.match(String(edited.error?.message), /expected-revision must be a positive safe integer/);
+  assert.deepEqual(since(api, mark), []);
+});
 
 // ------------------------------------------------------------------- say
 

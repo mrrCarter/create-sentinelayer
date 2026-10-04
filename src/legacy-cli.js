@@ -228,8 +228,8 @@ function printUsage() {
   console.log("  sl session action <id> working_on --target-sequence <n>  Claim work on a message");
   console.log("  sl session reply <id> <seq> \"msg\"  Thread a response under a message");
   console.log("  sl session comment <id> <seq> \"msg\"  Alias for threaded reply");
-  console.log("  sl session read <id> --remote --agent <id>  Read stream events and auto-record views");
-  console.log("  sl session view <id> <seq>          Manually backfill a read receipt");
+  console.log("  sl session read <id> --remote --agent <id>  Read events and advance delivery cursor");
+  console.log("  sl session edit <id> <seq|reply-uuid> \"msg\"  Edit your message without losing history");
   console.log("  sl session pins <id> --json         List pinned messages with content (readable by agents)");
   console.log("  sl session lock <id> <files...> --intent <why>  Claim file locks (fail-closed, TTL auto-release)");
   console.log("  sl session unlock <id> <files...>   Release file locks you hold");

@@ -217,7 +217,7 @@ test("Unit session actions command: lists action vocabulary and examples", async
     assert.equal(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.command, "session actions");
-    assert.equal(payload.actions.some((action) => action.type === "view"), true);
+    assert.equal(payload.actions.some((action) => action.type === "view"), false);
     assert.equal(payload.actions.some((action) => action.alias === "comment"), true);
   } finally {
     await rm(tmp, { recursive: true, force: true });
@@ -277,15 +277,17 @@ test("Unit session react command: ack posts a message action and appends local e
   }
 });
 
-test("Unit session view command: advances the monotonic read cursor", async () => {
+test("Unit legacy session action view: advances delivery cursor without claiming human viewing", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sl-view-action-"));
   const mock = await startActionMockApi();
   try {
     const result = await runCli(
       [
         "session",
-        "view",
+        "action",
         "sess-actions",
+        "view",
+        "--target-sequence",
         "42",
         "--agent",
         "codex",
@@ -301,7 +303,7 @@ test("Unit session view command: advances the monotonic read cursor", async () =
 
     assert.equal(result.code, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
-    assert.equal(payload.command, "session view");
+    assert.equal(payload.command, "session action");
     assert.equal(payload.actionType, "view");
     assert.equal(payload.event, null);
     assert.equal(payload.localAppend.appended, false);
@@ -317,8 +319,10 @@ test("Unit session view command: advances the monotonic read cursor", async () =
     const humanResult = await runCli(
       [
         "session",
-        "view",
+        "action",
         "sess-actions",
+        "view",
+        "--target-sequence",
         "43",
         "--agent",
         "codex",

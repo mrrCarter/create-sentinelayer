@@ -8,6 +8,7 @@ import {
 } from "./sync.js";
 import { cursorAdvances, readSyncCursor, writeSyncCursor } from "./sync-cursor.js";
 import { isSessionListenerLifecycleEvent } from "./control-events.js";
+import { sessionMessageRoutingEvent } from "./message-edits.js";
 
 const BROADCAST_RECIPIENTS = new Set([
   "*",
@@ -68,6 +69,7 @@ function addRecipientValue(values, value) {
 }
 
 export function collectSessionEventRecipients(event = {}) {
+  event = sessionMessageRoutingEvent(event);
   const values = [];
   if (!isPlainObject(event)) return values;
   const payload = isPlainObject(event.payload) ? event.payload : {};
@@ -90,6 +92,7 @@ export function collectSessionEventRecipients(event = {}) {
 
 export function eventMatchesAgent(event = {}, agentId = "") {
   if (!isPlainObject(event)) return false;
+  event = sessionMessageRoutingEvent(event);
   const normalizedAgentId = normalizeComparableId(agentId);
   if (!normalizedAgentId) return false;
 

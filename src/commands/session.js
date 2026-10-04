@@ -125,6 +125,7 @@ import {
 import { readSessionPreview } from "../session/preview.js";
 import {
   createSessionMessageAction,
+  editSessionMessage,
   fetchJsonWithFullTimeout,
   fetchSessionUsageLedger,
   fetchSessionPinnedMessages,
@@ -142,6 +143,7 @@ import {
   updateSessionReadCursor,
 } from "../session/sync.js";
 import { hydrateSessionFromRemote } from "../session/remote-hydrate.js";
+import { messageRevision, replyRevisionEvent, sessionMessageRoutingEvent } from "../session/message-edits.js";
 import { runSessionRecall } from "../session/recall/index.js";
 import { mergeLiveSources } from "../session/live-source.js";
 import { listenSessionEvents } from "../session/listener.js";
@@ -595,11 +597,6 @@ const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
     command: "sl session action <id> disregard --target-sequence <n>",
     description: "Mark a message as intentionally ignored or superseded.",
   },
-  {
-    type: "view",
-    command: "sl session view <id> <sequence>",
-    description: "Manually backfill a read receipt for a target message; remote reads record views automatically.",
-  },
 ]);
 
 function normalizeSessionMessageActionType(value) {
@@ -691,6 +688,11 @@ function buildSessionActionEvent(sessionId, action = {}) {
     },
     sessionId,
     ts: actionCreatedAt(action),
+    messageRevision: messageRevision(action),
+    editedAt: action.editedAt,
+    editedBy: action.editedBy,
+    canEdit: action.canEdit,
+    revisionEvidence: action.revisionEvidence,
     payload: {
       actionId: id,
       actionType,
@@ -698,6 +700,7 @@ function buildSessionActionEvent(sessionId, action = {}) {
       targetCursor: actionTargetCursor(action) || null,
       targetActionId: actionTargetActionId(action) || null,
       note: normalizeString(action.note) || null,
+      metadata: action.metadata && typeof action.metadata === "object" ? action.metadata : undefined,
       message: actionDisplayMessage(action),
       source: "session_action",
     },
@@ -2416,6 +2419,11 @@ function formatEventLine(event = {}) {
   const ts = normalizeString(event.ts || event.timestamp);
   const type = normalizeString(event.event || event.type) || "event";
   const agentId = normalizeString(event.agent?.id || event.agentId || "unknown");
+  if (type === "session_message_edited") {
+    const routed = sessionMessageRoutingEvent(event);
+    const target = event.payload?.targetActionId ? `reply ${event.payload.targetActionId}` : `#${event.payload?.targetSequenceId || "?"}`;
+    return `${ts} ${agentId} ${type} ${target} revision ${event.payload?.messageRevision || "?"}: ${normalizeString(routed.payload?.message || routed.payload?.text || "")}`;
+  }
   const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
   if (type === "session_action" || type === "session_reply" || type === "session_reaction") {
     const actionType = normalizeString(payload.actionType) || type.replace(/^session_/, "");
@@ -4444,20 +4452,50 @@ export function registerSessionCommand(program) {
     });
 
   session
-    .command("view <sessionId> <targetSequenceId>")
-    .description("Manually backfill a read receipt for a target session event")
-    .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
-    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .command("edit <sessionId> <target> <message...>")
+    .description("Edit your message by sequence or threaded reply UUID; preserves its audit history")
+    .option("--agent <id>", "Authoring agent (defaults to the joined session agent)")
+    .option("--expected-revision <n>", "Guard against concurrent edits; otherwise fetch the current revision once")
+    .option("--idempotency-key <key>", "Reuse an explicit key when retrying the same edit")
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
-    .action(async (sessionId, targetSequenceId, options, command) => {
-      await runMessageActionCommand({
-        sessionId,
-        actionType: "view",
-        options,
-        command,
-        commandName: "session view",
-        targetSequenceId: parsePositiveInteger(targetSequenceId, "targetSequenceId", 0),
+    .action(async (sessionId, target, messageParts, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const text = Array.isArray(messageParts) ? messageParts.join(" ") : String(messageParts || "");
+      const sequence = /^\d+$/.test(target) ? Number(target) : null;
+      if (sequence !== null && (!Number.isSafeInteger(sequence) || sequence <= 0)) throw new Error("target sequence must be a positive safe integer.");
+      if (!sequence && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)) {
+        throw new Error("Edit target must be a positive message sequence or a threaded reply UUID.");
+      }
+      const identity = await resolveMessageActionIdentity({ sessionId: sid, optionAgent: options.agent, targetPath, env: process.env });
+      if (shouldBlockImplicitCliUserSessionSay(identity)) throw new Error(identity.identityWarning || "session edit requires an authoring agent identity; pass --agent <id>.");
+      const expectedRevision = options.expectedRevision === undefined ? null : Number(options.expectedRevision);
+      if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision <= 0)) throw new Error("expected-revision must be a positive safe integer.");
+      return withAgentAdmission(sid, identity.agentId, async () => {
+        const result = await editSessionMessage(sid, {
+          targetPath,
+          targetSequenceId: sequence,
+          targetActionId: sequence ? "" : target,
+          text,
+          agentId: identity.agentId,
+          expectedRevision,
+          idempotencyKey: options.idempotencyKey,
+          timeoutMs: 15_000,
+        });
+        if (!result.ok) throw new Error(`Session edit failed (${result.reason || "unknown"}). No local message was changed.`);
+        let localAppend = { appended: 0, upgraded: 0, failed: 0 };
+        try {
+          await ensureLocalSessionForRemoteCommand(sid, { targetPath });
+          const current = result.reply ? replyRevisionEvent(sid, result.reply) : result.event;
+          localAppend = await appendMissingRemoteEvents(sid, [current, result.notification].filter(Boolean), { targetPath });
+        } catch {
+          localAppend = { appended: 0, upgraded: 0, failed: 1 };
+        }
+        const payload = { command: "session edit", sessionId: sid, target, ...result, localAppend, localAppendComplete: localAppend.failed === 0 };
+        if (shouldEmitJson(options, command)) console.log(JSON.stringify(payload, null, 2));
+        else console.log(`${result.changed ? "Edited" : "Confirmed"} ${sequence ? `#${sequence}` : `reply ${target}`} at revision ${messageRevision(result.reply || result.event)}.${localAppend.failed ? " Remote edit succeeded; local cache needs sync." : ""}`);
+        return payload;
       });
     });
 

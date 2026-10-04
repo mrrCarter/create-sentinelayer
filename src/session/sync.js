@@ -7,6 +7,8 @@ import { randomUUID } from "node:crypto";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { isSessionControlEvent } from "./control-events.js";
+import { createSessionMutationHeaders } from "./invitations.js";
+import { messageRevision } from "./message-edits.js";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
 
 // No-op outside tests; inside a test process (or a child it spawned) every fetch
@@ -879,6 +881,18 @@ function buildHumanRelayEvent(sessionId, message = {}) {
     agentId,
     sessionId,
     ts,
+    // The compatibility human-poll lane must preserve canonical revision and
+    // identity too; otherwise an edited body is mistaken for a fresh directive
+    // when its paired durable edit notification has not reached this poller.
+    id: message.eventId || message.event_id || undefined,
+    eventId: message.eventId || message.event_id || undefined,
+    cursor: message.cursor || undefined,
+    sequenceId: message.sequenceId ?? message.sequence_id,
+    messageRevision: messageRevision(message),
+    editedAt: message.editedAt,
+    editedBy: message.editedBy,
+    canEdit: message.canEdit,
+    revisionEvidence: message.revisionEvidence,
     payload: {
       message: sanitization.message,
       channel: "session",
@@ -2774,6 +2788,88 @@ export async function fetchSessionPinnedMessages(
     pinLimit,
     count: pins.length,
   };
+}
+
+// Native edits never fall back to POST /events or mutate an optimistic local row.
+export async function editSessionMessage(sessionId, {
+  targetSequenceId = null,
+  targetMessageId = "",
+  targetActionId = "",
+  text,
+  expectedRevision = null,
+  agentId = "",
+  idempotencyKey = "",
+  targetPath = process.cwd(),
+  timeoutMs = DEFAULT_SYNC_TIMEOUT_MS,
+  signal,
+  resolveAuthSession = resolveActiveAuthSession,
+  fetchImpl = fetchWithTimeout,
+  nowMs = Date.now,
+} = {}) {
+  const sid = normalizeString(sessionId);
+  const sequence = Number(targetSequenceId);
+  const replyId = normalizeString(targetActionId);
+  let messageId = normalizeString(targetMessageId);
+  let revision = expectedRevision === null || expectedRevision === undefined ? null : Number(expectedRevision);
+  const validSequence = Number.isSafeInteger(sequence) && sequence > 0;
+  const mutationKey = normalizeString(idempotencyKey) || `sl-message-edit-${randomUUID()}`;
+  if (!sid || typeof text !== "string" || !text.trim() || (!replyId && !messageId && !validSequence) ||
+      (revision !== null && (!Number.isSafeInteger(revision) || revision <= 0)) || mutationKey.length > 128) {
+    return { ok: false, reason: "invalid_input" };
+  }
+  if (String(process.env.SENTINELAYER_SKIP_REMOTE_SYNC || "").trim() === "1") return { ok: false, reason: "remote_sync_disabled_env" };
+  const timestamp = Number(nowMs()) || Date.now();
+  if (isCircuitOpen(outboundCircuit, timestamp)) return { ok: false, reason: "circuit_breaker_open" };
+  let auth;
+  try { auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false }); }
+  catch { return { ok: false, reason: "no_session" }; }
+  if (!auth?.token) return { ok: false, reason: "not_authenticated" };
+  const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${encodeURIComponent(sid)}`;
+  const headers = { Authorization: `Bearer ${auth.token}` };
+  const failure = (response, payload) => {
+    const code = normalizeString(payload?.detail?.code || payload?.error?.code || payload?.code);
+    // Client/schema/ownership conflicts are terminal and must not poison unrelated writes.
+    if (!response || response.status >= 500) recordCircuitFailure(outboundCircuit, timestamp);
+    return { ok: false, reason: code || `api_${response?.status || "no_response"}`, status: response?.status || null };
+  };
+  try {
+    // Sequence resolution and omitted-revision lookup are one authenticated GET.
+    if ((!replyId && !messageId) || revision === null) {
+      const resource = replyId ? `replies/${encodeURIComponent(replyId)}` : messageId
+        ? `messages/${encodeURIComponent(messageId)}` : `messages/by-sequence/${sequence}`;
+      const authorQuery = normalizeString(agentId) ? `?agentId=${encodeURIComponent(normalizeString(agentId))}` : "";
+      const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}${authorQuery}`, { method: "GET", headers, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
+      if (!response?.ok || payload?.ok === false) return failure(response, payload);
+      const current = replyId ? payload?.reply : payload?.event;
+      const fetchedRevision = Number(current?.messageRevision ?? 1);
+      if (!current?.id || (replyId && current.id !== replyId) || !Number.isSafeInteger(fetchedRevision) || fetchedRevision <= 0) return { ok: false, reason: "invalid_edit_target" };
+      if (current.canEdit === false) return { ok: false, reason: "MESSAGE_EDIT_FORBIDDEN", status: 403 };
+      if (!replyId) messageId = current.id;
+      if (revision === null) revision = fetchedRevision;
+    }
+    const resource = replyId ? `replies/${encodeURIComponent(replyId)}` : `messages/${encodeURIComponent(messageId)}`;
+    const body = { text, expectedRevision: revision, ...(normalizeString(agentId) ? { agentId: normalizeString(agentId) } : {}) };
+    const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}`, {
+      method: "PATCH",
+      headers: {
+        ...createSessionMutationHeaders({ bearerToken: auth.token, sessionId: sid, routeId: replyId
+          ? "PATCH /api/v1/sessions/{session_id}/replies/{action_id}"
+          : "PATCH /api/v1/sessions/{session_id}/messages/{message_id}", idempotencyKey: mutationKey }),
+        "Content-Type": "application/json", "Idempotency-Key": mutationKey,
+      },
+      body: JSON.stringify(body),
+      signal,
+    }, timeoutMs, fetchImpl, { readErrorBody: true });
+    if (!response?.ok || payload?.ok !== true) return failure(response, payload);
+    const current = replyId ? payload.reply : payload.event;
+    const currentRevision = Number(current?.messageRevision ?? 1);
+    if (!current?.id || current.id !== (replyId || messageId) || !Number.isSafeInteger(currentRevision) || currentRevision <= 0) return { ok: false, reason: "invalid_edit_response" };
+    recordCircuitSuccess(outboundCircuit);
+    return { ok: true, changed: Boolean(payload.changed), replayed: Boolean(payload.replayed), event: payload.event || null, reply: payload.reply || null, notification: payload.notification || null };
+  } catch (error) {
+    recordCircuitFailure(outboundCircuit, timestamp);
+    return { ok: false, reason: normalizeString(error?.message) || "message_edit_failed" };
+  }
 }
 
 export async function createSessionMessageAction(

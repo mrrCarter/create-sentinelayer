@@ -4005,3 +4005,24 @@ Evidence:
 - Full audit passed 717 files with P1 `0`; its two nonblocking P2 findings are unchanged repository baselines outside this diff.
 - Independent review confirmed RED and GREEN behavior, close-before-manifest ordering, and quality-summary wiring; its OIDC least-privilege finding was fixed with a job-level `contents: read` override.
 - Initial PR #782 hosted runs Omar `29689410926`, Quality `29689410906`, and Attestation `29689410903` all stopped before executing any step; every failure annotation reports that the GitHub account is locked due to a billing issue. The PR remains unmerged.
+
+## Native Session Message Edits CLI (2026-10-03)
+
+Root execution contract: SentinelLayer `tasks/todo.md`, E1 message edit/R1 native-view rollout. This CLI worktree owns implementation and local proof only; Verity owns integration, PR, merge, and release. The paused listener remains paused.
+
+- [x] Agree exact API wire contract and classified agent/admission credential boundary.
+- [x] Add sequence/reply-UUID `session edit` with signed guarded PATCH and remote-success-before-local mutation.
+- [x] Preserve immutable audit rows while projecting monotonic current message/reply bodies across hydration, local/SSE sources, history, and directed/broadcast edit wakes.
+- [x] Prevent revised historical message bodies from executing task directives.
+- [x] Remove standalone `session view` registration and generated/legacy adverts; preserve delivery cursors, history/read, and explicit ACK semantics without claiming human viewing.
+- [x] Add targeted contract, out-of-order revision, admission failure, cache, wake, and directive regressions.
+- [x] Finish final canonical `npm run verify` and prepare scoped commit handoff to Verity.
+
+Review evidence:
+
+- Existing hydration/identity/live/wake/stream suite passed `67/67`; auth/revision/recap/tasks sweep passed `91/91`; final focused helper/command/admission/live/tasks sweep passed `119/119`.
+- Final canonical `npm run verify` passed: static `393` files, documentation valid, E2E `132/132`, unit `2068/2068`, package `391` files (SHA-1 `be751bcc80fc19304498fdb68fb0fb49ee80351c`). Coverage statements/branches/functions/lines: `91.83% / 70.76% / 93.57% / 91.83%`.
+- Final diff review passed `P1=0, P2=0` over 25 files after adding the revision envelope scope explicitly to `docs/spec.md`.
+- Final-source live Omar run `omargate-1791083414742-25804589` passed `P0/P1/P2/P3=0/0/0/0`, with all three dispatched personas successful (cost `$0.137406`). Invocation used explicit `--provider anthropic --model claude-sonnet-4-6` because the default GPT model was incompatible with the locally resolved Anthropic route; no gate policy was changed.
+- Required `/audit --path . --json` passed 789 files, `P1=0`, with two unchanged nonblocking baseline P2s in the old eval marker and scan generator; final report `audit-20261004-031053.md`.
+- Clean `npm ci --ignore-scripts` exposed baseline dependency advisories: 9 high / 1 moderate. No dependency upgrades, allowlists, release mutations, or security-gate changes were mixed into this feature lane.

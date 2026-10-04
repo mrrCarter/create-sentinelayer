@@ -131,7 +131,7 @@ export const SESSION_AGENT_PRINCIPAL = Object.freeze({
   react: "actor",
   reply: "actor",
   comment: "actor",
-  view: "actor",
+  edit: "actor",
   read: "actor",
   listen: "actor",
   pins: "actor",

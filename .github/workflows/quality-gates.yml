@@ -37,6 +37,9 @@ permissions:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CANONICAL_NODE_VERSION: "22"
+  # Test bootstrap isolates the credential home. Browser binaries are separate
+  # public test assets: install and resolve them from this explicit same path.
+  PLAYWRIGHT_BROWSERS_PATH: "0"
   SECURITY_SCAN_P0_MAX: "0"
   SECURITY_SCAN_P1_MAX: "0"
 

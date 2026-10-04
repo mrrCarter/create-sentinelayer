@@ -91,7 +91,8 @@ test("Unit session setup-guides: generation is idempotent and emits one coordina
     assert.match(firstGuide, /sl session sync <id> --json/);
     assert.match(firstGuide, /sl session react <id> ack --target-sequence <n>/);
     assert.match(firstGuide, /sl session read <id> --remote --agent <your-name>/);
-    assert.match(firstGuide, /reserve `sl session view <id> <sequence>` for repair\/backfill/);
+    assert.match(firstGuide, /`sl session edit <id> <sequence-or-reply-uuid>/);
+    assert.doesNotMatch(firstGuide, /`sl session view/);
     assert.match(firstGuide, /sl session reply <id> <sequence>/);
     assert.match(firstGuide, /sl session comment <id> <sequence>/);
     assert.match(firstGuide, /sl session actions/);

@@ -32,8 +32,10 @@ import {
   sessionEventIdentityKeys,
   sessionEventHasKnownIdentity,
   sessionEventUpgradesExisting,
+  dedupeSessionEvents,
 } from "./event-identity.js";
 import { isSessionControlEvent } from "./control-events.js";
+import { sessionMessageEditSnapshot } from "./message-edits.js";
 
 const EVENTS_CURSOR_SUFFIX = "events";
 const DEFAULT_EVENT_PAGE_LIMIT = 200;
@@ -370,25 +372,11 @@ export async function hydrateSessionFromRemote({
 
   // Dedup across sources — both endpoints can return the same event
   // (e.g. a human relay event). Cursor values are unique per event.
-  const seenCursors = new Set();
-  const seenKeys = new Set();
-  const merged = [];
-  for (const e of humanResult?.events || []) {
-    const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
-    if (c && seenCursors.has(c)) continue;
-    if (sessionEventHasKnownIdentity(e, seenKeys)) continue;
-    if (c) seenCursors.add(c);
-    addSessionEventIdentityKeys(seenKeys, e);
-    merged.push(e);
-  }
-  for (const e of eventsResult?.events || []) {
-    const c = (e && typeof e === "object" && typeof e.cursor === "string") ? e.cursor : "";
-    if (c && seenCursors.has(c)) continue;
-    if (sessionEventHasKnownIdentity(e, seenKeys)) continue;
-    if (c) seenCursors.add(c);
-    addSessionEventIdentityKeys(seenKeys, e);
-    merged.push(e);
-  }
+  const sourceEvents = [...(humanResult?.events || []), ...(eventsResult?.events || [])];
+  const merged = dedupeSessionEvents(sourceEvents.flatMap((event) => {
+    const snapshot = sessionMessageEditSnapshot(event);
+    return snapshot ? [snapshot, event] : [event];
+  }));
 
   // If BOTH pollers failed, surface the human-message failure (the
   // legacy contract) so existing callers see no behavior change. If

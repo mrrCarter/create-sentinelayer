@@ -21,11 +21,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { resolveSessionPaths } from "./paths.js";
 import { readStream } from "./stream.js";
 import {
-  addSessionEventIdentityKeys,
   dedupeSessionEvents,
   readSessionEventSequence,
-  sessionEventHasKnownIdentity,
   sessionEventIdentityKeys,
+  sessionEventUpgradesExisting,
 } from "./event-identity.js";
 
 const DEFAULT_RECONNECT_BACKOFF_MS = 2_000;
@@ -62,14 +61,21 @@ export async function* watchLocalStream({
 } = {}) {
   if (!sessionId) return;
   const paths = resolveSessionPaths(sessionId, { targetPath });
-  let lastTs = null;
+  let observed = new Map();
+  const observe = (event, previous = observed) => {
+    const keys = sessionEventIdentityKeys(event);
+    const existing = keys.map((key) => previous.get(key)).find(Boolean);
+    const changed = !existing || sessionEventUpgradesExisting(existing, event);
+    for (const key of keys) observed.set(key, changed ? event : existing);
+    return changed;
+  };
 
   // Replay the tail first so any caller getting the iterator catches
   // up with the in-flight context before live events start arriving.
-  const initial = dedupeSessionEvents(await _readEvents(sessionId, { targetPath, tail: initialTail }));
+  const baseline = dedupeSessionEvents(await _readEvents(sessionId, { targetPath, tail: 0 }));
+  for (const event of baseline) observe(event);
+  const initial = Number(initialTail) > 0 ? baseline.slice(-Math.floor(Number(initialTail))) : baseline;
   for (const event of initial) {
-    const candidate = event.ts || event.timestamp;
-    if (candidate) lastTs = candidate;
     yield { source: "fs", event };
   }
 
@@ -115,11 +121,15 @@ export async function* watchLocalStream({
       await pendingPromise;
       if (aborted()) break;
 
-      const events = await _readEvents(sessionId, { targetPath, tail: 0, since: lastTs });
+      // Revisions retain the original timestamp. Identity + monotonic revision,
+      // not wall time, determines whether a local projection is new.
+      const events = dedupeSessionEvents(await _readEvents(sessionId, { targetPath, tail: 0 }));
+      // The NDJSON stream rotates at its configured event cap. Retire identities
+      // no longer in that file instead of accumulating a daemon-lifetime cache.
+      const previous = observed;
+      observed = new Map();
       for (const event of events) {
-        const candidate = event.ts || event.timestamp;
-        if (lastTs && candidate && candidate <= lastTs) continue;
-        if (candidate) lastTs = candidate;
+        if (!observe(event, previous)) continue;
         queue.push({ source: "fs", event });
       }
       while (queue.length > 0) {
@@ -274,7 +284,7 @@ export async function* mergeLiveSources({
         : watchRemoteStream({ apiBaseUrl, sessionId, token, signal })
       : null;
 
-  const seen = new Set();
+  const seen = new Map();
   const queue = [];
   let pending = null;
 
@@ -320,14 +330,16 @@ export async function* mergeLiveSources({
     if (item.event) {
       const key = eventKey(item.event);
       if (key) {
-        if (sessionEventHasKnownIdentity(item.event, seen) || seen.has(key)) continue;
-        addSessionEventIdentityKeys(seen, item.event);
-        seen.add(key);
+        const keys = sessionEventIdentityKeys(item.event);
+        const existing = keys.map((identity) => seen.get(identity)).find(Boolean) || seen.get(key);
+        if (existing && !sessionEventUpgradesExisting(existing, item.event)) continue;
+        for (const identity of keys) seen.set(identity, item.event);
+        seen.set(key, item.event);
         if (seen.size > 5000) {
           // bound memory — older keys roll out
           const trimmed = Array.from(seen).slice(-2500);
           seen.clear();
-          for (const k of trimmed) seen.add(k);
+          for (const [identity, event] of trimmed) seen.set(identity, event);
         }
       }
     }
