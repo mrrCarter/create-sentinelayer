@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.42.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.41.0...v0.42.0) (2026-10-04)
+
+
+### Features
+
+* **board:** deterministic done-gate with a third state that refuses to collapse ([#807](https://github.com/mrrCarter/create-sentinelayer/issues/807)) ([6bafb85](https://github.com/mrrCarter/create-sentinelayer/commit/6bafb85c89a0a2e8a69e1f51119ba31fd9877edb))
+* **board:** evidence resolvers + `sl board check` — the done-gate now runs ([#810](https://github.com/mrrCarter/create-sentinelayer/issues/810)) ([899aeb3](https://github.com/mrrCarter/create-sentinelayer/commit/899aeb37841cc4be1b6d48e7fadebed16b85a32d))
+* **checkpoints:** origin:service|agent honesty — stop auto-claiming the service ([#800](https://github.com/mrrCarter/create-sentinelayer/issues/800)) ([de254a4](https://github.com/mrrCarter/create-sentinelayer/commit/de254a4df0179d4ebc67453cad1d76e001eecddc))
+* **engram:** §19.1 canonical encoder — conformance gate (i) flips GREEN ([#804](https://github.com/mrrCarter/create-sentinelayer/issues/804)) ([9e7c7ef](https://github.com/mrrCarter/create-sentinelayer/commit/9e7c7ef803774d95c2cfb37c5d7353dd7b8ec73b))
+* **engram:** build lifecycle so a partial index refuses to answer ([#806](https://github.com/mrrCarter/create-sentinelayer/issues/806)) ([52e3f04](https://github.com/mrrCarter/create-sentinelayer/commit/52e3f04b62f7b03f0d4e29b298fcc20028cd7e02))
+* **engram:** document ingestion with span-level provenance ([#805](https://github.com/mrrCarter/create-sentinelayer/issues/805)) ([806e260](https://github.com/mrrCarter/create-sentinelayer/commit/806e26007fb9921b9a5bdd8b29ad59894a485ded))
+* **engram:** invoke the readiness gate — a half-built index now actually refuses ([#808](https://github.com/mrrCarter/create-sentinelayer/issues/808)) ([d592bd2](https://github.com/mrrCarter/create-sentinelayer/commit/d592bd27f63b1758acda078a53ff61182df37fa2))
+* **engram:** the document ingest path — BUILDING becomes reachable ([#809](https://github.com/mrrCarter/create-sentinelayer/issues/809)) ([29563e7](https://github.com/mrrCarter/create-sentinelayer/commit/29563e7fbfe818d412e6e80cbe8b7f9d433d13d1))
+* **session:** `sl session ticket` — claim, renew, release and submit backlog work ([fe95286](https://github.com/mrrCarter/create-sentinelayer/commit/fe95286bc8bfb16decdb491bca59bd67ad3bd6ad))
+* **session:** add guarded message edits and revision-aware wakes ([4b461f3](https://github.com/mrrCarter/create-sentinelayer/commit/4b461f3499a7fe32d33b8ba00972019370ec03bd))
+* **session:** author-bound message edits and native correction wakes ([f1ef9f8](https://github.com/mrrCarter/create-sentinelayer/commit/f1ef9f874c2931235679eb60266d7c9cf0e5193d))
+* **session:** goal-and-scope admission in `sl session join` ([295893c](https://github.com/mrrCarter/create-sentinelayer/commit/295893c5cc604dcbb3a0ef34947d6434f0fb59cc))
+* **session:** sl session ticket — claim, renew, release and submit backlog work (T2 CLI) ([9a32dd8](https://github.com/mrrCarter/create-sentinelayer/commit/9a32dd83a8a1bd27157af8651611696082a1af0d))
+
+
+### Bug Fixes
+
+* **admission:** "__proto__" keys keep their bytes in the claim preimage ([1a8597a](https://github.com/mrrCarter/create-sentinelayer/commit/1a8597ae416ea33c4e644f8182d0035c19f633d5))
+* **admission:** agent commands run on their admission, never the human token ([9063d7c](https://github.com/mrrCarter/create-sentinelayer/commit/9063d7c00ca587bd6736ed33e2c222e3ac3f545a))
+* **admission:** one canonical agent id for authorization and execution ([51b57aa](https://github.com/mrrCarter/create-sentinelayer/commit/51b57aaac72365e40bd46a93098198f465f06fc6))
+* **admission:** one choke point by actor, live join readiness, null tombstones ([6ae95c3](https://github.com/mrrCarter/create-sentinelayer/commit/6ae95c3fdb1394781bc9f70bfc79d4611dba6813))
+* **admission:** one validated identity through every join entry ([f588cea](https://github.com/mrrCarter/create-sentinelayer/commit/f588ceaaedadd6a3b9c2dc0ac295b2b22881a51d))
+* **admission:** the identity that authorizes is the identity that executes ([80c9c6e](https://github.com/mrrCarter/create-sentinelayer/commit/80c9c6e19384dda15027c1a0858018dbb8d1014b))
+* **daemon:** Senti daemon entry is the CLI, never the running script (fork bomb) ([eccce84](https://github.com/mrrCarter/create-sentinelayer/commit/eccce844e376e99768daee8eff84190459e9125d))
+* **daemon:** the Senti daemon entry is the CLI, never the running script ([3a844c4](https://github.com/mrrCarter/create-sentinelayer/commit/3a844c4a8fda5689cffa20a8204beaa615cfe58e))
+* **review:** close investor DD stream on failure ([#782](https://github.com/mrrCarter/create-sentinelayer/issues/782)) ([b69f577](https://github.com/mrrCarter/create-sentinelayer/commit/b69f577396731635fbae4ad95458e7b82ab623e7))
+* **session:** bound startup and release dangling HTTP bodies ([c852c29](https://github.com/mrrCarter/create-sentinelayer/commit/c852c2921a2b22dfd63085f2adeb6bd0fb801bd9))
+* **session:** bound startup context and own remote request lifecycles ([101a41a](https://github.com/mrrCarter/create-sentinelayer/commit/101a41a4e832495bea26d0ecf198f61d75b68f06))
+* **session:** clarify recap source windows ([#766](https://github.com/mrrCarter/create-sentinelayer/issues/766)) ([91a07aa](https://github.com/mrrCarter/create-sentinelayer/commit/91a07aaece789d50f53a540e118e4868c4dcfc42))
+* **session:** preserve human edit provenance and hermetic CI browsers ([6a9d3f3](https://github.com/mrrCarter/create-sentinelayer/commit/6a9d3f382fdc9954bec32f80ccf4bd9067d3ee4f))
+* **session:** resume the SSE stream after a reconnect instead of losing events ([#803](https://github.com/mrrCarter/create-sentinelayer/issues/803)) ([dce96e0](https://github.com/mrrCarter/create-sentinelayer/commit/dce96e070d3be54c24af5a286f1e204d4ad03417))
+* **session:** serialize idempotent room materialization with stream writers ([a756aea](https://github.com/mrrCarter/create-sentinelayer/commit/a756aeabac2812f160d41bc8cc2487f8ce0826ce))
+* **tickets:** the list is the complete snapshot, not the bounded board page ([ac7298e](https://github.com/mrrCarter/create-sentinelayer/commit/ac7298ea7759992bbe7b9fedb8521b17668d0252))
+* **tickets:** the snapshot continuation is exactly the last id returned ([48ed07b](https://github.com/mrrCarter/create-sentinelayer/commit/48ed07b54107de4db25fb827e15b123672516474))
+* **tickets:** validate every snapshot page; ticket work never acts on a label ([f0d40ab](https://github.com/mrrCarter/create-sentinelayer/commit/f0d40ab65a36a401be73cc467f8966a1693696e0))
+
 ## [0.41.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.40.0...v0.41.0) (2026-08-05)
 
 
