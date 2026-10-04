@@ -783,7 +783,7 @@ async function runSessionDirectiveWatcher(daemonState) {
       if (!daemonState.running) {
         return;
       }
-      if (normalizeString(event.event) !== "session_message") {
+      if (normalizeString(event.event) !== "session_message" || Number(event.messageRevision || 1) > 1) {
         continue;
       }
       await maybeHandleTaskDirective(daemonState, event);

@@ -6,6 +6,7 @@ Deliver a deterministic, security-first CLI that scaffolds Sentinelayer artifact
 ## Scope
 - Stable command surface for scaffold + local governance commands.
 - Authenticated Senti session coordination surfaces, including CLI/MCP inbox polling and durable message writes.
+- Native authored-message/reply edits in `src/commands/session.js` and `src/session/sync.js`, with stable UUID/revision/capability envelopes in `src/events/schema.js`, immutable revision notifications, monotonic cache hydration, addressed/broadcast wakes, preserved audit history, and no historical directive replay. Delivery cursors and ACKs must remain distinct from actual human viewing; the redundant standalone view command is removed.
 - Reproducible output artifacts under configurable output roots.
 - CI workflows enforcing quality and Omar gate checks.
 - Hosted Omar Action integration with immutable action provenance, live-LLM execution evidence, artifact integrity validation, and consumer-owned severity policy.

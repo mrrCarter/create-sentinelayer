@@ -25,6 +25,9 @@ export function sessionEventHasDurableCursor(event = {}) {
 }
 
 export function sessionEventUpgradesExisting(existingEvent = {}, candidateEvent = {}) {
+  const existingRevision = Number(existingEvent.messageRevision ?? 1);
+  const candidateRevision = Number(candidateEvent.messageRevision ?? 1);
+  if (candidateRevision !== existingRevision) return candidateRevision > existingRevision;
   const existingSequence = readSessionEventSequence(existingEvent);
   const candidateSequence = readSessionEventSequence(candidateEvent);
   if (candidateSequence > 0 && existingSequence <= 0) {
@@ -85,7 +88,10 @@ function mergeObjectPreferringPrimary(primaryValue, secondaryValue) {
 function mergeDuplicateEvent(existingEvent = {}, candidateEvent = {}) {
   const existingScore = eventDurabilityScore(existingEvent);
   const candidateScore = eventDurabilityScore(candidateEvent);
-  const candidateIsPrimary = candidateScore > existingScore || (
+  const existingRevision = Number(existingEvent.messageRevision ?? 1);
+  const candidateRevision = Number(candidateEvent.messageRevision ?? 1);
+  const differentRevision = existingRevision !== candidateRevision;
+  const candidateIsPrimary = differentRevision ? candidateRevision > existingRevision : candidateScore > existingScore || (
     candidateScore === existingScore &&
     sessionEventUpgradesExisting(existingEvent, candidateEvent)
   ) || (
@@ -99,7 +105,8 @@ function mergeDuplicateEvent(existingEvent = {}, candidateEvent = {}) {
     ...secondaryEvent,
     ...primaryEvent,
     agent: mergeObjectPreferringPrimary(primaryEvent.agent, secondaryEvent.agent),
-    payload: mergeObjectPreferringPrimary(primaryEvent.payload, secondaryEvent.payload),
+    // Revision snapshots replace, rather than merge, the body/routing fields.
+    payload: differentRevision ? primaryEvent.payload : mergeObjectPreferringPrimary(primaryEvent.payload, secondaryEvent.payload),
   };
 }
 

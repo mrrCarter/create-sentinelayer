@@ -16,8 +16,10 @@
 // transitive graph (auth/sync/`open`/...) into the wake daemon. The matcher
 // here is small enough to own.
 
+import { messageRevision, sessionMessageEditSnapshot, sessionMessageRoutingEvent } from "../message-edits.js";
+
 const BROADCAST_RECIPIENTS = new Set(["*", "all", "broadcast", "everyone", "anyone", "agents", "all-agents"]);
-const DEFAULT_WAKE_EVENT_TYPES = new Set(["session_message", "help_request"]);
+const DEFAULT_WAKE_EVENT_TYPES = new Set(["session_message", "help_request", "session_message_edited"]);
 const MAX_WAKE_MESSAGE_CHARS = 16_000;
 
 function requireNonEmptyString(value, label) {
@@ -98,7 +100,7 @@ function defaultFormatMessage(event, agentId) {
   const author = agentIdOf(event) || "unknown";
   const text = event?.payload?.message ?? event?.message ?? "";
   const body = typeof text === "string" ? text : "";
-  const head = `Senti wake for ${agentId}: new message from ${author}.`;
+  const head = `Senti wake for ${agentId}: ${event.event === "session_message_edited" ? "edited message" : "new message"} from ${author}.`;
   const combined = body ? `${head}\n\n${body}` : head;
   return combined.length > MAX_WAKE_MESSAGE_CHARS ? combined.slice(0, MAX_WAKE_MESSAGE_CHARS) : combined;
 }
@@ -128,18 +130,21 @@ export function createResolveTarget({
     // Only wake on real message events; acks/reactions/views/system are skips.
     const type = eventTypeOf(event);
     if (!type || !wakeEventTypes.has(type)) return null;
+    if (type === "session_message" && messageRevision(event) > 1) return null;
+    if (type === "session_message_edited" && !sessionMessageEditSnapshot(event)) return null;
+    const routed = sessionMessageRoutingEvent(event);
 
     // No self-wake: never wake the agent on its own message. Normalize both
     // sides (handles @-prefix / casing / punctuation) so the loop-guard can't
     // be slipped by a non-canonical author id.
-    const author = agentIdOf(event);
+    const author = agentIdOf(routed);
     if (author && normalizeComparableId(author) === selfLower) return null;
 
     // Routing: directed-to-me / broadcast / untargeted-room wakes us; a message
     // aimed at a different specific agent is intentionally unroutable.
-    if (!matchesAgent(event, selfLower)) return null;
+    if (!matchesAgent(routed, selfLower)) return null;
 
-    return { host: hostName, sessionId: resumeId, message: formatMessage(event, selfId) };
+    return { host: hostName, sessionId: resumeId, message: formatMessage({ ...routed, event: type }, selfId) };
   };
 }
 

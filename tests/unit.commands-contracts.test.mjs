@@ -512,9 +512,11 @@ test("Unit command contracts: session exposes D2 ensure and resume controls", ()
   assertCommandHasOption(comment, "--agent <id>");
   assertCommandHasOption(comment, "--idempotency-key <key>");
 
-  const view = getCommandByPath(program, "session view");
-  assertCommandHasOption(view, "--agent <id>");
-  assertCommandHasOption(view, "--idempotency-key <key>");
+  assert.equal(program.commands.find((item) => item.name() === "session").commands.some((item) => item.name() === "view"), false);
+  const edit = getCommandByPath(program, "session edit");
+  assertCommandHasOption(edit, "--agent <id>");
+  assertCommandHasOption(edit, "--idempotency-key <key>");
+  assertCommandHasOption(edit, "--expected-revision <n>");
 
   const read = getCommandByPath(program, "session read");
   assertCommandHasOption(read, "--before-sequence <n>");

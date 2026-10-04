@@ -171,6 +171,30 @@ test("Unit session tasks: assign -> accepted -> completed round-trip emits canon
   }
 });
 
+test("Unit session tasks: revised historical directives and their edit notifications do not execute assignments", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "sl-task-edit-replay-"));
+  let sessionId = "";
+  try {
+    await seedWorkspace(tempRoot);
+    const session = await createSession({ targetPath: tempRoot, ttlSeconds: 120 });
+    sessionId = session.sessionId;
+    await registerAgent(sessionId, { agentId: "codex-author", model: "gpt-5.4", role: "coder", targetPath: tempRoot });
+    await registerAgent(sessionId, { agentId: "recipient", model: "gpt-5.4", role: "coder", targetPath: tempRoot });
+    await startSenti(sessionId, { targetPath: tempRoot, autoStart: false });
+    const current = createAgentEvent({ event: "session_message", agentId: "codex-author", id: "edited-message", sessionId,
+      messageRevision: 2, editedAt: new Date().toISOString(), payload: { message: "assign: @recipient [P2] This edited text must not run" } });
+    await appendToStream(sessionId, current, { targetPath: tempRoot, syncRemote: false });
+    await appendToStream(sessionId, createAgentEvent({ event: "session_message_edited", agentId: "codex-author", id: "edit-notification", sessionId,
+      payload: { schema: "session-message-edit:v1", targetMessageId: current.id, targetActionId: null, targetSequenceId: 42, messageRevision: 2, event: current, reply: null } }), { targetPath: tempRoot, syncRemote: false });
+    await sleep(350);
+    assert.equal((await readStream(sessionId, { targetPath: tempRoot, tail: 0 })).some((event) => event.event === "task_assign"), false);
+    assert.equal((await listSessionTasks(sessionId, { targetPath: tempRoot })).tasks.length, 0);
+  } finally {
+    if (sessionId) await stopSenti(sessionId, { targetPath: tempRoot });
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("Unit session tasks: wildcard assign routes to highest-scoring agent matching role filter", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-tasks-wildcard-"));
   let sessionId = "";

@@ -8,6 +8,7 @@ import {
   sessionEventIdentityKeys,
 } from "./event-identity.js";
 import { enrichEventWithMentions } from "./mentions.js";
+import { messageRevision, projectSessionMessageEdits } from "./message-edits.js";
 import { resolveSessionPaths } from "./paths.js";
 import { redactEventPayload } from "./redact.js";
 import { fetchSessionFromApi, listSessionsFromApi, syncSessionEventToApi } from "./sync.js";
@@ -376,7 +377,8 @@ function eventsShareIdentity(left = {}, right = {}) {
 }
 
 async function appendOrMergeCurrentStreamEvent(paths, canonicalEvent, { mergeExisting = false } = {}) {
-  if (!mergeExisting) {
+  // Keep prior revisions in the raw audit log. Readers project the latest body.
+  if (!mergeExisting || messageRevision(canonicalEvent) > 1) {
     await fsp.appendFile(paths.streamPath, `${JSON.stringify(canonicalEvent)}\n`, "utf-8");
     return;
   }
@@ -508,7 +510,7 @@ export async function readStream(
   { tail = 20, since = null, targetPath = process.cwd() } = {}
 ) {
   const paths = resolveSessionPaths(sessionId, { targetPath });
-  const events = await readAllEvents(paths);
+  const events = projectSessionMessageEdits(await readAllEvents(paths));
   const filtered = filterBySince(events, since);
   const normalizedTail = Number(tail);
   if (!Number.isFinite(normalizedTail) || normalizedTail <= 0) {

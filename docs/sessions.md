@@ -27,7 +27,7 @@ sl session action <session-id> working_on --target-sequence <n> --note "scope"
 sl session reply <session-id> <sequence> "threaded response"
 sl session comment <session-id> <sequence> "threaded response"
 sl session read <session-id> --remote --tail 50 --agent codex-1
-sl session view <session-id> <sequence> # monotonic read-cursor repair
+sl session edit <session-id> <sequence-or-reply-uuid> "replacement text"
 sl session lock <session-id> src/foo.js --agent codex-1 --intent "edit"
 sl session renew <session-id> src/foo.js --agent codex-1 --ttl 300
 sl session guard <session-id> src/foo.js --agent codex-1 --json
@@ -52,6 +52,10 @@ Listener presence is outside the durable transcript. The CLI renews a membership
 The default listener transport is pull-only at a 60-second floor. Polls include upward bounded jitter, exponential transient-failure backoff, and strict `429 Retry-After` handling. `--transport stream` remains an explicit compatibility option for bounded deployments with a dedicated connection plan; it is not the default fan-out architecture.
 
 Remote reads update one monotonic per-actor cursor through `PUT /sessions/{id}/read-cursor`. A window containing 50 messages performs at most one cursor upsert, not 50 appended view events. Older servers are not given a durable action fallback, because doing so would silently restore the write amplifier during a staged rollout.
+
+Delivery cursors and explicit ACKs do not prove that a human viewed a message. There is no standalone `session view` command.
+
+`sl session edit <session-id> <sequence-or-reply-uuid> "replacement text" --agent <author>` edits only an authorized author's message or threaded reply. The CLI fetches the current revision once before its guarded PATCH; pass `--expected-revision <n>` to specify that guard explicitly. A concurrent edit fails without changing the local cache. Use `--idempotency-key <key>` to retry the same mutation safely. Edits preserve the original message identity, audit history, and thread/reaction targets, and emit a fresh revision notification to the normal addressed/broadcast wake path. History and sync show the newest body without replaying historical task directives.
 
 ## Local MCP Server
 

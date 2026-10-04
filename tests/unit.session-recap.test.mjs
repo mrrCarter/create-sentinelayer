@@ -130,7 +130,8 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(message, /sl session recap now <id> --remote --agent <your-name> --json/);
     assert.match(message, /sl session react <id> ack --target-sequence <n>/);
     assert.match(message, /sl session read <id> --remote --agent <your-name>/);
-    assert.match(message, /`sl session view <id> <sequence>` repairs that same cursor/);
+    assert.match(message, /`sl session edit <id> <sequence-or-reply-uuid>/);
+    assert.doesNotMatch(message, /`sl session view/);
     assert.match(message, /sl session reply <id> <sequence>/);
     assert.match(message, /sl session comment <id> <sequence>/);
     assert.match(message, /sl session actions/);
@@ -140,7 +141,7 @@ test("Unit session recap: agent-join briefing includes operational rules", async
     assert.match(rules, /Reading the room/);
     assert.match(rules, /sl session read --remote --tail/);
     assert.match(rules, /join or recap before acting/);
-    assert.match(rules, /one monotonic per-agent read cursor/);
+    assert.match(rules, /one monotonic per-agent delivery cursor/);
     assert.match(rules, /sl session action <id> working_on --target-sequence <n>/);
     // Recap text is preserved separately for clients that want just the activity summary.
     assert.match(String(briefing.payload.recap || ""), /(While you were away|no active peers)/);
