@@ -8,6 +8,7 @@ import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { isSessionControlEvent } from "./control-events.js";
 import { createSessionMutationHeaders } from "./invitations.js";
+import { messageRevision } from "./message-edits.js";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
 
 // No-op outside tests; inside a test process (or a child it spawned) every fetch
@@ -880,6 +881,18 @@ function buildHumanRelayEvent(sessionId, message = {}) {
     agentId,
     sessionId,
     ts,
+    // The compatibility human-poll lane must preserve canonical revision and
+    // identity too; otherwise an edited body is mistaken for a fresh directive
+    // when its paired durable edit notification has not reached this poller.
+    id: message.eventId || message.event_id || undefined,
+    eventId: message.eventId || message.event_id || undefined,
+    cursor: message.cursor || undefined,
+    sequenceId: message.sequenceId ?? message.sequence_id,
+    messageRevision: messageRevision(message),
+    editedAt: message.editedAt,
+    editedBy: message.editedBy,
+    canEdit: message.canEdit,
+    revisionEvidence: message.revisionEvidence,
     payload: {
       message: sanitization.message,
       channel: "session",

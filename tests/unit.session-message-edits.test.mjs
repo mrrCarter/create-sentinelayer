@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { editSessionMessage } from "../src/session/sync.js";
+import { editSessionMessage, pollHumanMessages } from "../src/session/sync.js";
 import { createSessionMutationCsrfToken } from "../src/session/invitations.js";
 import { createAgentEvent, normalizeAgentEvent } from "../src/events/schema.js";
 import { dedupeSessionEvents, sessionEventUpgradesExisting } from "../src/session/event-identity.js";
@@ -38,6 +38,32 @@ async function withRemote(action) {
 }
 const auth = async () => ({ token: fixtureToken, apiUrl: "http://127.0.0.1:3000" });
 const json = (payload, status = 200) => new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
+
+test("human compatibility poll preserves current revision identity and cannot wake a historical directive", async () => {
+  const result = await pollHumanMessages("human-edit-poll", {
+    resolveAuthSession: auth,
+    fetchImpl: async () => json({ messages: [{
+      id: "human-client-id", eventId: messageId, sequenceId: 42,
+      cursor: "seq:42", ts: original.ts, senderId: "operator", message: "corrected human text",
+      messageRevision: 2, editedAt: revised.editedAt, editedBy: { actorKind: "human", actorId: "operator" },
+      canEdit: false, revisionEvidence: revised.revisionEvidence,
+    }] }),
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.events.length, 1);
+  const [event] = result.events;
+  assert.equal(event.id, messageId);
+  assert.equal(event.eventId, messageId);
+  assert.equal(event.sequenceId, 42);
+  assert.equal(event.cursor, "seq:42");
+  assert.equal(event.messageRevision, 2);
+  assert.equal(event.editedAt, revised.editedAt);
+  assert.deepEqual(event.editedBy, { actorKind: "human", actorId: "operator" });
+  assert.deepEqual(event.revisionEvidence, revised.revisionEvidence);
+  assert.equal(event.canEdit, false);
+  const resolver = createResolveTarget({ sessionId: "human-edit-poll", agentId: "verity", host: "codex" });
+  assert.equal(await resolver(event), null);
+});
 
 test("native edit: one current GET resolves sequence and revision, then signed guarded PATCH", async () => withRemote(async () => {
   const calls = [];
