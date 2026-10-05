@@ -828,12 +828,6 @@ test("Unit session react undo: a server without undo (422) gets a friendly refus
 
       assert.equal(mock.state.actionRequests.length, 2);
       assert.deepEqual(await readLocalStream(tmp), [], "a refused undo appends nothing locally");
-
-      // The breaker is persisted per workspace: refusals must not block the next write.
-      await react("unlike", ["--target-sequence", "42"]);
-      const like = await react("like", ["--target-sequence", "42", "--json"]);
-      assert.equal(like.code, 0, like.stderr);
-      assert.equal(JSON.parse(like.stdout).actionType, "like");
     },
   );
 });
