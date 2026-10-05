@@ -2,7 +2,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn as defaultSpawn } from "node:child_process";
 
 import pc from "picocolors";
@@ -564,9 +564,20 @@ const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "reply",
   "like",
   "dislike",
+  "unlike",
+  "undislike",
   "disregard",
   "view",
 ]);
+
+// Reactions are per-actor slots the API folds from append-only rows: `unlike` and
+// `undislike` retract the CALLER's own active like/dislike (sentinelayer-api#914).
+const SESSION_REACTION_ACTION_TYPES = new Set(["like", "dislike", "unlike", "undislike"]);
+const SESSION_REACTION_UNDO_TARGETS = new Map([
+  ["unlike", "like"],
+  ["undislike", "dislike"],
+]);
+const SESSION_REACT_COMMAND_TYPES = Object.freeze(["ack", ...SESSION_REACTION_ACTION_TYPES]);
 
 const SESSION_MESSAGE_ACTION_ALIASES = new Map([
   ["comment", "reply"],
@@ -600,6 +611,16 @@ const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
     description: "Negative lightweight feedback. Use --target-action-id <uuid> to react to a threaded reply.",
   },
   {
+    type: "unlike",
+    command: "sl session react <id> unlike --target-sequence <n>",
+    description: "Retract your own active like. Refused when you have none; needs a server with reaction undo.",
+  },
+  {
+    type: "undislike",
+    command: "sl session react <id> undislike --target-sequence <n>",
+    description: "Retract your own active dislike. Refused when you have none; needs a server with reaction undo.",
+  },
+  {
     type: "disregard",
     command: "sl session action <id> disregard --target-sequence <n>",
     description: "Mark a message as intentionally ignored or superseded.",
@@ -630,7 +651,7 @@ function shortSha256(value) {
 
 function actionEventType(actionType) {
   if (actionType === "reply") return "session_reply";
-  if (actionType === "like" || actionType === "dislike") return "session_reaction";
+  if (SESSION_REACTION_ACTION_TYPES.has(actionType)) return "session_reaction";
   return "session_action";
 }
 
@@ -979,7 +1000,39 @@ function defaultActionIdempotencyKey({
       : `cursor:${normalizeString(targetCursor)}`;
   const noteHash = note ? shortSha256(note) : "none";
   const actor = normalizeString(agentId) || "user";
-  return `cli:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${noteHash}`;
+  const type = normalizeString(actionType).toLowerCase();
+  const key = `cli:${type}:${target}:${actor}:${noteHash}`;
+  // A reaction toggles: like -> unlike -> like are three intents on one target, and
+  // the API REPLAYS a reused key instead of acting on it (#914 reaction contract), so
+  // a derived key would make the second like a silent no-op. Each reaction invocation
+  // therefore gets its own key; an explicit --idempotency-key still pins a retry.
+  return SESSION_REACTION_ACTION_TYPES.has(type) ? `${key}:${randomBytes(8).toString("hex")}` : key;
+}
+
+// The two expected refusals of an undo, in words a person can act on. Anything else
+// returns null and keeps the generic failure path.
+function describeReactionUndoRefusal(actionType, result = {}, { agentId = "", targetLabel = "target" } = {}) {
+  const reaction = SESSION_REACTION_UNDO_TARGETS.get(actionType);
+  if (!reaction) return null;
+  const body = result.error && typeof result.error === "object" ? result.error : {};
+  const validationErrors = Array.isArray(body.detail) ? body.detail : [];
+  // A server that predates #914 rejects the action value itself in request validation.
+  if (
+    result.status === 422 &&
+    validationErrors.some((item) => Array.isArray(item?.loc) && item.loc.includes("actionType"))
+  ) {
+    return {
+      reason: "undo_unsupported",
+      message: `This server doesn't support undo yet (no '${actionType}' action). Nothing was changed.`,
+    };
+  }
+  if (result.status === 409 && normalizeString(body.error?.code) === "REACTION_NOT_ACTIVE") {
+    return {
+      reason: "reaction_not_active",
+      message: `Nothing to undo: ${agentId || "this agent"} has no active ${reaction} on ${targetLabel}.`,
+    };
+  }
+  return null;
 }
 
 function sessionReadViewTarget(event = {}) {
@@ -4307,6 +4360,37 @@ export function registerSessionCommand(program) {
       idempotencyKey,
       timeoutMs: 15_000,
     });
+    const refusal = result.ok
+      ? null
+      : describeReactionUndoRefusal(normalizedActionType, result, {
+          agentId,
+          targetLabel: targetActionId
+            ? `reply ${targetActionId}`
+            : targetSequenceId
+              ? `#${targetSequenceId}`
+              : targetCursor,
+        });
+    if (refusal) {
+      // An expected answer, not a crash: report it like the other refused session
+      // commands (message + non-zero exit code), with no stack trace.
+      const refusalPayload = {
+        command: commandName,
+        targetPath,
+        sessionId: normalizedSessionId,
+        actionType: normalizedActionType,
+        ok: false,
+        reason: refusal.reason,
+        status: result.status,
+        message: refusal.message,
+      };
+      process.exitCode = 1;
+      if (shouldEmitJson(options, command)) {
+        console.log(JSON.stringify(refusalPayload, null, 2));
+      } else {
+        console.error(pc.yellow(refusal.message));
+      }
+      return refusalPayload;
+    }
     if (!result.ok || !result.action) {
       throw new Error(`Session action failed (${result.reason || "unknown"}).`);
     }
@@ -4390,7 +4474,7 @@ export function registerSessionCommand(program) {
   session
     .command("action <sessionId> <actionType>")
     .description(
-      "Create a message action for a target session event (ack, working_on, reply/comment, like, dislike, disregard, view)",
+      "Create a message action for a target session event (ack, working_on, reply/comment, like, dislike, unlike, undislike, disregard, view)",
     )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
@@ -4406,7 +4490,9 @@ export function registerSessionCommand(program) {
 
   session
     .command("react <sessionId> <reaction>")
-    .description("React to or acknowledge a target session event with ack, like, or dislike")
+    .description(
+      "React to or acknowledge a target session event with ack, like, or dislike; retract your own like/dislike with unlike/undislike",
+    )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
@@ -4416,8 +4502,8 @@ export function registerSessionCommand(program) {
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, reaction, options, command) => {
       const normalizedReaction = normalizeSessionMessageActionType(reaction);
-      if (!["ack", "like", "dislike"].includes(normalizedReaction)) {
-        throw new Error("reaction must be one of: ack, like, dislike.");
+      if (!SESSION_REACT_COMMAND_TYPES.includes(normalizedReaction)) {
+        throw new Error(`reaction must be one of: ${SESSION_REACT_COMMAND_TYPES.join(", ")}.`);
       }
       await runMessageActionCommand({
         sessionId,

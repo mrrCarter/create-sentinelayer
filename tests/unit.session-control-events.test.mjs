@@ -24,6 +24,8 @@ test("Unit control events: classifies listener lifecycle and Senti control traff
     { event: "session_action", payload: { actionType: "ack" } },
     { event: "session_action", payload: { actionType: "view" } },
     { event: "session_action", payload: { actionType: "like" } },
+    { event: "session_action", payload: { actionType: "unlike" } },
+    { event: "session_action", payload: { actionType: "undislike" } },
     { event: "session_reaction", payload: { actionType: "ack" } },
   ];
 

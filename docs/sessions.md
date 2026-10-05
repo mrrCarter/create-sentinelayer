@@ -29,6 +29,7 @@ sl session access revoke <session-id> <admission-id> --reason "Work complete"
 sl session say --id <session-id> --from codex-1 --message "PR #123 opened"
 sl session actions
 sl session react <session-id> ack --target-sequence <n>
+sl session react <session-id> unlike --target-sequence <n>
 sl session action <session-id> working_on --target-sequence <n> --note "scope"
 sl session reply <session-id> <sequence> "threaded response"
 sl session comment <session-id> <sequence> "threaded response"
@@ -84,6 +85,8 @@ The default listener transport is pull-only at a 60-second floor. Polls include 
 Remote reads update one monotonic per-actor cursor through `PUT /sessions/{id}/read-cursor`. A window containing 50 messages performs at most one cursor upsert, not 50 appended view events. Older servers are not given a durable action fallback, because doing so would silently restore the write amplifier during a staged rollout.
 
 Delivery cursors and explicit ACKs do not prove that a human viewed a message. There is no standalone `session view` command.
+
+`sl session react <session-id> unlike|undislike` retracts the authoring agent's own active like or dislike; like and dislike are independent slots, so retracting one never touches the other. Each reaction invocation sends a fresh idempotency key (a reused key would replay the earlier intent instead of re-reacting); pass `--idempotency-key <key>` only to retry the same attempt. With nothing active to retract the server answers `409 REACTION_NOT_ACTIVE` and the CLI prints "Nothing to undo" and exits 1. A server without reaction undo rejects the action with `422`; the CLI says the server doesn't support undo yet and exits 1. Neither case changes anything.
 
 `sl session edit <session-id> <sequence-or-reply-uuid> "replacement text" --agent <author>` edits only an authorized author's message or threaded reply. The CLI fetches the current revision once before its guarded PATCH; pass `--expected-revision <n>` to specify that guard explicitly. A concurrent edit fails without changing the local cache. Use `--idempotency-key <key>` to retry the same mutation safely. Edits preserve the original message identity, audit history, and thread/reaction targets, and emit a fresh revision notification to the normal addressed/broadcast wake path. History and sync show the newest body without replaying historical task directives.
 

@@ -1334,6 +1334,42 @@ test("Unit session sync: createSessionMessageAction does not wait on stalled err
   assert.ok(Date.now() - startedAt < 500, "non-OK response bodies must not delay status handling");
 });
 
+test("Unit session sync: createSessionMessageAction keeps 409/422 refusals out of the circuit breaker", async () => {
+  const auth = async () => ({ token: "tok_actions", apiUrl: "https://api.sentinelayer.com/" });
+  const writeWith = (status, body, index) =>
+    createSessionMessageAction("sess-action-refusals", {
+      actionType: "unlike",
+      targetSequenceId: 42,
+      idempotencyKey: `unlike-${status}-${index}`,
+      resolveAuthSession: auth,
+      fetchImpl: async () => ({ ok: false, status, json: async () => body }),
+      nowMs: () => 1_700_000_470_300,
+    });
+
+  for (const [status, body] of [
+    [422, { detail: [{ type: "value_error", loc: ["body", "actionType"], msg: "unsupported message action type" }] }],
+    [409, { error: { code: "REACTION_NOT_ACTIVE", message: "no active like", request_id: "req-1" } }],
+  ]) {
+    resetSessionSyncStateForTests();
+    for (let index = 0; index < 4; index += 1) {
+      const result = await writeWith(status, body, index);
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, `api_${status}`, "a refusal never turns into circuit_breaker_open");
+      assert.equal(result.status, status);
+      assert.deepEqual(result.error, body, "the refusal body reaches the caller");
+    }
+  }
+
+  // Control: real server failures still open the breaker.
+  resetSessionSyncStateForTests();
+  const reasons = [];
+  for (let index = 0; index < 4; index += 1) {
+    reasons.push((await writeWith(500, {}, index)).reason);
+  }
+  assert.deepEqual(reasons, ["api_500", "api_500", "api_500", "circuit_breaker_open"]);
+  resetSessionSyncStateForTests();
+});
+
 test("Unit session sync: searchSessionEvents calls durable search endpoint", async () => {
   resetSessionSyncStateForTests();
   const calls = [];
