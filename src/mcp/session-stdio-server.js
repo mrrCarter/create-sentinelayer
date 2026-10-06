@@ -14,6 +14,11 @@ import { isSessionControlEvent } from "../session/control-events.js";
 import { buildObservations } from "../session/recall/observations.js";
 import { createMemoryService } from "../engram/index.js";
 import {
+  SESSION_REACTION_TYPES,
+  isSessionReactionType,
+  submitSessionReaction,
+} from "../session/reactions.js";
+import {
   createSessionMessageAction,
   listSessionMessageActions,
   pollSessionEvents,
@@ -44,9 +49,12 @@ const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "reply",
   "like",
   "dislike",
+  "unlike",
+  "undislike",
   "disregard",
   "view",
 ]);
+const SESSION_REACT_TYPES = Object.freeze(["ack", ...SESSION_REACTION_TYPES]);
 const SESSION_MESSAGE_ACTION_ALIASES = new Map([["comment", "reply"]]);
 
 function normalizeString(value) {
@@ -701,6 +709,25 @@ async function runSessionAction({
   const normalizedActionType = normalizeSessionMessageActionType(actionType || input.actionType || input.action_type);
   const target = requireSessionActionTarget(input);
   const normalizedNote = truncateText(note || input.note || input.message || input.text || "").text;
+  if (isSessionReactionType(normalizedActionType)) {
+    // The same path as the native CLI: canonical fail-closed admission, a fresh
+    // operation key per new intent (an explicit idempotencyKey is a retry), and a
+    // truthful outcome. The raw agent id is passed so a non-canonical spelling is
+    // refused rather than silently aliased.
+    return submitSessionReaction({
+      surface: "mcp",
+      sessionId,
+      agentId: normalizeString(input.agentId || input.agent_id || input.agent),
+      reaction: normalizedActionType,
+      ...target,
+      note: normalizedNote,
+      idempotencyKey: normalizeString(input.idempotencyKey || input.idempotency_key),
+      targetPath,
+      timeoutMs: normalizePositiveInteger(input.timeoutMs || input.timeout_ms, 15_000),
+      dryRun: Boolean(input.dryRun || input.dry_run),
+      createSessionMessageActionFn,
+    });
+  }
   const idempotencyKey =
     normalizeString(input.idempotencyKey || input.idempotency_key) ||
     defaultActionIdempotencyKey({
@@ -1105,8 +1132,8 @@ export function createSessionMcpToolHandlers({
 
     async session_react(input = {}) {
       const reaction = normalizeSessionMessageActionType(input.reaction || input.actionType || input.action_type);
-      if (!["ack", "like", "dislike"].includes(reaction)) {
-        throw new Error("reaction must be one of: ack, like, dislike.");
+      if (!SESSION_REACT_TYPES.includes(reaction)) {
+        throw new Error(`reaction must be one of: ${SESSION_REACT_TYPES.join(", ")}.`);
       }
       return runSessionAction({
         input,
@@ -1419,7 +1446,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_action",
     title: "Record Senti Session Action",
     description:
-      "Record a low-noise message action such as ack, working_on, disregard, like, dislike, or reply; view advances the monotonic read cursor instead of appending an action.",
+      "Record a low-noise message action such as ack, working_on, disregard, like, dislike, unlike, undislike, or reply; view advances the monotonic read cursor instead of appending an action.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1442,7 +1469,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_react",
     title: "React To Senti Message",
     description:
-      "Acknowledge or react to a target session event with ack, like, or dislike.",
+      "Acknowledge or react to a target session event with ack, like, or dislike, or retract your own like/dislike with unlike/undislike. Reactions report an outcome and an operation key; resend that key as idempotencyKey only to retry the same intent.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1450,7 +1477,7 @@ export const SESSION_MCP_TOOLS = Object.freeze([
       properties: {
         sessionId: { type: "string", minLength: 1 },
         agentId: { type: "string", minLength: 1 },
-        reaction: { type: "string", enum: ["ack", "like", "dislike"] },
+        reaction: { type: "string", enum: [...SESSION_REACT_TYPES] },
         targetSequenceId: { type: "integer", minimum: 1 },
         targetCursor: { type: "string" },
         targetActionId: { type: "string" },

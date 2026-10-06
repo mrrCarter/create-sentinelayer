@@ -3014,6 +3014,9 @@ export async function createSessionMessageAction(
       ok: Boolean(payload?.ok ?? true),
       reason: "",
       duplicate: Boolean(payload?.duplicate),
+      // A repeat reaction is a no-op whose key the server retains as a collapsed row
+      // (sentinelayer-api#914): the id of that evidence row.
+      collapsedActionId: normalizeString(payload?.collapsedActionId) || null,
       action: payload?.action && typeof payload.action === "object" ? payload.action : null,
     };
   } catch (error) {

@@ -393,6 +393,32 @@ test("`read` and `react` run on the admission too", async () => {
   assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), []);
 });
 
+// The local MCP server reaches the reaction path with no `sl session` argv, so runCli's
+// dispatch choke point never scopes it: the reaction path itself must.
+test("MCP reactions run on the agent's admission and refuse a tombstone before any request", async () => {
+  const { ws, api } = await joinAdmitted("mcp-reactor");
+  const { createSessionMcpToolHandlers } = await import("../src/mcp/session-stdio-server.js");
+  const handlers = createSessionMcpToolHandlers({ targetPath: ws });
+  const react = (reaction) =>
+    handlers.session_react({ sessionId: SID, agentId: "mcp-reactor", reaction, targetSequenceId: 1 });
+
+  resetSessionSyncStateForTests();
+  let mark = api.requests.length;
+  const live = await react("like");
+  assert.equal(live.ok, true, live.message);
+  assert.equal(live.outcome, "applied");
+  const sent = since(api, mark).filter((c) => /\/actions$/.test(c.path));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].bearer.startsWith("sladm_"), true, "the admission credential, never the human token");
+
+  await expire("mcp-reactor");
+  for (const reaction of ["like", "dislike", "unlike", "undislike"]) {
+    mark = api.requests.length;
+    await assert.rejects(react(reaction), /expired.*will not fall back/s, reaction);
+    assert.deepEqual(since(api, mark), [], `${reaction}: no request at all`);
+  }
+});
+
 test("`listen --transport stream` is refused for an admitted agent before any request", async () => {
   const { ws, api } = await joinAdmitted("listener-agent");
   const mark = api.requests.length;

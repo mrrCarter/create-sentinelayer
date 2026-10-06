@@ -2,7 +2,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn as defaultSpawn } from "node:child_process";
 
 import pc from "picocolors";
@@ -111,6 +111,11 @@ import {
   currentAdmittedAgent,
   withAgentAdmission,
 } from "../session/admission-auth.js";
+import {
+  SESSION_REACTION_TYPES,
+  isSessionReactionType,
+  submitSessionReaction,
+} from "../session/reactions.js";
 import {
   claimTicket,
   listTickets,
@@ -570,14 +575,9 @@ const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "view",
 ]);
 
-// Reactions are per-actor slots the API folds from append-only rows: `unlike` and
-// `undislike` retract the CALLER's own active like/dislike (sentinelayer-api#914).
-const SESSION_REACTION_ACTION_TYPES = new Set(["like", "dislike", "unlike", "undislike"]);
-const SESSION_REACTION_UNDO_TARGETS = new Map([
-  ["unlike", "like"],
-  ["undislike", "dislike"],
-]);
-const SESSION_REACT_COMMAND_TYPES = Object.freeze(["ack", ...SESSION_REACTION_ACTION_TYPES]);
+// like/dislike/unlike/undislike all go through src/session/reactions.js, the path the
+// local MCP server shares; `ack` keeps the plain message-action path.
+const SESSION_REACT_COMMAND_TYPES = Object.freeze(["ack", ...SESSION_REACTION_TYPES]);
 
 const SESSION_MESSAGE_ACTION_ALIASES = new Map([
   ["comment", "reply"],
@@ -651,7 +651,7 @@ function shortSha256(value) {
 
 function actionEventType(actionType) {
   if (actionType === "reply") return "session_reply";
-  if (SESSION_REACTION_ACTION_TYPES.has(actionType)) return "session_reaction";
+  if (isSessionReactionType(actionType)) return "session_reaction";
   return "session_action";
 }
 
@@ -707,6 +707,7 @@ function buildSessionActionEvent(sessionId, action = {}) {
       }),
     );
   const actorId = actionActorId(action);
+  const collapsedIntoActionId = normalizeString(action.collapsedIntoActionId ?? action.collapsed_into_action_id);
   const event = createAgentEvent({
     event: actionEventType(actionType),
     agent: {
@@ -731,6 +732,8 @@ function buildSessionActionEvent(sessionId, action = {}) {
       metadata: action.metadata && typeof action.metadata === "object" ? action.metadata : undefined,
       message: actionDisplayMessage(action),
       source: "session_action",
+      // A retained no-op reaction key (sentinelayer-api#914): evidence, not a reaction.
+      ...(collapsedIntoActionId ? { collapsedIntoActionId } : {}),
     },
   });
   event.eventId = `session-action-${id}`;
@@ -1000,54 +1003,7 @@ function defaultActionIdempotencyKey({
       : `cursor:${normalizeString(targetCursor)}`;
   const noteHash = note ? shortSha256(note) : "none";
   const actor = normalizeString(agentId) || "user";
-  const type = normalizeString(actionType).toLowerCase();
-  const key = `cli:${type}:${target}:${actor}:${noteHash}`;
-  // A reaction toggles: like -> unlike -> like are three intents on one target, and
-  // the API REPLAYS a reused key instead of acting on it (#914 reaction contract), so
-  // a derived key would make the second like a silent no-op. Each reaction invocation
-  // therefore gets its own key; an explicit --idempotency-key still pins a retry.
-  return SESSION_REACTION_ACTION_TYPES.has(type) ? `${key}:${randomBytes(8).toString("hex")}` : key;
-}
-
-// The exact 422 a server without reaction undo (sentinelayer-api before #914) returns
-// for this action: FastAPI's validation envelope around the route's action-type
-// validator, a single entry echoing the value we sent. Anything looser could relabel
-// a different validation failure as "undo unsupported", so the match is exact.
-function isUndoUnsupportedValidationError(result = {}, actionType = "") {
-  if (result.status !== 422) return false;
-  const detail = result.error?.detail;
-  if (!Array.isArray(detail) || detail.length !== 1) return false;
-  const [entry] = detail;
-  return (
-    entry?.type === "value_error" &&
-    Array.isArray(entry.loc) &&
-    entry.loc.length === 2 &&
-    entry.loc[0] === "body" &&
-    entry.loc[1] === "actionType" &&
-    entry.msg === "Value error, unsupported message action type" &&
-    entry.input === actionType
-  );
-}
-
-// The two expected refusals of an undo, in words a person can act on. Anything else
-// returns null and keeps the generic failure path.
-function describeReactionUndoRefusal(actionType, result = {}, { agentId = "", targetLabel = "target" } = {}) {
-  const reaction = SESSION_REACTION_UNDO_TARGETS.get(actionType);
-  if (!reaction) return null;
-  const body = result.error && typeof result.error === "object" ? result.error : {};
-  if (isUndoUnsupportedValidationError(result, actionType)) {
-    return {
-      reason: "undo_unsupported",
-      message: `This server doesn't support undo yet (no '${actionType}' action). Nothing was changed.`,
-    };
-  }
-  if (result.status === 409 && normalizeString(body.error?.code) === "REACTION_NOT_ACTIVE") {
-    return {
-      reason: "reaction_not_active",
-      message: `Nothing to undo: ${agentId || "this agent"} has no active ${reaction} on ${targetLabel}.`,
-    };
-  }
-  return null;
+  return `cli:${normalizeString(actionType).toLowerCase()}:${target}:${actor}:${noteHash}`;
 }
 
 function sessionReadViewTarget(event = {}) {
@@ -4350,6 +4306,21 @@ export function registerSessionCommand(program) {
       );
     }
     const agentId = identity.agentId;
+    if (isSessionReactionType(normalizedActionType)) {
+      return runReactionCommand({
+        sessionId: normalizedSessionId,
+        reaction: normalizedActionType,
+        agentId,
+        targetPath,
+        targetSequenceId,
+        targetCursor,
+        targetActionId,
+        note,
+        options,
+        command,
+        commandName,
+      });
+    }
     const idempotencyKey =
       normalizeString(options.idempotencyKey) ||
       defaultActionIdempotencyKey({
@@ -4375,37 +4346,6 @@ export function registerSessionCommand(program) {
       idempotencyKey,
       timeoutMs: 15_000,
     });
-    const refusal = result.ok
-      ? null
-      : describeReactionUndoRefusal(normalizedActionType, result, {
-          agentId,
-          targetLabel: targetActionId
-            ? `reply ${targetActionId}`
-            : targetSequenceId
-              ? `#${targetSequenceId}`
-              : targetCursor,
-        });
-    if (refusal) {
-      // An expected answer, not a crash: report it like the other refused session
-      // commands (message + non-zero exit code), with no stack trace.
-      const refusalPayload = {
-        command: commandName,
-        targetPath,
-        sessionId: normalizedSessionId,
-        actionType: normalizedActionType,
-        ok: false,
-        reason: refusal.reason,
-        status: result.status,
-        message: refusal.message,
-      };
-      process.exitCode = 1;
-      if (shouldEmitJson(options, command)) {
-        console.log(JSON.stringify(refusalPayload, null, 2));
-      } else {
-        console.error(pc.yellow(refusal.message));
-      }
-      return refusalPayload;
-    }
     if (!result.ok || !result.action) {
       throw new Error(`Session action failed (${result.reason || "unknown"}).`);
     }
@@ -4463,6 +4403,89 @@ export function registerSessionCommand(program) {
     return payload;
   }
 
+  // like/dislike/unlike/undislike: the shared reaction path (src/session/reactions.js)
+  // decides admission, the operation key and the outcome; this only mirrors and prints.
+  // `--idempotency-key` is a RETRY of the intent that minted that key.
+  async function runReactionCommand({
+    sessionId,
+    reaction,
+    agentId,
+    targetPath,
+    targetSequenceId,
+    targetCursor,
+    targetActionId,
+    note,
+    options,
+    command,
+    commandName,
+  }) {
+    const outcome = await submitSessionReaction({
+      surface: "cli",
+      sessionId,
+      agentId,
+      reaction,
+      targetSequenceId,
+      targetCursor,
+      targetActionId,
+      note,
+      idempotencyKey: options.idempotencyKey,
+      targetPath,
+    });
+    let event = null;
+    let localAppend = { appended: false, reason: "not_recorded" };
+    if (outcome.action) {
+      const appended = await appendActionEventIfMissing(
+        sessionId,
+        buildSessionActionEvent(sessionId, outcome.action),
+        { targetPath },
+      );
+      event = appended.event;
+      localAppend = { appended: Boolean(appended.appended), reason: appended.reason || "" };
+    }
+    let evidenceEvent = null;
+    if (outcome.collapsedActionId && outcome.action) {
+      // Mirror the server's retained no-op row: this request's key, collapsed into
+      // the active reaction it repeated.
+      const appended = await appendActionEventIfMissing(
+        sessionId,
+        buildSessionActionEvent(sessionId, {
+          id: outcome.collapsedActionId,
+          actionType: reaction,
+          targetSequenceId: outcome.action.targetSequenceId,
+          targetCursor: outcome.action.targetCursor,
+          targetActionId: outcome.action.targetActionId,
+          actorKind: outcome.action.actorKind,
+          actorId: outcome.action.actorId,
+          actorRole: outcome.action.actorRole,
+          idempotencyKey: outcome.operationKey,
+          collapsedIntoActionId: outcome.action.id,
+        }),
+        { targetPath },
+      );
+      evidenceEvent = appended.event;
+    }
+    const payload = {
+      command: commandName,
+      targetPath,
+      ...outcome,
+      event,
+      evidenceEvent,
+      localAppend,
+    };
+    if (!outcome.ok) process.exitCode = 1;
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    if (!outcome.ok) {
+      console.error(pc.yellow(outcome.message));
+      return payload;
+    }
+    if (event) console.log(formatEventLine(event));
+    if (outcome.outcome !== "applied" || !event) console.log(pc.gray(outcome.message));
+    return payload;
+  }
+
   session
     .command("actions")
     .description("List supported low-noise message actions with examples")
@@ -4512,7 +4535,10 @@ export function registerSessionCommand(program) {
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
     .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
-    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option(
+      "--idempotency-key <key>",
+      "Retry an earlier reaction as the SAME intent by resending its operationKey (without it, each call is a new intent)",
+    )
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, reaction, options, command) => {

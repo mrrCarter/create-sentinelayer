@@ -655,7 +655,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_action",
         title: "Record Senti Session Action",
         description:
-          "Record a low-noise message action such as ack, working_on, disregard, like, dislike, or reply; view advances the monotonic read cursor instead of appending an action.",
+          "Record a low-noise message action such as ack, working_on, disregard, like, dislike, unlike, undislike, or reply; view advances the monotonic read cursor instead of appending an action.",
         input_schema: {
           type: "object",
           additionalProperties: false,
@@ -665,7 +665,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
             agentId: { type: "string" },
             actionType: {
               type: "string",
-              enum: ["ack", "working_on", "reply", "like", "dislike", "disregard", "view"],
+              enum: ["ack", "working_on", "reply", "like", "dislike", "unlike", "undislike", "disregard", "view"],
             },
             targetSequenceId: { type: "integer", minimum: 1 },
             targetCursor: { type: "string" },
@@ -702,7 +702,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_react",
         title: "React To Senti Message",
         description:
-          "Acknowledge or react to a target session event with ack, like, or dislike.",
+          "Acknowledge or react to a target session event with ack, like, or dislike, or retract your own like/dislike with unlike/undislike. Reactions report an outcome and an operation key; resend that key as idempotencyKey only to retry the same intent.",
         input_schema: {
           type: "object",
           additionalProperties: false,
@@ -710,7 +710,7 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
           properties: {
             sessionId: { type: "string" },
             agentId: { type: "string" },
-            reaction: { type: "string", enum: ["ack", "like", "dislike"] },
+            reaction: { type: "string", enum: ["ack", "like", "dislike", "unlike", "undislike"] },
             targetSequenceId: { type: "integer", minimum: 1 },
             targetCursor: { type: "string" },
             targetActionId: { type: "string" },
