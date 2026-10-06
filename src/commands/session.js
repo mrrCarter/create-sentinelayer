@@ -1009,18 +1009,33 @@ function defaultActionIdempotencyKey({
   return SESSION_REACTION_ACTION_TYPES.has(type) ? `${key}:${randomBytes(8).toString("hex")}` : key;
 }
 
+// The exact 422 a server without reaction undo (sentinelayer-api before #914) returns
+// for this action: FastAPI's validation envelope around the route's action-type
+// validator, a single entry echoing the value we sent. Anything looser could relabel
+// a different validation failure as "undo unsupported", so the match is exact.
+function isUndoUnsupportedValidationError(result = {}, actionType = "") {
+  if (result.status !== 422) return false;
+  const detail = result.error?.detail;
+  if (!Array.isArray(detail) || detail.length !== 1) return false;
+  const [entry] = detail;
+  return (
+    entry?.type === "value_error" &&
+    Array.isArray(entry.loc) &&
+    entry.loc.length === 2 &&
+    entry.loc[0] === "body" &&
+    entry.loc[1] === "actionType" &&
+    entry.msg === "Value error, unsupported message action type" &&
+    entry.input === actionType
+  );
+}
+
 // The two expected refusals of an undo, in words a person can act on. Anything else
 // returns null and keeps the generic failure path.
 function describeReactionUndoRefusal(actionType, result = {}, { agentId = "", targetLabel = "target" } = {}) {
   const reaction = SESSION_REACTION_UNDO_TARGETS.get(actionType);
   if (!reaction) return null;
   const body = result.error && typeof result.error === "object" ? result.error : {};
-  const validationErrors = Array.isArray(body.detail) ? body.detail : [];
-  // A server that predates #914 rejects the action value itself in request validation.
-  if (
-    result.status === 422 &&
-    validationErrors.some((item) => Array.isArray(item?.loc) && item.loc.includes("actionType"))
-  ) {
+  if (isUndoUnsupportedValidationError(result, actionType)) {
     return {
       reason: "undo_unsupported",
       message: `This server doesn't support undo yet (no '${actionType}' action). Nothing was changed.`,

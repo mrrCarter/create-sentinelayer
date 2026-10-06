@@ -726,21 +726,28 @@ test("Unit session comment command: aliases threaded replies", async () => {
 
 const REPLY_ACTION_ID = "6f6238a9-f035-4a8f-b05b-ac33507f772a";
 
-// What a server without #914 answers: FastAPI request validation rejects the value.
-const PRE_UNDO_SERVER_422 = {
-  detail: [
-    {
-      type: "value_error",
-      loc: ["body", "actionType"],
-      msg: "Value error, unsupported message action type",
-      input: "unlike",
-      ctx: { error: {} },
-    },
-  ],
-};
+// What a server without #914 answers, byte for byte: API main's action-type validator
+// under its pinned fastapi 0.136.1 / pydantic 2.10.6 (reproduced with that stack).
+function unsupportedActionEntry(actionType) {
+  return {
+    ctx: { error: {} },
+    input: actionType,
+    loc: ["body", "actionType"],
+    msg: "Value error, unsupported message action type",
+    type: "value_error",
+  };
+}
 
+function preUndoServer422(actionType) {
+  return { detail: [unsupportedActionEntry(actionType)] };
+}
+
+// `body` is an object, or a function of the action type the CLI sent.
 function refuseUndoWith(status, body) {
-  return (payload) => (["unlike", "undislike"].includes(payload.actionType) ? { status, body } : null);
+  return (payload) =>
+    ["unlike", "undislike"].includes(payload.actionType)
+      ? { status, body: typeof body === "function" ? body(payload.actionType) : body }
+      : null;
 }
 
 async function withActionMock(prefix, mockOptions, fn) {
@@ -808,7 +815,7 @@ test("Unit session react undo: unknown reactions are still rejected client-side"
 test("Unit session react undo: a server without undo (422) gets a friendly refusal and exit 1", async () => {
   await withActionMock(
     "sl-react-undo-422-",
-    { actionRefusal: refuseUndoWith(422, PRE_UNDO_SERVER_422) },
+    { actionRefusal: refuseUndoWith(422, preUndoServer422) },
     async ({ tmp, mock, react }) => {
       const text = await react("unlike", ["--target-sequence", "42"]);
       assert.equal(text.code, 1, text.stderr);
@@ -832,20 +839,40 @@ test("Unit session react undo: a server without undo (422) gets a friendly refus
   );
 });
 
-test("Unit session react undo: a 422 about another field is not reported as missing undo", async () => {
-  const badTarget = {
-    detail: [{ type: "uuid_parsing", loc: ["body", "targetActionId"], msg: "Input should be a valid UUID" }],
+test("Unit session react undo: only the exact pre-#914 422 means undo is unsupported", async () => {
+  // Every near miss takes the generic failure path; none may be relabelled.
+  const uuidEntry = {
+    ctx: { error: "invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1" },
+    input: "not-a-uuid",
+    loc: ["body", "targetActionId"],
+    msg: "Input should be a valid UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1",
+    type: "uuid_parsing",
   };
-  await withActionMock(
-    "sl-react-undo-422-other-",
-    { actionRefusal: refuseUndoWith(422, badTarget) },
-    async ({ react }) => {
-      const result = await react("unlike", ["--target-action-id", "not-a-uuid"]);
-      assert.notEqual(result.code, 0);
-      assert.doesNotMatch(result.stderr, /doesn't support undo/);
-      assert.match(result.stderr, /Session action failed \(api_422\)/);
+  const nearMisses = {
+    // what API main really returns for `unlike` with a malformed --target-action-id
+    compound: { detail: [unsupportedActionEntry("unlike"), uuidEntry] },
+    otherFieldOnly: { detail: [uuidEntry] },
+    substringMsg: {
+      detail: [{ ...unsupportedActionEntry("unlike"), msg: "Value error, unsupported message action type: unlike" }],
     },
-  );
+    wrongInput: { detail: [unsupportedActionEntry("undislike")] },
+    wrongType: { detail: [{ ...unsupportedActionEntry("unlike"), type: "assertion_error" }] },
+    looseLoc: { detail: [{ ...unsupportedActionEntry("unlike"), loc: ["body", "actionType", 0] }] },
+    notAList: { detail: "unsupported message action type" },
+    errorEnvelope: { error: { code: "VALIDATION_ERROR", message: "unsupported message action type" } },
+  };
+  for (const [name, body] of Object.entries(nearMisses)) {
+    await withActionMock(
+      "sl-react-undo-422-near-",
+      { actionRefusal: refuseUndoWith(422, body) },
+      async ({ react }) => {
+        const result = await react("unlike", ["--target-sequence", "42"]);
+        assert.notEqual(result.code, 0, name);
+        assert.doesNotMatch(result.stderr, /doesn't support undo/, name);
+        assert.match(result.stderr, /Session action failed \(api_422\)/, name);
+      },
+    );
+  }
 });
 
 test("Unit session react undo: 409 REACTION_NOT_ACTIVE says there is nothing to undo", async () => {
