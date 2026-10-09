@@ -99,6 +99,13 @@ import {
   runAdmissionJoin,
 } from "../session/admission.js";
 import {
+  decideSessionAdmission,
+  getSessionAdmission,
+  listSessionAdmissions,
+  revokeSessionAdmission,
+  setSessionAdmissionMode,
+} from "../session/admission-access.js";
+import {
   assertCanonicalAgentId,
   canonicalAgentId,
   currentAdmittedAgent,
@@ -6785,6 +6792,271 @@ export function registerSessionCommand(program) {
           ),
         );
       }
+    });
+
+  // ------------------------------------------------------- agent access
+  // Human control plane for the Agent Admission Contract. The request command
+  // delegates to the established agent-side flow; list/decision/revoke use the
+  // matching owner-only REST routes. Goal text is an agent claim and is always
+  // rendered as bounded, untrusted data.
+  const access = session
+    .command("access")
+    .description("Request and govern AIdenID-backed, scoped agent access to a session");
+
+  function accessOutput(options, command, payload, render) {
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    render();
+  }
+
+  function untrustedSummary(value) {
+    let result = "";
+    for (const ch of normalizeString(value)) {
+      const code = ch.codePointAt(0);
+      result += code < 0x20 || code === 0x7f ? " " : ch;
+      if (result.length >= 240) break;
+    }
+    return result;
+  }
+
+  function renderAdmissionLine(admission) {
+    const requested = Array.isArray(admission?.requestedScope?.actions)
+      ? admission.requestedScope.actions.join(",")
+      : "scope unavailable";
+    const ttl = Number(admission?.requestedScope?.ttlSeconds);
+    const duration = Number.isFinite(ttl) ? ` for ${ttl}s` : "";
+    const identity = normalizeString(admission?.displayName) || normalizeString(admission?.agentId) || "unknown-agent";
+    console.log(`${admission?.admissionId || "unknown"}  ${admission?.status || "unknown"}  ${identity}`);
+    console.log(pc.gray(`  requested: ${requested}${duration}`));
+    const summary = untrustedSummary(admission?.goal?.summary);
+    if (summary) console.log(pc.gray(`  claimed goal (untrusted): ${JSON.stringify(summary)}`));
+    if (admission?.email) {
+      const address = normalizeString(admission.email.address);
+      console.log(pc.gray(`  AIdenID email: ${admission.email.status || "unknown"}${address ? ` (${address})` : ""}`));
+    }
+  }
+
+  access
+    .command("mode <sessionId> <mode>")
+    .description("Set whether this room requires admission for agent-attributed access (required or legacy)")
+    .option("--idempotency-key <key>", "Retry the same logical mode change safely")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, mode, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const changed = await setSessionAdmissionMode(sid, mode, {
+        idempotencyKey: options.idempotencyKey,
+        targetPath,
+      });
+      accessOutput(
+        options,
+        command,
+        {
+          command: "session access mode",
+          idempotencyKey: changed.idempotencyKey,
+          ...changed.result,
+        },
+        () => console.log(`Agent admission mode for ${sid}: ${changed.result.agentAdmissionMode}.`),
+      );
+    });
+
+  access
+    .command("request <sessionId>")
+    .description("Request agent access; a human must approve before the agent can claim or join")
+    .requiredOption("--agent <id>", "Canonical agent id requesting access")
+    .requiredOption("--goal <text>", "What the agent is coming to do")
+    .option("--display-name <name>", "Human-readable agent name")
+    .option("--deliverable <text>", "An output this agent will produce (repeatable)", collectOption, [])
+    .option("--stop-when <text>", "A condition that ends this agent's work (repeatable)", collectOption, [])
+    .option(
+      "--scope <actions>",
+      "Comma-separated actions: session.read, session.post, session.react, tickets.read, tickets.work",
+    )
+    .option("--ttl <duration>", "Requested grant lifetime, e.g. 90m or 24h (5m..24h)", "2h")
+    .option("--model <model>", "Agent model hint", "cli")
+    .option("--provider <name>", "Model provider hint")
+    .option("--wait", "Wait for approval and claim the grant on this machine")
+    .option("--wait-seconds <n>", "Maximum approval wait when --wait is set", "900")
+    .option("--path <path>", "Workspace path for local admission state", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const agentId = canonicalAgentId(options.agent);
+      assertCanonicalAgentId(options.agent, "--agent");
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const waitSeconds = Number.parseInt(String(options.waitSeconds ?? "900"), 10);
+      if (!Number.isFinite(waitSeconds) || waitSeconds < 0) {
+        throw new Error("--wait-seconds must be a non-negative integer.");
+      }
+      const admission = await runAdmissionJoin(sid, {
+        agentId,
+        displayName: options.displayName,
+        model: options.model,
+        provider: options.provider,
+        goal: options.goal,
+        deliverables: options.deliverable || [],
+        stopConditions: options.stopWhen || [],
+        actions: parseAdmissionScope(options.scope),
+        ttlSeconds: parseAdmissionTtlSeconds(options.ttl),
+        wait: Boolean(options.wait),
+        waitTimeoutMs: waitSeconds * 1000,
+        targetPath,
+        onPending: ({ approveUrl }) => {
+          const line = `Waiting for a room owner to approve this agent: ${approveUrl}`;
+          if (shouldEmitJson(options, command)) process.stderr.write(`${line}\n`);
+          else console.log(pc.yellow(line));
+        },
+      });
+      const payload = {
+        command: "session access request",
+        sessionId: sid,
+        agentId,
+        admission,
+        readyToJoin: admission.status === "active",
+      };
+      accessOutput(options, command, payload, () => {
+        if (admission.status === "pending") {
+          console.log(`Access requested for ${agentId}; waiting for a room owner.`);
+          if (admission.approveUrl) console.log(`Approval: ${admission.approveUrl}`);
+        } else if (admission.status === "active") {
+          console.log(`Access active for ${agentId}. The scoped credential is stored locally and was not printed.`);
+          console.log(pc.gray("Run `sl session join` again with the same goal, scope, and TTL to attach this agent."));
+        } else {
+          console.log(`Access ${admission.status} for ${agentId}.`);
+        }
+      });
+    });
+
+  access
+    .command("list <sessionId>")
+    .description("List admission requests visible to a room owner or admin")
+    .option("--status <status>", "Filter by admission status")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await listSessionAdmissions(sid, {
+        status: options.status,
+        targetPath,
+      });
+      const payload = { command: "session access list", ...result };
+      accessOutput(options, command, payload, () => {
+        console.log(pc.gray(`Admission mode: ${result.agentAdmissionMode || "unknown"}`));
+        if (!Array.isArray(result.admissions) || result.admissions.length === 0) {
+          console.log("No admission requests.");
+          return;
+        }
+        for (const admission of result.admissions) renderAdmissionLine(admission);
+      });
+    });
+
+  access
+    .command("status <sessionId> <admissionId>")
+    .description("Show the requesting delegator's current admission status")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, admissionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const aid = normalizeString(admissionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const result = await getSessionAdmission(sid, aid, { targetPath });
+      accessOutput(
+        options,
+        command,
+        { command: "session access status", sessionId: sid, ...result },
+        () => {
+          console.log(`${result.admissionId || aid}  ${result.status || "unknown"}  ${result.agentId || "unknown-agent"}`);
+          if (result.approveUrl) console.log(`Approval: ${result.approveUrl}`);
+        },
+      );
+    });
+
+  access
+    .command("approve <sessionId> <admissionId>")
+    .description("Approve a pending request, optionally narrowing its scope or TTL")
+    .option("--scope <actions>", "Comma-separated granted actions; must be a subset of the request")
+    .option("--ttl <duration>", "Granted lifetime; may only shorten the request (5m..24h)")
+    .option("--note <text>", "Approval note (max 500 characters)")
+    .option("--idempotency-key <key>", "Retry the same logical approval safely")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, admissionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const aid = normalizeString(admissionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const decision = await decideSessionAdmission(sid, aid, {
+        decision: "approve",
+        grantedActions: options.scope === undefined ? undefined : parseAdmissionScope(options.scope),
+        ttlSeconds: options.ttl === undefined ? undefined : parseAdmissionTtlSeconds(options.ttl),
+        note: options.note,
+        idempotencyKey: options.idempotencyKey,
+        targetPath,
+      });
+      const result = decision.result;
+      accessOutput(
+        options,
+        command,
+        { command: "session access approve", sessionId: sid, idempotencyKey: decision.idempotencyKey, admission: result },
+        () => {
+          console.log(`Approved ${result.admissionId || aid} for ${result.agentId || "the agent"}.`);
+          if (result.email) {
+            console.log(pc.gray(`AIdenID email: ${result.email.status || "queued"}${result.email.address ? ` (${result.email.address})` : ""}.`));
+          }
+        },
+      );
+    });
+
+  access
+    .command("deny <sessionId> <admissionId>")
+    .description("Deny a pending agent admission request")
+    .option("--note <text>", "Denial note (max 500 characters)")
+    .option("--idempotency-key <key>", "Retry the same logical denial safely")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, admissionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const aid = normalizeString(admissionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const decision = await decideSessionAdmission(sid, aid, {
+        decision: "deny",
+        note: options.note,
+        idempotencyKey: options.idempotencyKey,
+        targetPath,
+      });
+      accessOutput(
+        options,
+        command,
+        { command: "session access deny", sessionId: sid, idempotencyKey: decision.idempotencyKey, admission: decision.result },
+        () => console.log(`Denied ${decision.result.admissionId || aid}.`),
+      );
+    });
+
+  access
+    .command("revoke <sessionId> <admissionId>")
+    .description("Revoke an approved or active agent admission")
+    .option("--reason <text>", "Revocation reason (max 200 characters)")
+    .option("--idempotency-key <key>", "Retry the same logical revocation safely")
+    .option("--path <path>", "Workspace path for auth context", ".")
+    .option("--json", "Emit machine-readable output")
+    .action(async (sessionId, admissionId, options, command) => {
+      const sid = normalizeString(sessionId);
+      const aid = normalizeString(admissionId);
+      const targetPath = path.resolve(process.cwd(), String(options.path || "."));
+      const revoked = await revokeSessionAdmission(sid, aid, {
+        reason: options.reason,
+        idempotencyKey: options.idempotencyKey,
+        targetPath,
+      });
+      accessOutput(
+        options,
+        command,
+        { command: "session access revoke", sessionId: sid, idempotencyKey: revoked.idempotencyKey, admission: revoked.result },
+        () => console.log(`Revoked ${revoked.result.admissionId || aid}.`),
+      );
     });
 
   // ---------------------------------------------------------------- tickets
