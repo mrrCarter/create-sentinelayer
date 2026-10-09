@@ -58,7 +58,7 @@ function fakeApi({ onPoll } = {}) {
         return { admissionId: live.id, status: "active", reused: true, agentId: body.agentId };
       }
       const id = randomUUID();
-      admissions.set(id, { id, status: "pending", body, nonce: null });
+      admissions.set(id, { id, status: "pending", body, nonce: null, identityReady: true });
       return { admissionId: id, status: "pending", agentId: body.agentId, approveUrl: `https://web.test/?admission=${id}`, pollAfterSeconds: 5 };
     }
     const claimMatch = url.match(/\/admissions\/([^/]+)\/claim$/);
@@ -81,7 +81,7 @@ function fakeApi({ onPoll } = {}) {
       return {
         admissionId: adm.id,
         status: "active",
-        identity: { subject: `sl-agent:u/${adm.body.agentId}`, passportId: "pid", passportStatus: "issued", keyThumbprint: "t".repeat(64), popAssurance: "agent_held_key", email: { status: "unavailable", address: null }, passport: { passport_id: "pid" } },
+        identity: { subject: `sl-agent:u/${adm.body.agentId}`, passportId: "pid", passportStatus: "issued", keyThumbprint: "t".repeat(64), popAssurance: "agent_held_key", email: { status: "provisioned", address: `${adm.body.agentId}@agents.test` }, passport: { passport_id: "pid" } },
         grant: { grantId: "g", sessionId: SID, actions: adm.body.requestedScope.actions, expiresAt: Math.floor(Date.now() / 1000) + 3600, goalDigest: "d", document: null },
         correlation: { actorRef: `adm:${adm.id}` },
         jev: { verificationStatus: "not_evaluated" },
@@ -98,6 +98,17 @@ function fakeApi({ onPoll } = {}) {
     onPoll?.(adm);
     const view = { admissionId: id, status: adm.status, agentId: adm.body.agentId, pollAfterSeconds: 5 };
     if (adm.status === "approved") {
+      view.identityReady = adm.identityReady === true;
+      view.identity = {
+        email: adm.identityReady
+          ? { status: "provisioned", address: `${adm.body.agentId}@agents.test` }
+          : { status: "pending", address: null },
+        purpose: adm.identityReady
+          ? { status: "declared", verification: "verified", receiptId: "receipt-1" }
+          : { status: "pending" },
+      };
+    }
+    if (adm.status === "approved" && adm.identityReady === true) {
       adm.nonce = randomBytes(32).toString("base64url"); // rotates on every poll
       view.claim = {
         domain: CLAIM_DOMAIN,
@@ -158,6 +169,88 @@ test("full flow: request, wait, approve, claim; credential stored and never outp
   assert.equal(requestBody.popAssurance, "agent_held_key");
   assert.equal(requestBody.clientKind, "cli");
   assert.equal("privateKey" in requestBody || JSON.stringify(requestBody).includes("PRIVATE"), false);
+});
+
+test("approved admission waits for verified AIdenID identity evidence before claiming", async () => {
+  const dirs = await scratch();
+  let polls = 0;
+  const api = fakeApi({
+    onPoll: (adm) => {
+      adm.status = "approved";
+      polls += 1;
+      adm.identityReady = polls >= 2;
+    },
+  });
+  const pending = [];
+  const result = await runAdmissionJoin(
+    SID,
+    base(api, dirs, { onPending: (value) => pending.push(value) }),
+  );
+  assert.equal(result.status, "active");
+  assert.equal(result.identity.email.status, "provisioned");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].phase, "identity");
+  assert.equal(pending[0].identityReady, false);
+  assert.equal(api.calls.filter((call) => call.method === "GET").length, 2);
+  assert.equal(api.calls.filter((call) => call.url.endsWith("/claim")).length, 1);
+});
+
+test("identity provisioning timeout is retryable and never attempts claim", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({
+    onPoll: (adm) => {
+      adm.status = "approved";
+      adm.identityReady = false;
+    },
+  });
+  let clock = 0;
+  const result = await runAdmissionJoin(
+    SID,
+    base(api, dirs, {
+      waitTimeoutMs: 10_000,
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+    }),
+  );
+  assert.equal(result.status, "approved");
+  assert.equal(result.phase, "identity");
+  assert.equal(result.identityReady, false);
+  assert.equal(result.timedOut, true);
+  assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
+  const before = api.calls.length;
+  const resumed = await runAdmissionJoin(SID, base(api, dirs, { wait: false }));
+  assert.equal(resumed.status, "approved");
+  assert.equal(api.calls.length, before);
+});
+
+test("identity-ready response without a claim challenge fails closed", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
+  const requestRead = async (...args) => {
+    const view = await api.requestRead(...args);
+    delete view.claim;
+    return view;
+  };
+  await assert.rejects(
+    runAdmissionJoin(SID, base(api, dirs, { requestRead })),
+    /Identity-ready admission did not include a valid claim challenge/,
+  );
+  assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
+});
+
+test("claim challenge exposed before identity readiness fails closed", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "approved"; } });
+  const requestRead = async (...args) => {
+    const view = await api.requestRead(...args);
+    view.identityReady = false;
+    return view;
+  };
+  await assert.rejects(
+    runAdmissionJoin(SID, base(api, dirs, { requestRead })),
+    /claim challenge before AIdenID identity evidence was ready/,
+  );
+  assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
 });
 
 test("--no-wait returns pending with the approve URL immediately", async () => {

@@ -58,10 +58,12 @@ sl session kill --id <session-id> --agent senti --reason "manual stop"
 `sl session join <session-id> --agent <id> --goal <text>` is the guarded join
 path. It creates or reuses that agent's local Ed25519 key, sends only the public
 key plus the claimed goal and requested scope, and waits for a human approver.
-Pending, denied, cancelled, expired, or revoked grants never join. After an
-approval, the agent signs the server challenge, stores the returned scoped
-credential in its local `~/.sentinelayer/agents/...` directory, verifies the
-live `/admissions/self` receipt, and then attaches to the room.
+Pending, denied, cancelled, expired, or revoked grants never join. Approval
+queues the AIdenID email and signed purpose receipt, and the CLI keeps polling
+without receiving a claim challenge until both are verified. Only then does the
+agent sign the server challenge, store the returned scoped credential in its
+local `~/.sentinelayer/agents/...` directory, verify the live
+`/admissions/self` receipt, and attach to the room.
 
 `sl session access request` uses the same hardened request/claim implementation
 but returns pending immediately unless `--wait` is passed. Owners and admins use
@@ -69,11 +71,11 @@ but returns pending immediately unless `--wait` is passed. Owners and admins use
 `access status`. Requested goal text is an untrusted agent claim. Approval may
 only narrow the requested action set and TTL, and the grant cannot exceed 24
 hours. AIdenID email and purpose receipt issuance are queued by the approval;
-their actual states are returned by `access list --json` rather than assumed.
-Rooms remain in `legacy` mode until their owner runs `sl session access mode
-<session-id> required`; that explicit activation makes agent-attributed API
-access fail closed without a live admission. `legacy` is retained only as the
-documented rollback mode.
+their actual states are returned by `access list --json` rather than assumed,
+and unavailable or unverified evidence cannot be claimed. New rooms default to
+`required`. Existing rooms retain their stored `legacy` mode until their owner
+runs `sl session access mode <session-id> required`; `legacy` remains a bounded
+rollback mode.
 
 Listener presence is outside the durable transcript. The CLI renews a membership-gated TTL through `PUT /sessions/{id}/presence`; `listeners`, remote recaps, and `status` read the three-state presence roster directly. If the capability is disabled, unsupported, or degraded, presence is reported as unknown—never reconstructed from historical heartbeat events.
 

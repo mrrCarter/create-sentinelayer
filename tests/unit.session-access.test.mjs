@@ -210,6 +210,25 @@ test("access mode enables the room's fail-closed required-admission policy", asy
   assert.match(request.headers["x-csrf-token"], /^[a-f0-9]{64}$/);
 });
 
+test("human mode output neutralizes controls in the remote mode value", async () => {
+  fakeApi();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const response = await originalFetch(url, init);
+    if (!String(url).endsWith("/admission-mode")) return response;
+    const payload = await response.json();
+    payload.agentAdmissionMode = "required\u001b]8;;https://evil.example\u0007link\u202E";
+    return json(payload, response.status);
+  };
+  const changed = await sl(["session", "access", "mode", SID, "required"]);
+  assert.equal(changed.error, null, String(changed.error?.stack || changed.error));
+  assert.equal(changed.text.includes("\u001b"), false);
+  assert.equal(changed.text.includes("\u0007"), false);
+  assert.equal(changed.text.includes("\u202E"), false);
+  assert.equal(changed.text.includes("Agent admission mode"), true);
+  assert.equal(changed.text.length < 160, true);
+});
+
 test("access list and status expose server state without mutating it", async () => {
   const state = fakeApi();
   const listed = await sl(["session", "access", "list", SID, "--status", "pending", "--json"]);
@@ -232,9 +251,37 @@ test("human list output bounds and neutralizes control characters in the untrust
   assert.equal(listed.error, null, String(listed.error?.stack || listed.error));
   const claimedLine = listed.text.split("\n").find((line) => line.includes("claimed goal"));
   assert.ok(claimedLine);
-  assert.equal(claimedLine.includes("second line"), true);
-  assert.equal(claimedLine.includes("\u001b"), false);
-  assert.ok(claimedLine.length < 300, `untrusted line was not bounded (${claimedLine.length})`);
+  // picocolors may wrap the trusted label on a TTY/CI runner. The attacker-
+  // supplied red escape must still be absent, and the visible text bounded.
+  assert.equal(claimedLine.includes("\u001b[31m"), false);
+  const visibleClaimedLine = claimedLine.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+  assert.equal(visibleClaimedLine.includes("second line"), true);
+  assert.equal(visibleClaimedLine.includes("\u001b"), false);
+  assert.ok(visibleClaimedLine.length < 300, `untrusted line was not bounded (${visibleClaimedLine.length})`);
+});
+
+test("human list output neutralizes ANSI, OSC, and bidi controls in remote identity fields", async () => {
+  const state = fakeApi();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const response = await originalFetch(url, init);
+    if (String(init.method || "GET").toUpperCase() !== "GET" || !String(url).includes("/admissions")) {
+      return response;
+    }
+    const payload = await response.json();
+    if (!Array.isArray(payload.admissions)) return json(payload, response.status);
+    payload.admissions[0].displayName = "safe\u001b]8;;https://evil.example\u0007link\u001b]8;;\u0007\u202Etxt.exe";
+    return json(payload, response.status);
+  };
+  const listed = await sl(["session", "access", "list", SID]);
+  assert.equal(listed.error, null, String(listed.error?.stack || listed.error));
+  const identityLine = listed.text.split("\n").find((line) => line.includes(AID));
+  assert.ok(identityLine);
+  assert.equal(identityLine.includes("\u001b"), false);
+  assert.equal(identityLine.includes("\u0007"), false);
+  assert.equal(identityLine.includes("\u202E"), false);
+  assert.equal(identityLine.includes("https://evil.example"), true);
+  assert.equal(state.requests.length > 0, true);
 });
 
 test("access approve sends the exact approve literal, narrowed grant, and guarded mutation headers", async () => {

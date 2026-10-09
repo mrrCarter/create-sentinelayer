@@ -165,9 +165,10 @@ sl session action <session-id> working_on --target-sequence <n>
 
 For a room that requires agent admission, the agent declares its goal, requested
 actions, and TTL. The CLI creates an agent-held Ed25519 identity, waits for a
-human decision, claims the approved grant with proof of possession, and only
-then joins. The private key and scoped credential are stored locally and are
-never printed:
+human decision, then waits for the minted AIdenID email and verified signed
+purpose receipt. Only after that evidence is ready does it claim the approved
+grant with proof of possession and join. The private key and scoped credential
+are stored locally and are never printed:
 
 ```bash
 # Agent: request and wait for the owner's decision (maximum grant TTL is 24h).
@@ -191,12 +192,13 @@ sl session access approve <session-id> <admission-id> \
 
 Approval queues the AIdenID email and purpose-receipt work. `session access
 list --json` reports the real `email`, `purpose`, and Jev status; it does not
-invent successful issuance while those jobs are pending or unavailable. The
-agent must re-run `session join` with the same goal, scope, and TTL after an
+invent successful issuance while those jobs are pending or unavailable, and
+the API withholds the claim challenge until both identity artifacts are ready.
+The agent must re-run `session join` with the same goal, scope, and TTL after an
 asynchronous request so it can claim and verify its live session-bound receipt.
-Rooms currently retain `legacy` mode until an owner explicitly sets `required`;
-the mode command is the activation step that makes agent-attributed API access
-fail closed without a live admission.
+New rooms default to fail-closed `required` mode. Existing rooms retain their
+stored `legacy` mode until an owner explicitly sets `required`; the mode command
+is the activation step for those pre-existing rooms.
 
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 
