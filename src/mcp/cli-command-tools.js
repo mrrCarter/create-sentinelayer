@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 
+import { bridgeAllowedInputs } from "./bridge-inputs.js";
 import { buildSentinelayerCliRegistryTemplate } from "./cli-registry.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -70,14 +71,9 @@ const SENSITIVE_COMMAND_PREFIXES = [
 ];
 const REDACTION_MARKER = "[REDACTED]";
 
-// The bridge exposes no option or argument that names where a request goes (a URL, host,
-// origin, endpoint or gateway): a tool caller never chooses a destination for this machine's
-// credentials. Matched on the input's name, its value placeholder and description, and a
-// URL-shaped default. A withheld option keeps its default; a command that would need one
-// (a destination argument, or a required destination option) is not exposed at all. The
-// transport refuses such a destination independently (src/auth/credential-destinations.js).
-const DESTINATION_WORD_RE = /\b(?:urls?|uris?|hosts?|hostnames?|origins?|endpoints?|gateways?|webhooks?|prox(?:y|ies))\b/i;
-const URL_SHAPED_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
+// Which inputs each command exposes is an explicit, default-deny list: src/mcp/bridge-inputs.js.
+// Nothing there names where a request goes, so a tool caller never chooses a destination for this
+// machine's credentials.
 
 function normalizeString(value) {
   return String(value == null ? "" : value).trim();
@@ -277,48 +273,23 @@ function dashLeadingValueKey(tool = {}, input = {}) {
   return "";
 }
 
-function words(text) {
-  return String(text ?? "")
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .replace(/[^A-Za-z0-9]+/g, " ");
-}
-
-/** Whether a value-taking input names a destination: see DESTINATION_WORD_RE above. */
-export function isDestinationInput({ name = "", flags = "", description = "", defaultValue, takesValue = true } = {}) {
-  if (!takesValue) return false;
-  return (
-    DESTINATION_WORD_RE.test(words(`${name} ${flags} ${description}`)) ||
-    URL_SHAPED_RE.test(String(defaultValue ?? ""))
-  );
-}
-
-// The inputs of a registry tool that name a destination, and whether the command needs one.
-function destinationInputs(schema = {}, positionalSource = [], optionSource = []) {
-  const properties = schema.properties || {};
+// The inputs a command does not expose, and whether that leaves it unusable through the bridge:
+// it has no entry, or an argument or a required option is not listed.
+function unlistedInputs(commandPathKey, schema = {}, positionalSource = [], optionSource = []) {
+  const allowed = bridgeAllowedInputs(commandPathKey);
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   const withheld = new Set();
-  let needsDestination = false;
+  let unusable = !allowed;
   for (const argument of positionalSource) {
-    const property = properties[argument.name] || {};
-    if (isDestinationInput({ name: argument.name, description: property.description, defaultValue: property.default })) {
-      needsDestination = true;
-    }
+    if (!allowed?.has(argument.name)) unusable = true;
   }
   for (const option of optionSource) {
-    const spec = normalizeOptionSpec(option);
-    const property = properties[spec.name] || {};
-    const destination = isDestinationInput({
-      name: spec.name,
-      flags: option.flags || spec.flag,
-      description: property.description,
-      defaultValue: property.default,
-      takesValue: spec.expectsValue,
-    });
-    if (!destination) continue;
-    withheld.add(spec.name);
-    if (required.has(spec.name)) needsDestination = true;
+    const { name } = normalizeOptionSpec(option);
+    if (allowed?.has(name)) continue;
+    withheld.add(name);
+    if (required.has(name)) unusable = true;
   }
-  return { withheld, needsDestination };
+  return { withheld, unusable };
 }
 
 function withoutInputs(schema = {}, names = new Set()) {
@@ -343,13 +314,13 @@ function normalizeRegistryTool(tool = {}) {
       : [];
   const optionSource = Array.isArray(metadata.options) ? metadata.options : [];
   const rawSchema = normalizeInputSchema(tool);
-  const { withheld, needsDestination } = destinationInputs(rawSchema, positionalSource, optionSource);
+  const { withheld, unusable } = unlistedInputs(commandPathKey, rawSchema, positionalSource, optionSource);
   const options = optionSource
     .map(normalizeOptionSpec)
     .filter((option) => option.flag && !withheld.has(option.name));
   const name = normalizeToolName(tool.name || commandPathKey);
   const blockedReason =
-    blockedReasonForCommandPath(commandPathKey) || (needsDestination ? "blocked_destination_input" : "");
+    blockedReasonForCommandPath(commandPathKey) || (unusable ? "blocked_unlisted_input" : "");
   const security = {
     ...(tool.security || {}),
     ...(blockedReason ? { runtime_blocked: true, runtime_block_reason: blockedReason } : {}),

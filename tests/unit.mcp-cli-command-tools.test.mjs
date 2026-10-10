@@ -22,7 +22,8 @@ function buildFakeProgram() {
     .command("say <sessionId> <message...>")
     .description("Send a session message")
     .option("--to <agent>", "Recipient agent")
-    .option("--force-new", "Force a new route")
+    // a real `session say` option: the bridge exposes only the inputs listed for the command
+    .option("--local-only", "Keep the message local")
     .option("--json", "Emit JSON");
   const auth = program.command("auth").description("Manage auth");
   auth.command("logout").description("Clear local credentials");
@@ -251,7 +252,7 @@ test("Unit MCP CLI command tools: generates leaf tools from commander tree", asy
   assert.equal(say.inputSchema.properties.sessionId.type, "string");
   assert.equal(say.inputSchema.properties.message.type, "array");
   assert.equal(say.inputSchema.properties.to.type, "string");
-  assert.equal(say.inputSchema.properties.forceNew.type, "boolean");
+  assert.equal(say.inputSchema.properties.localOnly.type, "boolean");
   assert.equal(say.inputSchema.properties.timeoutMs.maximum, 300000);
   assert.equal(say.security.requires_human_approval, true);
   assert.equal(say.metadata.supportsJson, true);
@@ -269,9 +270,9 @@ test("Unit MCP CLI command tools: maps tool input to CLI args and forces json wh
       sessionId: "sess-1",
       message: ["hello", "world"],
       to: "claude",
-      forceNew: true,
+      localOnly: true,
     }),
-    ["session", "say", "sess-1", "hello", "world", "--to", "claude", "--force-new", "--json"],
+    ["session", "say", "sess-1", "hello", "world", "--to", "claude", "--local-only", "--json"],
   );
 });
 

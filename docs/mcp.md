@@ -66,7 +66,7 @@ The generated registry is intended for bridge-capable MCP hosts and hosted conne
 
 The bridge copies each positional and option value into the command line as a value. It refuses a value that starts with `-` before running anything; run the CLI directly for such values.
 
-The bridge does not expose an option that names a destination: a URL, host, origin, endpoint or gateway (for example `--api-url` or `--gateway-url`). Those commands use the configured API and pocket gateway; run the CLI directly to pass such an option.
+The bridge exposes only the inputs listed for each command in `src/mcp/bridge-inputs.js`; anything unlisted is not exposed, and a command without an entry is not run. No listed input names a destination: a URL, host, origin, endpoint or gateway (for example `--api-url` or `--gateway-url`). Those commands use the configured API and pocket gateway; run the CLI directly to pass such an option.
 
 Secret-bearing commands are blocked from bridge execution even when they appear in the generated registry. `sl mcp token mint` is one of those blocked commands because it returns a fresh bearer token; operators must run it directly:
 
