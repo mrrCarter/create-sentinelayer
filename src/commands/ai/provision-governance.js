@@ -97,7 +97,7 @@ async function provisionEmailAction(options, command) {
 
     const makeFetcher = () => {
       if (!session || !session.token) return null;
-      return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, token: session.token });
+      return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, auth: session });
     };
 
     const resolvedCredentials = await resolveAidenIdCredentials({

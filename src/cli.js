@@ -1,9 +1,6 @@
 import process from "node:process";
 import { Command } from "commander";
 
-// Installed before any command code runs: the user's token only goes to trusted origins.
-import "./auth/credential-destinations.js";
-
 import { CLI_VERSION, runLegacyCliWithErrorHandling } from "./legacy-cli.js";
 
 const COMMAND_REGISTRARS = {

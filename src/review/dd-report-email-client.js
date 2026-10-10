@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 
+import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { requestJson } from "../auth/http.js";
 
@@ -116,11 +117,9 @@ export async function sendDdReportEmail({
   });
 
   try {
-    const response = await requestJsonImpl(endpoint, {
+    const response = await checkedTransport(requestJsonImpl)(endpoint, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.token}`,
-      },
+      credential: await credentialFor(session),
       idempotencyKey,
       body: { to: normalizedTo },
       timeoutMs,

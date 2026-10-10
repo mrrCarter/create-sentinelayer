@@ -66,7 +66,7 @@ export async function executeAidenIdEmailTool(input, ctx = {}) {
 
   const makeFetcher = () => {
     if (!session || !session.token) return null;
-    return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, token: session.token });
+    return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, auth: session });
   };
 
   const credentials = await resolveAidenIdCredentials({

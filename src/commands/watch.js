@@ -395,7 +395,7 @@ export function registerWatchCommand(program) {
         while (true) {
           const response = await listRuntimeRunEvents({
             apiUrl: session.apiUrl,
-            authToken: session.token,
+            credential: session.credential,
             runId,
             afterEventId,
           });
@@ -428,7 +428,7 @@ export function registerWatchCommand(program) {
 
           const statusResponse = await getRuntimeRunStatus({
             apiUrl: session.apiUrl,
-            authToken: session.token,
+            credential: session.credential,
             runId,
           });
           latestStatus = String(statusResponse?.status || "unknown").trim().toLowerCase();

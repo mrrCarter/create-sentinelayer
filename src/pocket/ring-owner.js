@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { checkedTransport, credentialFor, gatewayCredential } from "../auth/credential-destinations.js";
 import { requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
@@ -75,6 +76,12 @@ export async function ringOwner(
   if (!auth?.token) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
+  // The user's token, bound to the gateway SENTI_POCKET_URL names; a --gateway-url on any other
+  // origin is refused when the request is sent.
+  const credential = await gatewayCredential(await credentialFor(auth, { env }), { env });
+  if (!credential) {
+    throw new Error("pocket gateway URL not configured. Set SENTI_POCKET_URL to the pocket-gateway base URL.");
+  }
 
   const context = { sessionId: sid };
   if (normalizeString(whatWeNeed)) context.whatWeNeed = normalizeString(whatWeNeed);
@@ -86,10 +93,10 @@ export async function ringOwner(
 
   // requestJsonMutation auto-derives a transport Idempotency-Key from operationName (retry-safe at the wire); the
   // gateway's own ring-level dedupe (PR-B4) keys on body.idempotencyKey OR a content hash, so an identical retry rings once.
-  return requestMutation(`${gw}/dial/ring-owner`, {
+  return checkedTransport(requestMutation)(`${gw}/dial/ring-owner`, {
     method: "POST",
     operationName: "pocket.ring_owner",
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential,
     body,
   });
 }

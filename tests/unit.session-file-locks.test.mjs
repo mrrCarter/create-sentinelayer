@@ -28,6 +28,8 @@ import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
 
 const API_URL = "https://lease-authority.example";
+// The fixture API is the configured API: the user's credential is only sent to that origin.
+process.env.SENTINELAYER_API_URL = API_URL;
 const AUTH_TOKEN = "test-auth-token";
 const TOKEN_HEADER = `Bearer ${AUTH_TOKEN}`;
 
@@ -75,7 +77,9 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
   }
 
   function assertAuth(options) {
-    assert.equal(options?.headers?.Authorization, TOKEN_HEADER);
+    // a credential bound to the configured API, attached by the client itself
+    assert.equal(`Bearer ${options?.credential?.token}`, TOKEN_HEADER);
+    assert.equal(options?.credential?.origin, API_URL);
   }
 
   async function request(url, options = {}) {

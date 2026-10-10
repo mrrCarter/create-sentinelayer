@@ -1,23 +1,25 @@
-// credential-destinations.js — where this machine's own SentinelLayer token may be sent.
+// credential-destinations.js — the user's credentials, and the one way to send them.
 //
-// The user's token (SENTINELAYER_TOKEN / SENTINELAYER_API_TOKEN, the `sentinelayerToken`
-// config value, or the session stored by `sl auth login`) is sent only to a fixed set of
-// origins, built from the environment and the user's global config alone:
+// A credential is an object, { token, origin, source }, and only this module makes one. Its
+// origin is fixed when it is minted or loaded, from ONE trust context (resolveTrustContext) built
+// from the environment and the user's global config:
 //
 //   - the configured API: SENTINELAYER_API_URL, else `apiUrl` in ~/.sentinelayer/config.yml,
 //     else the default API
 //   - the pocket gateway: SENTI_POCKET_URL, when set
 //
-// Nothing a command is given (an option, an argument, an MCP tool input, a workspace's
-// .sentinelayer.yml) can add to that set. An option that names another origin may still be
-// used for requests that carry no token; a request that carries the token to any other origin
-// is refused before it is sent. A request that carries the token never follows a redirect
-// (redirect: "error"), so it cannot be forwarded to an origin that was never checked.
+// Login, auth resolution and the request check all use that context, with the same injected
+// env and homeDir. Nothing a command is given (an option, an argument, an MCP tool input, a
+// workspace's .sentinelayer.yml) can change where a credential goes. An agent's admission
+// credential is bound to the API that issued it (src/auth/admission-scope.js).
 //
-// The check sits on the transport: this module wraps globalThis.fetch, through which every
-// request in src/ is made (auth/http.js and the direct fetch call sites alike), so a new call
-// site cannot skip it. Admission credentials are bound the same way, to the API that issued
-// them (src/auth/admission-scope.js).
+// credentialedRequest(credential, url, init, { fetchImpl }) is the one way to send a credential.
+// It refuses a URL on any other origin, sets the Authorization header itself, and never follows
+// a redirect. An injected transport (fetchImpl) is what it calls once those checks pass, never a
+// way around them. A token that reaches a request site without a credential (an injected auth
+// resolver) is bound to the configured API origin by credentialFor, never to an origin the caller
+// names. tests/unit.credential-census.test.mjs fails on any other place in src/ that builds an
+// Authorization header or otherwise sends a token.
 
 import process from "node:process";
 
@@ -26,38 +28,19 @@ import { getGlobalConfigPath } from "../config/paths.js";
 
 export const DEFAULT_API_URL = "https://api.sentinelayer.com";
 
-const GUARD_MARKER = Symbol.for("sentinelayer.credentialDestinationGuard");
-const TOKEN_ENV_VARS = ["SENTINELAYER_TOKEN", "SENTINELAYER_API_TOKEN"];
-const GATEWAY_ENV_VARS = ["SENTI_POCKET_URL"];
-const MIN_TOKEN_LENGTH = 16; // shorter strings are not credentials worth matching
-const noted = new Set();
+const minted = new WeakSet();
 
 export class CredentialDestinationRefused extends Error {
   constructor(origin, trusted = []) {
     super(
       `Refusing to send your SentinelLayer credential to ${origin}: it is only sent to ` +
-        `${trusted.join(", ") || "the configured API"}. To use another API or pocket gateway, set ` +
+        `${trusted.filter(Boolean).join(", ") || "the configured API"}. Custom API origins must be configured: set ` +
         `SENTINELAYER_API_URL or SENTI_POCKET_URL (or \`apiUrl\` in ~/.sentinelayer/config.yml).`,
     );
     this.name = "CredentialDestinationRefused";
     this.code = "CREDENTIAL_DESTINATION_REFUSED";
     this.origin = origin;
   }
-}
-
-/** Record a token read from the user's own credential store, so the transport recognises it. */
-export function noteUserCredential(token) {
-  const value = String(token || "").trim();
-  if (value.length >= MIN_TOKEN_LENGTH) noted.add(value);
-}
-
-function userCredentials(env) {
-  const tokens = new Set(noted);
-  for (const name of TOKEN_ENV_VARS) {
-    const value = String(env[name] || "").trim();
-    if (value.length >= MIN_TOKEN_LENGTH) tokens.add(value);
-  }
-  return tokens;
 }
 
 function originOf(value) {
@@ -69,69 +52,103 @@ function originOf(value) {
   }
 }
 
-/** The origins the user's token may be sent to: environment and global config only. */
-export async function trustedCredentialOrigins({ env = process.env, homeDir } = {}) {
-  let configured = String(env.SENTINELAYER_API_URL || "").trim();
-  if (!configured) {
-    const globalConfig = await readConfigFile(getGlobalConfigPath({ homeDir })).catch(() => ({}));
-    configured = String(globalConfig?.apiUrl || "").trim() || DEFAULT_API_URL;
-  }
-  const origins = [configured, ...GATEWAY_ENV_VARS.map((name) => env[name])].map(originOf).filter(Boolean);
-  return [...new Set(origins)];
+function mint(token, origin, source) {
+  const value = String(token ?? "").trim();
+  if (!value || !origin) return null;
+  const credential = Object.freeze({ token: value, origin, source });
+  minted.add(credential);
+  return credential;
 }
 
-/** Whether a request carries one of the user's tokens: in any header value or in its URL. */
-function carriesUserCredential(request, env) {
-  const tokens = userCredentials(env);
-  if (tokens.size === 0) return false;
-  const carried = [request.url];
-  request.headers.forEach((value) => carried.push(value));
-  return carried.some((text) => [...tokens].some((token) => String(text).includes(token)));
-}
-
-/** Refuse a URL outside the trusted set, before anything carrying the user's token is sent there. */
-export async function assertTrustedCredentialOrigin(url, { env = process.env, homeDir } = {}) {
-  const origin = new URL(String(url)).origin;
-  const trusted = await trustedCredentialOrigins({ env, homeDir });
-  if (!trusted.includes(origin)) throw new CredentialDestinationRefused(origin, trusted);
+/** Whether a value is a credential this module minted. */
+export function isCredential(value) {
+  return minted.has(value);
 }
 
 /**
- * Whether a request carries the user's token, refusing it if it is bound for an origin outside
- * the trusted set. Exported for tests and for transports that do not go through globalThis.fetch.
+ * THE trust context: where the user's credentials may be sent. Built from the environment and
+ * the global config only, with the env and homeDir the caller resolves everything else with.
  */
-export async function assertCredentialDestination(request, { env = process.env, homeDir } = {}) {
-  if (!carriesUserCredential(request, env)) return false;
-  await assertTrustedCredentialOrigin(request.url, { env, homeDir });
-  return true;
-}
-
-/** Wrap globalThis.fetch with the destination check. Idempotent. */
-export function installCredentialDestinationGuard() {
-  const innerFetch = globalThis.fetch;
-  const NativeRequest = globalThis.Request;
-  if (typeof innerFetch !== "function" || typeof NativeRequest !== "function") return false;
-  if (innerFetch[GUARD_MARKER]) return true;
-  const guarded = async function credentialDestinationFetch(input, init) {
-    // One conversion, checked and dispatched: the Request that is checked is the one sent.
-    const request = new NativeRequest(input, init);
-    const credentialed = await assertCredentialDestination(request);
-    // Whatever the caller asked for, a credentialed request does not follow redirects: a
-    // redirect would send it on to an origin this check never saw.
-    return innerFetch.call(this, credentialed ? new NativeRequest(request, { redirect: "error" }) : request);
-  };
-  // Keep the markers of what it wraps (such as the test egress guard's), so each guard still
-  // sees itself installed and none is stacked twice.
-  for (const marker of Object.getOwnPropertySymbols(innerFetch)) {
-    Object.defineProperty(guarded, marker, { value: innerFetch[marker] });
+export async function resolveTrustContext({ env = process.env, homeDir } = {}) {
+  let apiUrl = String(env.SENTINELAYER_API_URL || "").trim();
+  if (!apiUrl) {
+    const globalConfig = await readConfigFile(getGlobalConfigPath({ homeDir })).catch(() => ({}));
+    apiUrl = String(globalConfig?.apiUrl || "").trim() || DEFAULT_API_URL;
   }
-  Object.defineProperty(guarded, GUARD_MARKER, { value: true });
-  globalThis.fetch = guarded;
-  return true;
+  return Object.freeze({
+    apiOrigin: originOf(apiUrl),
+    gatewayOrigin: originOf(env.SENTI_POCKET_URL),
+  });
 }
 
-export function isCredentialDestinationGuardInstalled() {
-  return Boolean(typeof globalThis.fetch === "function" && globalThis.fetch[GUARD_MARKER]);
+/** A credential for one of the user's tokens, bound to the configured API. */
+export async function userCredential(token, { context, env, homeDir, source = "user" } = {}) {
+  const trust = context || (await resolveTrustContext({ env, homeDir }));
+  return mint(token, trust.apiOrigin, source);
 }
 
-installCredentialDestinationGuard();
+/** The same token, bound to the configured pocket gateway instead; null when none is configured. */
+export async function gatewayCredential(credential, { context, env, homeDir } = {}) {
+  if (!isCredential(credential)) throw new TypeError("gatewayCredential needs a credential.");
+  const trust = context || (await resolveTrustContext({ env, homeDir }));
+  return mint(credential.token, trust.gatewayOrigin, "pocket_gateway");
+}
+
+/** An agent's admission credential, bound to the API that issued it. */
+export function admissionCredential({ token, apiUrl } = {}) {
+  return mint(token, originOf(apiUrl), "session_admission");
+}
+
+/**
+ * The credential for an auth result: its own, or, for a bare token from an injected resolver,
+ * the token bound to the configured API. Never bound to an origin the caller supplies.
+ */
+export async function credentialFor(auth, { context, env, homeDir } = {}) {
+  if (isCredential(auth?.credential)) return auth.credential;
+  if (!auth?.token) return null;
+  return userCredential(auth.token, { context, env, homeDir, source: auth.source || "user" });
+}
+
+/** Refuse an API URL outside the trust context, before any credential is minted for it. */
+export async function assertTrustedApiUrl(url, { context, env, homeDir } = {}) {
+  const trust = context || (await resolveTrustContext({ env, homeDir }));
+  const origin = originOf(url) || String(url);
+  if (origin !== trust.apiOrigin) throw new CredentialDestinationRefused(origin, [trust.apiOrigin]);
+}
+
+/** Refuse sending `credential` anywhere but its own origin. */
+export function assertCredentialDestination(credential, url) {
+  if (!isCredential(credential)) throw new TypeError("A credential from src/auth/credential-destinations.js is required.");
+  const origin = originOf(url);
+  if (origin !== credential.origin) throw new CredentialDestinationRefused(origin || String(url), [credential.origin]);
+}
+
+/**
+ * An injectable request function (requestJson-shaped: (url, options)), checked first: a
+ * credential in its options goes nowhere but its own origin, whichever implementation runs.
+ */
+export function checkedTransport(requestImpl) {
+  return async (url, options, ...rest) => {
+    if (options?.credential) assertCredentialDestination(options.credential, url);
+    return requestImpl(url, options, ...rest);
+  };
+}
+
+function headersWithout(headers, name) {
+  const entries = headers instanceof Headers ? [...headers.entries()] : Object.entries(headers || {});
+  return Object.fromEntries(entries.filter(([key]) => String(key).toLowerCase() !== name));
+}
+
+/**
+ * Send a request carrying `credential`: only to the credential's own origin, with the
+ * Authorization header set here, and without following redirects. `fetchImpl` is the transport
+ * it calls once those checks pass.
+ */
+export async function credentialedRequest(credential, url, init = {}, { fetchImpl = globalThis.fetch } = {}) {
+  assertCredentialDestination(credential, url);
+  return fetchImpl(String(url), {
+    ...init,
+    headers: { ...headersWithout(init.headers, "authorization"), Authorization: `Bearer ${credential.token}` },
+    redirect: "error",
+  });
+}

@@ -4,8 +4,6 @@ import path from "node:path";
 import fsp from "node:fs/promises";
 import process from "node:process";
 
-import { noteUserCredential } from "./credential-destinations.js";
-
 const CREDENTIALS_VERSION = 1;
 const KEYRING_SERVICE = "sentinelayer-cli";
 const SESSION_WARNING_PREFIX = "sentinelayer.auth.session";
@@ -584,13 +582,6 @@ async function tryDecryptFileToken({ metadata, homeDir }) {
  * }>}
  */
 export async function readStoredSession({ homeDir } = {}) {
-  const session = await readStoredSessionRecord({ homeDir });
-  // Whoever reads it, the transport recognises this token as the user's (credential-destinations.js).
-  if (session?.token) noteUserCredential(session.token);
-  return session;
-}
-
-async function readStoredSessionRecord({ homeDir } = {}) {
   const { filePath, metadata } = await readMetadata({ homeDir });
   if (!metadata) {
     return null;

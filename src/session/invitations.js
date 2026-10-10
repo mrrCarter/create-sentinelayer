@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
 import { requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { renderCoordinationBulletList } from "./coordination-guidance.js";
@@ -47,17 +48,18 @@ export function createSessionMutationCsrfToken({
   return createHmac("sha256", secret).update(message, "utf-8").digest("hex");
 }
 
+// The session-mutation headers: origin and a CSRF proof derived from the credential the request
+// is sent with. The credential itself is attached by credentialedRequest, never here.
 export function createSessionMutationHeaders({
-  bearerToken,
+  credential,
   sessionId,
   routeId,
   idempotencyKey,
   origin = SESSION_MUTATION_ORIGIN,
 } = {}) {
-  const token = normalizeString(bearerToken);
+  const token = normalizeString(credential?.token);
   const normalizedOrigin = normalizeString(origin) || SESSION_MUTATION_ORIGIN;
   return {
-    Authorization: `Bearer ${token}`,
     Origin: normalizedOrigin,
     "Sec-Fetch-Site": "same-site",
     "X-Sentinelayer-Session-Mutation": "session-mutation",
@@ -110,6 +112,7 @@ export async function acceptSessionInvitation(
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
 
+  const credential = await credentialFor(auth);
   const resolvedIdempotencyKey =
     normalizeString(idempotencyKey) || createSessionMutationIdempotencyKey("session-invite-accept");
   const apiUrl = normalizeString(auth.apiUrl).replace(/\/+$/, "");
@@ -121,14 +124,15 @@ export async function acceptSessionInvitation(
   if (normalizedSeatKey) body.seatKey = normalizedSeatKey;
   if (normalizedAgentId) body.agentId = normalizedAgentId;
 
-  const result = await requestMutation(
+  const result = await checkedTransport(requestMutation)(
     `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/invitations/accept`,
     {
       method: "POST",
       operationName: "session.invitation_accept",
       idempotencyKey: resolvedIdempotencyKey,
+      credential,
       headers: createSessionMutationHeaders({
-        bearerToken: auth.token,
+        credential,
         sessionId: normalizedSessionId,
         routeId: SESSION_INVITATION_ACCEPT_ROUTE_ID,
         idempotencyKey: resolvedIdempotencyKey,

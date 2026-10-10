@@ -186,7 +186,7 @@ async function resolveSessionCredentialContext({
       resolvedFetcher = () =>
         fetchAidenIdCredentials({
           apiUrl: resolvedSession.apiUrl || "https://api.sentinelayer.com",
-          token: resolvedSession.token,
+          auth: resolvedSession,
         });
     }
   } catch {

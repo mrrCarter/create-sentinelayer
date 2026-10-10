@@ -1,10 +1,11 @@
 import "./setup-env.mjs";
-// Where the user's own SentinelLayer token may be sent. Two loopback servers stand in for
-// the configured origin and for some other origin; the other one must receive nothing.
-//   - The MCP CLI bridge exposes no option that names a destination (a URL, host, origin,
-//     endpoint or gateway), for any tool.
-//   - The transport sends the token only to origins built from the environment and the
-//     user's global config, whatever a command or tool input names.
+// Where the user's own SentinelLayer token may be sent. Loopback servers stand in for the
+// configured API, the configured pocket gateway and some other origin; the other one must
+// receive nothing.
+//   - The MCP CLI bridge exposes only the inputs listed for each command, and none of them
+//     names a destination (a URL, host, origin, endpoint or gateway).
+//   - A credential is sent only by credentialedRequest, only to the origin the trust context
+//     (environment and global config) bound it to, whatever a command or tool input names.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -14,11 +15,13 @@ import os from "node:os";
 import path from "node:path";
 
 import { requestJson } from "../src/auth/http.js";
-import { readStoredSession, writeStoredSession } from "../src/auth/session-store.js";
+import { writeStoredSession } from "../src/auth/session-store.js";
 import {
   CredentialDestinationRefused,
-  noteUserCredential,
-  trustedCredentialOrigins,
+  checkedTransport,
+  credentialedRequest,
+  resolveTrustContext,
+  userCredential,
 } from "../src/auth/credential-destinations.js";
 import {
   buildCliCommandMcpTools,
@@ -30,7 +33,6 @@ import { buildSentinelayerCliRegistryTemplate } from "../src/mcp/cli-registry.js
 
 const USER_TOKEN = `sl_user_${"u".repeat(40)}`;
 const STORED_TOKEN = `sl_stored_${"s".repeat(40)}`;
-const OTHER_TOKEN = `other_service_${"o".repeat(40)}`;
 const SID = "6b0f8c1e-3c2a-4d5e-8f90-a1b2c3d4e5f6";
 
 async function startServer() {
@@ -387,64 +389,77 @@ test("session wake daemon still runs through the bridge with its local host and 
   }
 });
 
-// ---- the transport, in this process
+// ---- credentialedRequest, the one way a credential is sent
 
-async function withEnv(values, fn) {
-  const saved = {};
-  for (const key of Object.keys(values)) {
-    saved[key] = process.env[key];
-    if (values[key] === undefined) delete process.env[key];
-    else process.env[key] = values[key];
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-}
+const recordingTransport = () => {
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    sent.push({ url, init });
+    return fetch(url, init);
+  };
+  return { sent, fetchImpl };
+};
 
-test("the transport sends the user's token only to the configured origins, however it is carried", async () => {
+test("a credential goes nowhere but its own origin, and an injected transport is never called for another", async () => {
   const configured = await startServer();
-  const gateway = await startServer();
   const other = await startServer();
   try {
-    await withEnv(
-      { SENTINELAYER_TOKEN: USER_TOKEN, SENTINELAYER_API_URL: configured.url, SENTI_POCKET_URL: gateway.url },
-      async () => {
-        for (const init of [
-          { headers: { Authorization: `Bearer ${USER_TOKEN}` } },
-          { headers: { authorization: `bearer ${USER_TOKEN}` } },
-          { headers: { "X-Api-Key": USER_TOKEN } },
-          { headers: new Headers([["authorization", `Bearer ${USER_TOKEN}`]]) },
-        ]) {
-          await assert.rejects(fetch(`${other.url}/x`, init), CredentialDestinationRefused);
-          await assert.rejects(fetch(new Request(`${other.url}/x`, init)), CredentialDestinationRefused);
-        }
-        await assert.rejects(fetch(`${other.url}/x?token=${USER_TOKEN}`), CredentialDestinationRefused);
-        assert.deepEqual(other.requests, [], "nothing reached the other origin");
-
-        await fetch(`${configured.url}/x`, { headers: { Authorization: `Bearer ${USER_TOKEN}` } });
-        await fetch(`${gateway.url}/x`, { headers: { Authorization: `Bearer ${USER_TOKEN}` } });
-        assert.equal(configured.requests.length, 1);
-        assert.equal(gateway.requests.length, 1);
-
-        // another service's credential, or none, is not this policy's business
-        await fetch(`${other.url}/x`, { headers: { Authorization: `Bearer ${OTHER_TOKEN}` } });
-        await fetch(`${other.url}/x`);
-        assert.equal(other.requests.length, 2);
-      },
-    );
+    const credential = await userCredential(USER_TOKEN, { env: { SENTINELAYER_API_URL: configured.url } });
+    const { sent, fetchImpl } = recordingTransport();
+    await assert.rejects(credentialedRequest(credential, `${other.url}/x`, {}, { fetchImpl }), CredentialDestinationRefused);
+    assert.deepEqual(sent, [], "the injected transport was not called");
+    assert.deepEqual(other.requests, []);
+    const response = await credentialedRequest(credential, `${configured.url}/x`, {}, { fetchImpl });
+    assert.equal(response.status, 200);
+    assert.equal(bearerOf(configured.requests[0]), USER_TOKEN);
   } finally {
     await configured.close();
-    await gateway.close();
     await other.close();
   }
 });
 
-test("a request carrying the user's token never follows a redirect, whatever the caller asks", async () => {
+test("a short token is bound and held back like any other", async () => {
+  const configured = await startServer();
+  const other = await startServer();
+  try {
+    const credential = await userCredential("t", { env: { SENTINELAYER_API_URL: configured.url } });
+    await assert.rejects(credentialedRequest(credential, `${other.url}/x`), CredentialDestinationRefused);
+    assert.deepEqual(other.requests, []);
+    await credentialedRequest(credential, `${configured.url}/x`);
+    assert.equal(configured.requests[0].headers.authorization, "Bearer t");
+  } finally {
+    await configured.close();
+    await other.close();
+  }
+});
+
+test("only a credential minted from the trust context is sent: a look-alike object is refused", async () => {
+  const other = await startServer();
+  try {
+    const forged = Object.freeze({ token: USER_TOKEN, origin: other.url, source: "user" });
+    await assert.rejects(credentialedRequest(forged, `${other.url}/x`), TypeError);
+    await assert.rejects(requestJson(`${other.url}/x`, { credential: forged }), TypeError);
+    assert.deepEqual(other.requests, []);
+  } finally {
+    await other.close();
+  }
+});
+
+test("the Authorization header is set by credentialedRequest alone", async () => {
+  const configured = await startServer();
+  try {
+    const credential = await userCredential(USER_TOKEN, { env: { SENTINELAYER_API_URL: configured.url } });
+    await credentialedRequest(credential, `${configured.url}/x`, {
+      headers: { authorization: "Bearer something-else", AUTHORIZATION: "x", "X-Trace": "1" },
+    });
+    assert.equal(configured.requests[0].headers.authorization, `Bearer ${USER_TOKEN}`);
+    assert.equal(configured.requests[0].headers["x-trace"], "1");
+  } finally {
+    await configured.close();
+  }
+});
+
+test("a credentialed request never follows a redirect, whatever the caller asks", async () => {
   const other = await startServer();
   const redirecting = createServer((req, res) => {
     res.writeHead(302, { Location: `${other.url}/landing` });
@@ -454,62 +469,34 @@ test("a request carrying the user's token never follows a redirect, whatever the
   await once(redirecting, "listening");
   const configuredUrl = `http://127.0.0.1:${redirecting.address().port}`;
   try {
-    await withEnv({ SENTINELAYER_TOKEN: USER_TOKEN, SENTINELAYER_API_URL: configuredUrl }, async () => {
-      const headers = { Authorization: `Bearer ${USER_TOKEN}`, "X-Session-Token": USER_TOKEN };
-      for (const init of [{ headers }, { headers, redirect: "follow" }, { headers: { "X-Session-Token": USER_TOKEN } }]) {
-        await assert.rejects(fetch(`${configuredUrl}/start`, init), TypeError);
-      }
-      assert.deepEqual(other.requests, [], "the redirect target received nothing");
-      // a request without the token follows redirects as before
-      const plain = await fetch(`${configuredUrl}/start`);
-      assert.equal(plain.status, 200);
-      assert.equal(other.requests.length, 1);
-      assert.equal(other.requests[0].headers.authorization, undefined);
-    });
+    const credential = await userCredential(USER_TOKEN, { env: { SENTINELAYER_API_URL: configuredUrl } });
+    for (const init of [{}, { redirect: "follow" }, { redirect: "manual", headers: { "X-Session-Token": USER_TOKEN } }]) {
+      await assert.rejects(credentialedRequest(credential, `${configuredUrl}/start`, init), TypeError);
+    }
+    assert.deepEqual(other.requests, [], "the redirect target received nothing");
   } finally {
     await new Promise((resolve) => redirecting.close(resolve));
     await other.close();
   }
 });
 
-test("a token read from the stored session is recognised wherever it is carried", async () => {
+test("an injectable request function is checked before it runs", async () => {
   const configured = await startServer();
   const other = await startServer();
-  const token = `sl_noted_${"n".repeat(40)}`;
   try {
-    await withEnv({ SENTINELAYER_TOKEN: undefined, SENTINELAYER_API_URL: configured.url }, async () => {
-      await fetch(`${other.url}/x`, { headers: { Authorization: `Bearer ${token}` } });
-      assert.equal(other.requests.length, 1, "unknown before it is read");
-      noteUserCredential(token);
-      await assert.rejects(fetch(`${other.url}/x`, { headers: { Authorization: `Bearer ${token}` } }), CredentialDestinationRefused);
-      assert.equal(other.requests.length, 1);
+    const credential = await userCredential(USER_TOKEN, { env: { SENTINELAYER_API_URL: configured.url } });
+    const calls = [];
+    const checked = checkedTransport(async (url, options) => {
+      calls.push(url);
+      return options;
     });
+    await assert.rejects(checked(`${other.url}/x`, { credential }), CredentialDestinationRefused);
+    assert.deepEqual(calls, []);
+    await checked(`${configured.url}/x`, { credential });
+    assert.deepEqual(calls, [`${configured.url}/x`]);
   } finally {
     await configured.close();
     await other.close();
-  }
-});
-
-test("a token read straight from the stored session, by any caller, is recognised", async () => {
-  const configured = await startServer();
-  const other = await startServer();
-  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-stored-reader-"));
-  const token = `sl_reader_${"r".repeat(40)}`;
-  try {
-    const tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
-    await writeStoredSession({ apiUrl: configured.url, token, tokenExpiresAt }, { homeDir: home });
-    await withEnv({ SENTINELAYER_TOKEN: undefined, SENTINELAYER_API_URL: configured.url }, async () => {
-      const stored = await readStoredSession({ homeDir: home });
-      await assert.rejects(
-        fetch(`${other.url}/x`, { headers: { Authorization: `Bearer ${stored.token}` } }),
-        CredentialDestinationRefused,
-      );
-      assert.deepEqual(other.requests, []);
-    });
-  } finally {
-    await configured.close();
-    await other.close();
-    await fsp.rm(home, { recursive: true, force: true });
   }
 });
 
@@ -517,42 +504,39 @@ test("a refused destination is final in the API client: no retry, no request", a
   const configured = await startServer();
   const other = await startServer();
   try {
-    await withEnv({ SENTINELAYER_TOKEN: USER_TOKEN, SENTINELAYER_API_URL: configured.url }, async () => {
-      await assert.rejects(
-        requestJson(`${other.url}/api/v1/x`, { headers: { Authorization: `Bearer ${USER_TOKEN}` }, retryDelayMs: 1 }),
-        CredentialDestinationRefused,
-      );
-      assert.deepEqual(other.requests, []);
-    });
+    const credential = await userCredential(USER_TOKEN, { env: { SENTINELAYER_API_URL: configured.url } });
+    await assert.rejects(requestJson(`${other.url}/api/v1/x`, { credential, retryDelayMs: 1 }), CredentialDestinationRefused);
+    assert.deepEqual(other.requests, []);
   } finally {
     await configured.close();
     await other.close();
   }
 });
 
-test("the trusted origins come from the environment and the global config only", async () => {
-  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-trusted-origins-"));
+test("the trust context comes from the environment and the global config only", async () => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-trust-context-"));
   const project = path.join(home, "project");
   try {
-    assert.deepEqual(await trustedCredentialOrigins({ env: {}, homeDir: home }), ["https://api.sentinelayer.com"]);
+    assert.deepEqual({ ...(await resolveTrustContext({ env: {}, homeDir: home })) }, {
+      apiOrigin: "https://api.sentinelayer.com",
+      gatewayOrigin: "",
+    });
     await fsp.mkdir(path.join(home, ".sentinelayer"), { recursive: true });
     await fsp.writeFile(path.join(home, ".sentinelayer", "config.yml"), "apiUrl: https://api.global.example\n");
     // a workspace's own config never names a trusted origin
     await fsp.mkdir(project, { recursive: true });
     await fsp.writeFile(path.join(project, ".sentinelayer.yml"), "apiUrl: https://api.project.example\n");
-    assert.deepEqual(await trustedCredentialOrigins({ env: {}, homeDir: home }), ["https://api.global.example"]);
-    assert.deepEqual(
-      await trustedCredentialOrigins({
-        env: {
-          SENTINELAYER_API_URL: "https://api.env.example/v1",
-          SENTI_POCKET_URL: "https://pocket.example/base",
-          POCKET_GATEWAY_URL: "https://other-gateway.example",
-        },
-        homeDir: home,
-      }),
-      ["https://api.env.example", "https://pocket.example"],
-      "the pocket gateway comes from SENTI_POCKET_URL only",
-    );
+    assert.equal((await resolveTrustContext({ env: {}, homeDir: home })).apiOrigin, "https://api.global.example");
+    const fromEnv = await resolveTrustContext({
+      env: {
+        SENTINELAYER_API_URL: "https://api.env.example/v1",
+        SENTI_POCKET_URL: "https://pocket.example/base",
+        POCKET_GATEWAY_URL: "https://other-gateway.example",
+      },
+      homeDir: home,
+    });
+    assert.equal(fromEnv.apiOrigin, "https://api.env.example");
+    assert.equal(fromEnv.gatewayOrigin, "https://pocket.example", "the pocket gateway comes from SENTI_POCKET_URL only");
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }

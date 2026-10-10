@@ -3,6 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { credentialedRequest } from "../../../auth/credential-destinations.js";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
 /**
@@ -445,14 +446,16 @@ async function callScannerApi(url) {
   const scanEndpoint = apiUrl + "/api/v1/scan/url";
 
   // Submit scan
-  const submitResponse = await fetchWithTimeout(scanEndpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + session.token,
+  const submitResponse = await credentialedRequest(
+    session.credential,
+    scanEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, scan_type: "lighthouse" }),
     },
-    body: JSON.stringify({ url, scan_type: "lighthouse" }),
-  }, 15000);
+    { fetchImpl: (target, init) => fetchWithTimeout(target, init, 15000) },
+  );
 
   if (!submitResponse.ok) {
     return { available: false, reason: "Scanner API returned " + submitResponse.status };
@@ -469,9 +472,9 @@ async function callScannerApi(url) {
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise(r => setTimeout(r, 3000));
     try {
-      const pollResponse = await fetchWithTimeout(pollUrl, {
-        headers: { "Authorization": "Bearer " + session.token },
-      }, 10000);
+      const pollResponse = await credentialedRequest(session.credential, pollUrl, {}, {
+        fetchImpl: (target, init) => fetchWithTimeout(target, init, 10000),
+      });
       if (!pollResponse.ok) continue;
       const pollData = await pollResponse.json();
       if (pollData.status === "completed" || pollData.status === "complete") {

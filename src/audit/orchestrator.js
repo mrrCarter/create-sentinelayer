@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { userCredential } from "../auth/credential-destinations.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { resolveCodebaseIngest } from "../ingest/engine.js";
@@ -566,11 +567,12 @@ export async function runAuditOrchestrator({
   }
   const memoryProvider = resolveMemoryProvider(process.env);
   const memoryApiEndpoint = normalizeString(process.env.SENTINELAYER_MEMORY_API_ENDPOINT);
-  const memoryApiKey = normalizeString(
-    process.env.SENTINELAYER_MEMORY_API_KEY ||
-      process.env.SENTINELAYER_TOKEN ||
-      process.env.SENTINELAYER_API_TOKEN
-  );
+  // The memory service's own key, if configured; otherwise the user's token as a credential, which
+  // reaches the memory endpoint only if it is on the configured API's origin.
+  const memoryApiKey = normalizeString(process.env.SENTINELAYER_MEMORY_API_KEY);
+  const memoryCredential = memoryApiKey
+    ? null
+    : await userCredential(process.env.SENTINELAYER_TOKEN || process.env.SENTINELAYER_API_TOKEN, { source: "env" });
   const sharedMemoryCorpus = await buildSharedMemoryCorpus({
     outputRoot,
     targetPath: normalizedTargetPath,
@@ -628,6 +630,7 @@ export async function runAuditOrchestrator({
       provider: memoryProvider,
       apiEndpoint: memoryApiEndpoint,
       apiKey: memoryApiKey,
+      credential: memoryCredential,
     });
     sharedMemoryQueries.push({
       agentId: agent.id,

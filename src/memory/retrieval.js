@@ -1,6 +1,8 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { credentialedRequest } from "../auth/credential-destinations.js";
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -506,6 +508,7 @@ export async function queryHybridRetriever({
   provider = "local",
   apiEndpoint = "",
   apiKey = "",
+  credential = null,
   fetchImpl = globalThis.fetch,
 } = {}) {
   const normalizedProvider = normalizeString(provider).toLowerCase() || "local";
@@ -534,12 +537,18 @@ export async function queryHybridRetriever({
   }
 
   try {
-    const response = await fetchImpl(String(apiEndpoint), {
+    // The user's credential goes only to its own origin (credentialedRequest); a dedicated memory
+    // API key is that service's own key, sent to the endpoint configured for it.
+    const send = (init) =>
+      credential
+        ? credentialedRequest(credential, String(apiEndpoint), init, { fetchImpl })
+        : fetchImpl(String(apiEndpoint), {
+            ...init,
+            headers: { ...init.headers, ...(normalizeString(apiKey) ? { authorization: `Bearer ${apiKey}` } : {}) },
+          });
+    const response = await send({
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(normalizeString(apiKey) ? { authorization: `Bearer ${apiKey}` } : {}),
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({
         query: normalizeString(query),
         limit: Math.max(1, Math.floor(normalizeNumber(limit, 12))),

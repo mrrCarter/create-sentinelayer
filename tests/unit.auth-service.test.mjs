@@ -204,17 +204,10 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
     throw new Error("Unable to resolve mock API address.");
   }
 
-  // The user's token is only sent to the configured API, so this mock is configured as that API.
-  const apiUrl = `http://127.0.0.1:${address.port}`;
-  const previousApiUrl = process.env.SENTINELAYER_API_URL;
-  process.env.SENTINELAYER_API_URL = apiUrl;
-
   return {
     state,
-    apiUrl,
+    apiUrl: `http://127.0.0.1:${address.port}`,
     async close() {
-      if (previousApiUrl === undefined) delete process.env.SENTINELAYER_API_URL;
-      else process.env.SENTINELAYER_API_URL = previousApiUrl;
       server.close();
       await once(server, "close");
     },
@@ -231,7 +224,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
   try {
     const loginResult = await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -261,7 +254,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const activeSession = await resolveActiveAuthSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       autoRotate: false,
@@ -272,7 +265,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const authStatus = await getAuthStatus({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       checkRemote: true,
@@ -284,7 +277,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const eventsResponse = await listRuntimeRunEvents({
       apiUrl: mock.apiUrl,
-      authToken: activeSession?.token,
+      credential: activeSession?.credential,
       runId: "run-1",
     });
     assert.equal(Array.isArray(eventsResponse.events), true);
@@ -292,14 +285,14 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
 
     const statusResponse = await getRuntimeRunStatus({
       apiUrl: mock.apiUrl,
-      authToken: activeSession?.token,
+      credential: activeSession?.credential,
       runId: "run-1",
     });
     assert.equal(statusResponse.status, "running");
 
     const logoutResult = await logoutSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       revokeRemote: true,
@@ -360,7 +353,7 @@ test("Unit auth service: login poll tolerates transient transport failures", asy
   try {
     const loginResult = await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -397,7 +390,7 @@ test("Unit auth service: login fails fast when poll status is rejected", async (
       () =>
         loginAndPersistSession({
           cwd: tempRoot,
-          env: {},
+          env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
           homeDir: tempRoot,
           explicitApiUrl: mock.apiUrl,
           skipBrowserOpen: true,
@@ -431,7 +424,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
   try {
     await loginAndPersistSession({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       skipBrowserOpen: true,
@@ -444,7 +437,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
 
     const listed = await listStoredAuthSessions({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
     });
@@ -455,7 +448,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
 
     const revoked = await revokeAuthToken({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
     });

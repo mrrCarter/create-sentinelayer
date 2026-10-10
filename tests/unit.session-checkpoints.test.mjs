@@ -22,6 +22,8 @@ import {
 } from "../src/session/checkpoints.js";
 
 const fakeAuthValue = ["local", "checkpoint", "auth"].join("-");
+// The fixture API is the configured API: the user's credential is only sent to that origin.
+process.env.SENTINELAYER_API_URL = "https://api.example.com";
 
 const fakeAuth = async () => ({
   token: fakeAuthValue,
@@ -160,7 +162,8 @@ test("Unit session checkpoints: list calls checkpoint endpoint with auth", async
     "https://api.example.com/api/v1/sessions/sess-123/checkpoints?limit=200",
   );
   assert.equal(calls[0].options.method, "GET");
-  assert.equal(calls[0].options.headers.Authorization, `Bearer ${fakeAuthValue}`);
+  assert.equal(calls[0].options.credential.token, fakeAuthValue);
+  assert.equal(calls[0].options.credential.origin, "https://api.example.com");
   assert.equal(result.count, 1);
   assert.equal(result.checkpoints[0].checkpointId, "cp_1");
 });
@@ -318,7 +321,8 @@ test("Unit session checkpoints: create posts stable idempotent checkpoint body",
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://api.example.com/api/v1/sessions/sess-123/checkpoints");
   assert.equal(calls[0].options.operationName, "session-checkpoint-create");
-  assert.equal(calls[0].options.headers.Authorization, `Bearer ${fakeAuthValue}`);
+  assert.equal(calls[0].options.credential.token, fakeAuthValue);
+  assert.equal(calls[0].options.credential.origin, "https://api.example.com");
   assert.match(calls[0].options.idempotencyKey, /^sl_cli_session_checkpoint_[a-f0-9]{64}$/);
   assert.match(calls[0].options.body.checkpointId, /^cp_cli_[a-f0-9]{24}$/);
   assert.equal(result.checkpoint.startSequence, 3);

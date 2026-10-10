@@ -20,7 +20,12 @@ import {
   listSupportedCodingAgents,
   resolveCodingAgent,
 } from "./config/agent-dictionary.js";
-import { noteUserCredential } from "./auth/credential-destinations.js";
+import {
+  CredentialDestinationRefused,
+  assertTrustedApiUrl,
+  credentialedRequest,
+  userCredential,
+} from "./auth/credential-destinations.js";
 import { resolveOutputRoot } from "./config/service.js";
 import { normalizeAgentEvent } from "./events/schema.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
@@ -451,11 +456,14 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestJson(url, { method = "GET", headers = {}, body, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {}) {
+async function requestJson(
+  url,
+  { method = "GET", headers = {}, body, credential = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {},
+) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
+    const init = {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -463,7 +471,9 @@ async function requestJson(url, { method = "GET", headers = {}, body, timeoutMs 
       },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: controller.signal,
-    });
+    };
+    // A credential (src/auth/credential-destinations.js) goes only to its own origin.
+    const response = credential ? await credentialedRequest(credential, url, init) : await fetch(url, init);
 
     const text = await response.text();
     let payload = null;
@@ -492,7 +502,7 @@ async function requestJson(url, { method = "GET", headers = {}, body, timeoutMs 
     }
     return payload;
   } catch (error) {
-    if (error instanceof SentinelayerApiError) {
+    if (error instanceof SentinelayerApiError || error instanceof CredentialDestinationRefused) {
       throw error;
     }
     if (error instanceof Error && error.name === "AbortError") {
@@ -542,7 +552,6 @@ async function pollCliSession({
       },
     });
     if (response.status === "approved" && response.auth_token) {
-      noteUserCredential(response.auth_token); // the user's token, from here on
       return response;
     }
     await sleep(Math.max(1, Number(pollIntervalSeconds) || 2) * 1000);
@@ -553,28 +562,20 @@ async function pollCliSession({
   });
 }
 
-async function generateArtifacts({ apiUrl, authToken, payload }) {
-  const generated = await requestJson(`${apiUrl}/api/v1/builder/generate`, {
+async function generateArtifacts({ apiUrl, credential, payload }) {
+  return requestJson(`${apiUrl}/api/v1/builder/generate`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-    },
+    credential,
     body: payload,
     timeoutMs: 180_000,
   });
-  noteUserCredential(generated?.bootstrap_token?.token); // a project token issued for the user
-  return generated;
 }
 
-async function issueBootstrapToken({ apiUrl, authToken }) {
-  const issued = await requestJson(`${apiUrl}/api/v1/builder/bootstrap-token`, {
+async function issueBootstrapToken({ apiUrl, credential }) {
+  return requestJson(`${apiUrl}/api/v1/builder/bootstrap-token`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-    },
+    credential,
   });
-  noteUserCredential(issued?.token); // a project token issued for the user
-  return issued;
 }
 
 // The init flow's credential steps, for tests.
@@ -3273,7 +3274,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   }
 
   const requestedAuthMode = interview.authMode === "byok" ? "byok" : "sentinelayer";
-  let authToken = "";
+  let authCredential = null;
 
   printSection("Authentication");
   if (requestedAuthMode === "byok") {
@@ -3285,6 +3286,8 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
     }
 
+    // The token this flow issues is the user's: the API must be the configured one.
+    await assertTrustedApiUrl(DEFAULT_API_URL);
     const challenge = crypto.randomBytes(32).toString("hex");
     const session = await startCliSession({
       apiUrl: DEFAULT_API_URL,
@@ -3313,8 +3316,8 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       timeoutMs: DEFAULT_AUTH_TIMEOUT_MS,
     });
 
-    authToken = String(approval.auth_token || "").trim();
-    if (!authToken) {
+    authCredential = await userCredential(approval.auth_token, { source: "init_approval" });
+    if (!authCredential) {
       throw new Error("Authentication completed but no auth token was returned.");
     }
   }
@@ -3352,7 +3355,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   } else {
     generated = await generateArtifacts({
       apiUrl: DEFAULT_API_URL,
-      authToken,
+      credential: authCredential,
       payload: generatePayload,
     });
 
@@ -3361,7 +3364,7 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       try {
         bootstrapToken = await issueBootstrapToken({
           apiUrl: DEFAULT_API_URL,
-          authToken,
+          credential: authCredential,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

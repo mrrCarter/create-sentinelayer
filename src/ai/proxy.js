@@ -8,6 +8,7 @@
  * Response: { content, usage: { model, provider, tokens_in, tokens_out, cost_usd, latency_ms } }
  */
 
+import { CredentialDestinationRefused, credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
@@ -318,7 +319,7 @@ function buildProxyError(status, parsed) {
  * @param {number} [options.maxTokens] - Max output tokens (default: 4096)
  * @param {number} [options.temperature] - Temperature (default: 0.1)
  * @param {string} [options.apiUrl] - Override API URL
- * @param {string} [options.token] - Override Bearer token
+ * @param {string} [options.token] - The user's token, if the caller holds it: bound to the configured API
  * @param {string} [options.sessionId] - Optional Senti session id for server-side usage metering
  * @param {string} [options.agentId] - Optional session agent id for server-side usage metering
  * @param {string} [options.action] - Optional metered action, defaults server-side when omitted
@@ -346,11 +347,12 @@ export async function invokeViaProxy({
   metadata = null,
   fetchImpl = fetch,
 } = {}) {
-  // Resolve credentials from session if not provided
+  // Resolve credentials from session if not provided. A passed token is bound to the configured
+  // API (src/auth/credential-destinations.js), so an apiUrl on any other origin is refused.
   let resolvedApiUrl = String(apiUrl || "").trim();
-  let resolvedToken = String(token || "").trim();
+  let credential = String(token || "").trim() ? await credentialFor({ token }) : null;
 
-  if (!resolvedApiUrl || !resolvedToken) {
+  if (!resolvedApiUrl || !credential) {
     const session = await resolveActiveAuthSession({
       cwd: process.cwd(),
       env: process.env,
@@ -362,7 +364,7 @@ export async function invokeViaProxy({
       );
     }
     if (!resolvedApiUrl) resolvedApiUrl = String(session.apiUrl || "https://api.sentinelayer.com").trim();
-    if (!resolvedToken) resolvedToken = String(session.token).trim();
+    if (!credential) credential = await credentialFor(session);
   }
 
   const url = `${resolvedApiUrl.replace(/\/+$/, "")}/api/v1/proxy/llm`;
@@ -393,7 +395,6 @@ export async function invokeViaProxy({
 
   const headers = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${resolvedToken}`,
     Accept: "application/json",
   };
   if (normalizedUsageIdempotencyKey) {
@@ -410,12 +411,12 @@ export async function invokeViaProxy({
       const controller = new AbortController();
       const timeoutHandle = setTimeout(() => controller.abort(), PROXY_TIMEOUT_MS);
       try {
-        response = await fetchImpl(url, {
-          method: "POST",
-          headers,
-          body,
-          signal: controller.signal,
-        });
+        response = await credentialedRequest(
+          credential,
+          url,
+          { method: "POST", headers, body, signal: controller.signal },
+          { fetchImpl },
+        );
       } finally {
         clearTimeout(timeoutHandle);
       }
@@ -436,7 +437,7 @@ export async function invokeViaProxy({
 
       throw buildProxyError(response.status, parsedError);
     } catch (err) {
-      if (err instanceof SentinelayerProxyError) {
+      if (err instanceof SentinelayerProxyError || err instanceof CredentialDestinationRefused) {
         throw err;
       }
       lastError = err;

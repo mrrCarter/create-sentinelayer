@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { CredentialDestinationRefused, credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "../auth/http.js";
 import { requestHostedMcpAccessToken } from "./token-service.js";
 
@@ -75,7 +76,7 @@ function summarizeJsonRpcError(error, secrets = []) {
 async function postJsonRpc({
   fetchImpl,
   url,
-  accessToken,
+  credential,
   payload,
   timeoutMs,
   redactionSecrets = [],
@@ -83,15 +84,18 @@ async function postJsonRpc({
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetchImpl(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    // fetchImpl is the transport credentialedRequest calls, after its origin check.
+    const response = await credentialedRequest(
+      credential,
+      url,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
       },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
+      { fetchImpl },
+    );
     const text = await response.text().catch(() => "");
     let json = null;
     if (text) {
@@ -108,6 +112,7 @@ async function postJsonRpc({
       detail: json ? "" : redactMcpSmokeText(text, redactionSecrets),
     };
   } catch (error) {
+    if (error instanceof CredentialDestinationRefused) throw error;
     const aborted = Boolean(error) && error.name === "AbortError";
     return {
       reached: false,
@@ -172,6 +177,8 @@ export async function runHostedMcpSmoke({
   if (!accessToken) {
     throw new Error("Hosted MCP token mint succeeded but returned no access token.");
   }
+  // The minted bearer as a credential: the mint's own, or the bare token bound to the configured API.
+  const credential = await credentialFor({ credential: minted.credential, token: accessToken }, { env, homeDir });
   const redactionSecrets = [accessToken];
 
   const mcpUrl = joinUrl(minted.apiUrl, "/mcp");
@@ -181,7 +188,7 @@ export async function runHostedMcpSmoke({
   const toolsResponse = await postJsonRpc({
     fetchImpl,
     url: mcpUrl,
-    accessToken,
+    credential,
     timeoutMs: normalizedTimeoutMs,
     redactionSecrets,
     payload: {
@@ -247,7 +254,7 @@ export async function runHostedMcpSmoke({
       const eventsResponse = await postJsonRpc({
         fetchImpl,
         url: mcpUrl,
-        accessToken,
+        credential,
         timeoutMs: normalizedTimeoutMs,
         redactionSecrets,
         payload: {

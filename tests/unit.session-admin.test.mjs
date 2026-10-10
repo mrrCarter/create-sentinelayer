@@ -97,10 +97,15 @@ async function startMockSessionAdminApi() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   const port = Number(address?.port || 0);
+  // The mock is the configured API: --api-url may name it, and the token is only sent there.
+  const previousApiUrl = process.env.SENTINELAYER_API_URL;
+  process.env.SENTINELAYER_API_URL = `http://127.0.0.1:${port}`;
   return {
     apiUrl: `http://127.0.0.1:${port}`,
     close: () =>
       new Promise((resolve, reject) => {
+        if (previousApiUrl === undefined) delete process.env.SENTINELAYER_API_URL;
+        else process.env.SENTINELAYER_API_URL = previousApiUrl;
         server.close((error) => {
           if (error) {
             reject(error);

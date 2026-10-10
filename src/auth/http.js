@@ -4,12 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
-import { CredentialDestinationRefused, installCredentialDestinationGuard } from "./credential-destinations.js";
+import { CredentialDestinationRefused, credentialedRequest, isCredential } from "./credential-destinations.js";
 
 // No-op outside tests; see src/net/test-egress-guard.js.
 installTestEgressGuard();
-// Every request carrying the user's token goes only to a trusted origin; see credential-destinations.js.
-installCredentialDestinationGuard();
 
 /**
  * Default timeout applied to Sentinelayer API requests when no override is provided.
@@ -428,7 +426,8 @@ export function __resetRequestCircuitForTests(scope) {
  *   maxRetries?: number,
  *   retryDelayMs?: number
  *   allowEmptyBody?: boolean
- * }} [options]
+ *   credential?: object
+ * }} [options] `credential` (src/auth/credential-destinations.js) is sent with credentialedRequest.
  * @returns {Promise<any>}
  */
 export async function requestJson(
@@ -436,6 +435,7 @@ export async function requestJson(
   {
     method = "GET",
     headers = {},
+    credential = null,
     body,
     idempotencyKey = null,
     allowNonIdempotent = false,
@@ -445,6 +445,9 @@ export async function requestJson(
     allowEmptyBody = false,
   } = {}
 ) {
+  if (credential && !isCredential(credential)) {
+    throw new TypeError("requestJson: credential must come from src/auth/credential-destinations.js.");
+  }
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
   const explicitIdempotencyKey = String(idempotencyKey || "").trim() || null;
   const existingIdempotencyKey = explicitIdempotencyKey || resolveIdempotencyKey(headers);
@@ -498,13 +501,14 @@ export async function requestJson(
     }, normalizedTimeoutMs);
 
     try {
-      const response = await fetch(String(url), {
+      const init = {
         method: normalizedMethod,
         headers: outgoingHeaders,
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "error",
         signal: controller.signal,
-      });
+      };
+      const response = credential ? await credentialedRequest(credential, url, init) : await fetch(String(url), init);
 
       const rawBody = await response.text();
       const trimmedBody = rawBody.trim();
@@ -654,6 +658,7 @@ export async function requestJsonMutation(
   {
     method = "POST",
     headers = {},
+    credential = null,
     body,
     idempotencyKey = null,
     operationName,
@@ -682,6 +687,7 @@ export async function requestJsonMutation(
   return requestJson(url, {
     method: normalizedMethod,
     headers,
+    credential,
     body,
     idempotencyKey: resolvedIdempotencyKey,
     timeoutMs,

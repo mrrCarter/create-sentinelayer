@@ -12,6 +12,9 @@ import {
 } from "../src/ai/client.js";
 import { SentinelayerProxyError } from "../src/ai/proxy.js";
 
+// The fixture API is the configured API: the user's token is only sent to that origin.
+process.env.SENTINELAYER_API_URL = "https://api.example.test";
+
 const FIXTURE_OPENAI_CRED = ["fixture", "openai", "token", "value"].join("_");
 const FIXTURE_ANTHROPIC_CRED = ["fixture", "anthropic", "token", "value"].join("_");
 const FIXTURE_GOOGLE_CRED = ["fixture", "google", "token", "value"].join("_");

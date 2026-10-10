@@ -4,6 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 
+import { credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { isSessionControlEvent } from "./control-events.js";
@@ -677,13 +678,21 @@ export async function fetchJsonWithFullTimeout(
   const controller = new AbortController();
   const startedAtMs = Date.now();
   let response = null;
+  // A credential (src/auth/credential-destinations.js) is sent only to its own origin, by
+  // credentialedRequest; fetchImpl is the transport that it calls.
+  const { credential = null, ...init } = options || {};
   const requestOptions = {
-    ...options,
+    ...init,
     signal: combineAbortSignals([options?.signal, controller.signal]),
   };
+  const sent = credential
+    ? credentialedRequest(credential, url, requestOptions, {
+        fetchImpl: (target, request) => fetchImpl(target, request, resolvedTimeoutMs),
+      })
+    : fetchImpl(url, requestOptions, resolvedTimeoutMs);
 
   response = await withTimeout(
-    fetchImpl(url, requestOptions, resolvedTimeoutMs),
+    sent,
     resolvedTimeoutMs,
     {
       reason: "request_timeout",
@@ -1023,8 +1032,8 @@ export async function syncSessionEventToApi(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${session.token}`,
     },
+    credential: await credentialFor(session),
     body: requestBody,
   };
   const resolvedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
@@ -1084,8 +1093,8 @@ export async function syncSessionEventToApi(
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
-                Authorization: `Bearer ${session.token}`,
               },
+              credential: await credentialFor(session),
               body: JSON.stringify({
                 agent_id: agentId,
                 role: grantRole,
@@ -1220,8 +1229,8 @@ async function syncSessionAuxPayload(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
+        credential: await credentialFor(session),
         body: JSON.stringify({
           ...payload,
           source: "cli",
@@ -1350,8 +1359,8 @@ export async function pollHumanMessages(
       {
         method: "GET",
         headers: {
-          Authorization: `Bearer ${session.token}`,
         },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -1524,7 +1533,7 @@ export async function pollSessionEvents(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -1678,7 +1687,7 @@ export async function fetchSessionPresence(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -1842,8 +1851,8 @@ export async function renewSessionPresence(
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
+        credential: await credentialFor(session),
         body: JSON.stringify(body),
         signal,
       },
@@ -1958,9 +1967,9 @@ export async function requestSessionListenerStop(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
           "Idempotency-Key": normalizedIdempotencyKey,
         },
+        credential: await credentialFor(session),
         body: JSON.stringify(body),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
@@ -2087,8 +2096,8 @@ export async function updateSessionReadCursor(
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
+        credential: await credentialFor(session),
         body: JSON.stringify(body),
         signal,
       },
@@ -2250,18 +2259,18 @@ export async function streamSessionEvents(
 
   let response;
   try {
-    response = await fetchImpl(
+    response = await credentialedRequest(
+      await credentialFor(session),
       endpoint,
       {
         method: "GET",
         headers: {
           Accept: "text/event-stream",
-          Authorization: `Bearer ${session.token}`,
           ...(normalizedSince ? { "Last-Event-ID": normalizedSince } : {}),
         },
         signal: controller.signal,
       },
-      normalizedTimeoutMs
+      { fetchImpl: (target, init) => fetchImpl(target, init, normalizedTimeoutMs) },
     );
   } catch (error) {
     clearTimeout(timeoutHandle);
@@ -2448,7 +2457,7 @@ export async function pollSessionEventsBefore(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -2569,7 +2578,7 @@ export async function listSessionMessageActions(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -2666,7 +2675,7 @@ export async function fetchSessionUsageLedger(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -2850,7 +2859,7 @@ export async function editSessionMessage(sessionId, {
   catch { return { ok: false, reason: "no_session" }; }
   if (!auth?.token) return { ok: false, reason: "not_authenticated" };
   const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${encodeURIComponent(sid)}`;
-  const headers = { Authorization: `Bearer ${auth.token}` };
+  const credential = await credentialFor(auth);
   const failure = (response, payload) => {
     const code = normalizeString(payload?.detail?.code || payload?.error?.code || payload?.code);
     // Client/schema/ownership conflicts are terminal and must not poison unrelated writes.
@@ -2863,7 +2872,7 @@ export async function editSessionMessage(sessionId, {
       const resource = replyId ? `replies/${encodeURIComponent(replyId)}` : messageId
         ? `messages/${encodeURIComponent(messageId)}` : `messages/by-sequence/${sequence}`;
       const authorQuery = normalizeString(agentId) ? `?agentId=${encodeURIComponent(normalizeString(agentId))}` : "";
-      const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}${authorQuery}`, { method: "GET", headers, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
+      const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}${authorQuery}`, { method: "GET", credential, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
       if (!response?.ok || payload?.ok === false) return failure(response, payload);
       const current = replyId ? payload?.reply : payload?.event;
       const fetchedRevision = Number(current?.messageRevision ?? 1);
@@ -2877,11 +2886,12 @@ export async function editSessionMessage(sessionId, {
     const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}`, {
       method: "PATCH",
       headers: {
-        ...createSessionMutationHeaders({ bearerToken: auth.token, sessionId: sid, routeId: replyId
+        ...createSessionMutationHeaders({ credential, sessionId: sid, routeId: replyId
           ? "PATCH /api/v1/sessions/{session_id}/replies/{action_id}"
           : "PATCH /api/v1/sessions/{session_id}/messages/{message_id}", idempotencyKey: mutationKey }),
         "Content-Type": "application/json", "Idempotency-Key": mutationKey,
       },
+      credential,
       body: JSON.stringify(body),
       signal,
     }, timeoutMs, fetchImpl, { readErrorBody: true });
@@ -3008,8 +3018,8 @@ export async function createSessionMessageAction(
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.token}`,
         },
+        credential: await credentialFor(session),
         body: JSON.stringify(body),
         signal,
       },
@@ -3140,7 +3150,7 @@ export async function searchSessionEvents(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -3268,7 +3278,7 @@ export async function listSessionsFromApi({
         endpoint,
         {
           method: "GET",
-          headers: { Authorization: `Bearer ${session.token}` },
+          credential: await credentialFor(session),
         },
         normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
         fetchImpl,
@@ -3388,7 +3398,7 @@ export async function fetchSessionFromApi(
       endpoint,
       {
         method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session),
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
@@ -3464,13 +3474,11 @@ export async function probeSessionAccess(
 
   let response;
   try {
-    response = await fetchImpl(
+    response = await credentialedRequest(
+      await credentialFor(session),
       endpoint,
-      {
-        method: "GET",
-        headers: { Authorization: `Bearer ${session.token}` },
-      },
-      normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
+      { method: "GET" },
+      { fetchImpl: (target, init) => fetchImpl(target, init, normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS)) },
     );
   } catch (err) {
     return {

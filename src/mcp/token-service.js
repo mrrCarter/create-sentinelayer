@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { noteUserCredential } from "../auth/credential-destinations.js";
+import { credentialFor, userCredential } from "../auth/credential-destinations.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestJsonMutation } from "../auth/http.js";
 import {
   DEFAULT_API_TOKEN_TTL_DAYS,
@@ -38,12 +38,6 @@ function buildApiPath(apiUrl, pathSuffix) {
   const base = String(apiUrl || "").replace(/\/+$/, "");
   const suffix = String(pathSuffix || "").replace(/^\/+/, "");
   return `${base}/${suffix}`;
-}
-
-function toAuthHeader(token) {
-  return {
-    Authorization: `Bearer ${String(token || "").trim()}`,
-  };
 }
 
 function applyScope(body, { scope = "", scopes } = {}) {
@@ -136,18 +130,20 @@ export async function requestHostedMcpAccessToken({
     {
       method: "POST",
       operationName: "mcp-token-mint",
-      headers: toAuthHeader(session.token),
+      credential: await credentialFor(session, { env, homeDir }),
       body,
       timeoutMs: normalizedTimeoutMs,
     }
   );
-  noteUserCredential(response?.access_token); // a bearer issued for the user, held to the same origins
+  const accessToken = String(response.access_token || "");
 
   return {
     apiUrl: session.apiUrl,
     authSource: session.source,
     rotated: Boolean(session.rotated),
-    accessToken: String(response.access_token || ""),
+    accessToken,
+    // the minted bearer, bound to the configured API like the token that minted it
+    credential: await userCredential(accessToken, { env, homeDir, source: "hosted_mcp" }),
     tokenType: String(response.token_type || "Bearer"),
     expiresIn: Number(response.expires_in || 0),
     expiresAt: String(response.expires_at || ""),

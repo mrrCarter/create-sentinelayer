@@ -1,29 +1,32 @@
 import "./setup-env.mjs";
-// Every way the user's own SentinelLayer token reaches this process is recognised by the
-// transport before the token is first used, so it is only ever sent to the configured origins
-// (src/auth/credential-destinations.js). One loopback server is the configured API; another
-// stands in for any other origin, and the token sent there must be refused.
+// Every place the user's own SentinelLayer token comes from produces a credential object
+// (src/auth/credential-destinations.js) bound to the configured origin by the one trust context.
+// Each test gets the token from one source while another origin is in play (an --api-url, a
+// project config, an injected resolver), and that other origin must receive nothing. Tokens
+// are deliberately short: no length threshold decides what is protected.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { CredentialDestinationRefused } from "../src/auth/credential-destinations.js";
+import {
+  CredentialDestinationRefused,
+  admissionCredential,
+  credentialFor,
+  credentialedRequest,
+  gatewayCredential,
+  userCredential,
+} from "../src/auth/credential-destinations.js";
 import { loginAndPersistSession, resolveActiveAuthSession } from "../src/auth/service.js";
-import { readStoredSession, writeStoredSession } from "../src/auth/session-store.js";
+import { writeStoredSession } from "../src/auth/session-store.js";
+import { invokeViaProxy } from "../src/ai/proxy.js";
+import { queryHybridRetriever } from "../src/memory/retrieval.js";
+import { runHostedMcpSmoke } from "../src/mcp/smoke.js";
 import { requestHostedMcpAccessToken } from "../src/mcp/token-service.js";
 import { __legacyCredentialFlowForTests as legacy } from "../src/legacy-cli.js";
-
-// One random token per label: none is a substring of another, so each source is recognised on its own.
-const tokens = new Map();
-const token = (label) => {
-  if (!tokens.has(label)) tokens.set(label, `${label}_${randomBytes(24).toString("hex")}`);
-  return tokens.get(label);
-};
 
 // A loopback server; `routes` maps "METHOD /path" (or "METHOD /prefix*") to a handler.
 async function startServer(routes = {}) {
@@ -51,23 +54,6 @@ async function startServer(routes = {}) {
   };
 }
 
-async function withEnv(values, fn) {
-  const saved = {};
-  for (const key of Object.keys(values)) {
-    saved[key] = process.env[key];
-    if (values[key] === undefined) delete process.env[key];
-    else process.env[key] = values[key];
-  }
-  try {
-    return await fn();
-  } finally {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
-}
-
 // The configured API (with `routes`), another origin, and an isolated home.
 async function world(routes = {}) {
   const configured = await startServer(routes);
@@ -77,14 +63,11 @@ async function world(routes = {}) {
     configured,
     other,
     home,
-    // Whether the transport refuses to carry `value` to the other origin.
-    refusedElsewhere: async (value) => {
-      try {
-        await fetch(`${other.url}/probe`, { headers: { Authorization: `Bearer ${value}` } });
-        return false;
-      } catch (error) {
-        return error instanceof CredentialDestinationRefused;
-      }
+    env: { SENTINELAYER_API_URL: configured.url },
+    // Try to send `credential` to the other origin: refused, and nothing arrives there.
+    assertHeldBack: async (credential) => {
+      await assert.rejects(credentialedRequest(credential, `${other.url}/probe`), CredentialDestinationRefused);
+      assert.deepEqual(other.requests, [], "the other origin received nothing");
     },
     close: async () => {
       await configured.close();
@@ -94,67 +77,40 @@ async function world(routes = {}) {
   };
 }
 
-const inWorld = (w, fn, extraEnv = {}) =>
-  withEnv(
-    {
-      SENTINELAYER_TOKEN: undefined,
-      SENTINELAYER_API_TOKEN: undefined,
-      SENTINELAYER_API_URL: w.configured.url,
-      SENTINELAYER_DISABLE_KEYRING: "1",
-      ...extraEnv,
-    },
-    fn,
-  );
+const inFuture = (days) => new Date(Date.now() + days * 86400_000).toISOString();
 
-test("source: SENTINELAYER_TOKEN in the environment", async () => {
+test("source: SENTINELAYER_TOKEN, while --api-url names another origin", async () => {
   const w = await world();
   try {
-    await inWorld(w, async () => assert.equal(await w.refusedElsewhere(token("env_main")), true), {
-      SENTINELAYER_TOKEN: token("env_main"),
+    const auth = await resolveActiveAuthSession({
+      env: { ...w.env, SENTINELAYER_TOKEN: "e1" },
+      homeDir: w.home,
+      cwd: w.home,
+      explicitApiUrl: w.other.url,
     });
-    assert.deepEqual(w.other.requests, []);
+    assert.equal(auth.apiUrl, w.other.url, "resolution follows --api-url");
+    assert.equal(auth.credential.token, "e1");
+    assert.equal(auth.credential.origin, w.configured.url, "the credential follows the trust context");
+    await w.assertHeldBack(auth.credential);
   } finally {
     await w.close();
   }
 });
 
-test("source: SENTINELAYER_API_TOKEN in the environment", async () => {
-  const w = await world();
-  try {
-    await inWorld(w, async () => assert.equal(await w.refusedElsewhere(token("env_api")), true), {
-      SENTINELAYER_API_TOKEN: token("env_api"),
-    });
-    assert.deepEqual(w.other.requests, []);
-  } finally {
-    await w.close();
-  }
-});
-
-test("source: a token in the environment a caller passes to auth resolution", async () => {
-  const w = await world();
-  try {
-    await inWorld(w, async () => {
-      const auth = await resolveActiveAuthSession({ env: { SENTINELAYER_TOKEN: token("env_param") }, homeDir: w.home });
-      assert.equal(auth.token, token("env_param"));
-      assert.equal(await w.refusedElsewhere(auth.token), true);
-    });
-    assert.deepEqual(w.other.requests, []);
-  } finally {
-    await w.close();
-  }
-});
-
-test("source: the sentinelayerToken config value", async () => {
+test("source: the sentinelayerToken config value, while a project config names another origin", async () => {
   const w = await world();
   try {
     await fsp.mkdir(path.join(w.home, ".sentinelayer"), { recursive: true });
-    await fsp.writeFile(path.join(w.home, ".sentinelayer", "config.yml"), `sentinelayerToken: ${token("config")}\n`);
-    await inWorld(w, async () => {
-      const auth = await resolveActiveAuthSession({ env: {}, homeDir: w.home, cwd: w.home });
-      assert.equal(auth.token, token("config"));
-      assert.equal(await w.refusedElsewhere(auth.token), true);
-    });
-    assert.deepEqual(w.other.requests, []);
+    await fsp.writeFile(
+      path.join(w.home, ".sentinelayer", "config.yml"),
+      `apiUrl: ${w.configured.url}\nsentinelayerToken: c1\n`,
+    );
+    await fsp.writeFile(path.join(w.home, ".sentinelayer.yml"), `apiUrl: ${w.other.url}\n`);
+    const auth = await resolveActiveAuthSession({ env: {}, homeDir: w.home, cwd: w.home });
+    assert.equal(auth.apiUrl, w.other.url, "resolution follows the project config");
+    assert.equal(auth.credential.token, "c1");
+    assert.equal(auth.credential.origin, w.configured.url, "the project config is not trusted");
+    await w.assertHeldBack(auth.credential);
   } finally {
     await w.close();
   }
@@ -163,116 +119,113 @@ test("source: the sentinelayerToken config value", async () => {
 test("source: the stored login session", async () => {
   const w = await world();
   try {
-    const tokenExpiresAt = new Date(Date.now() + 30 * 86400_000).toISOString();
-    await inWorld(w, async () => {
-      await writeStoredSession({ apiUrl: w.configured.url, token: token("stored"), tokenExpiresAt }, { homeDir: w.home });
-      const stored = await readStoredSession({ homeDir: w.home });
-      assert.equal(await w.refusedElsewhere(stored.token), true);
-    });
-    assert.deepEqual(w.other.requests, []);
+    await writeStoredSession({ apiUrl: w.configured.url, token: "s1", tokenExpiresAt: inFuture(30) }, { homeDir: w.home });
+    const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home, explicitApiUrl: w.other.url });
+    assert.equal(auth.credential.token, "s1");
+    assert.equal(auth.credential.origin, w.configured.url);
+    await w.assertHeldBack(auth.credential);
   } finally {
     await w.close();
   }
 });
 
-test("sources: a login's approval token (before its first use) and the API token it issues", async () => {
-  const probes = [];
-  let w;
-  w = await world({
-    "POST /api/v1/auth/cli/sessions/start": () => ({ session_id: "s-1", poll_interval_seconds: 1 }),
-    "POST /api/v1/auth/cli/sessions/poll": () => ({ status: "approved", auth_token: token("approval") }),
-    // the approval token's first use: is it already held to the configured origins?
-    "GET /api/v1/auth/me": async () => {
-      probes.push(await w.refusedElsewhere(token("approval")));
-      return { id: "u-1", github_username: "fixture" };
-    },
-    "POST /api/v1/auth/api-tokens": () => ({ id: "tok-1", token: token("issued"), token_prefix: "issued_", expires_at: new Date(Date.now() + 30 * 86400_000).toISOString() }),
+test("source: a rotated token, and the token it replaces, are only sent to the configured API", async () => {
+  const w = await world({
+    "POST /api/v1/auth/api-tokens": () => ({ id: "tok-new", token: "r2", token_prefix: "r", expires_at: inFuture(30) }),
+    "DELETE /api/v1/auth/api-tokens/*": () => ({ ok: true }),
   });
   try {
-    await inWorld(w, async () => {
-      await loginAndPersistSession({ homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 20_000 });
-      assert.deepEqual(probes, [true], "the approval token was recognised before it was first sent");
-      assert.equal(await w.refusedElsewhere(token("issued")), true);
-    });
-    assert.deepEqual(w.other.requests, []);
+    await writeStoredSession(
+      { apiUrl: w.configured.url, token: "r1", tokenId: "tok-old", tokenExpiresAt: inFuture(1) },
+      { homeDir: w.home },
+    );
+    const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home });
+    assert.equal(auth.rotated, true);
+    assert.equal(auth.credential.token, "r2");
+    assert.equal(auth.credential.origin, w.configured.url);
+    assert.deepEqual(
+      w.configured.requests.map((r) => `${r.method} ${r.authorization}`),
+      ["POST Bearer r1", "DELETE Bearer r2"],
+      "the old token issued its successor; the successor revoked the old one",
+    );
+    await w.assertHeldBack(auth.credential);
   } finally {
     await w.close();
   }
 });
 
-test("a login against an API that is not configured is refused before anything is sent", async () => {
+const LOGIN_ROUTES = {
+  "POST /api/v1/auth/cli/sessions/start": () => ({ session_id: "s-1", poll_interval_seconds: 1 }),
+  "POST /api/v1/auth/cli/sessions/poll": () => ({ status: "approved", auth_token: "a1" }),
+  "GET /api/v1/auth/me": () => ({ id: "u-1", github_username: "fixture" }),
+  "POST /api/v1/auth/api-tokens": () => ({ id: "tok-1", token: "i1", token_prefix: "i", expires_at: inFuture(30) }),
+};
+
+test("source: a login's approval token is only sent to the API it was issued by, the configured one", async () => {
+  const w = await world(LOGIN_ROUTES);
+  try {
+    await loginAndPersistSession({ env: w.env, homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 20_000 });
+    assert.deepEqual(
+      w.configured.requests.filter((r) => r.authorization).map((r) => `${r.method} ${r.path} ${r.authorization}`),
+      ["GET /api/v1/auth/me Bearer a1", "POST /api/v1/auth/api-tokens Bearer a1"],
+    );
+    const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home, autoRotate: false });
+    assert.equal(auth.credential.token, "i1", "the issued token is stored and loaded as a credential");
+    await w.assertHeldBack(auth.credential);
+  } finally {
+    await w.close();
+  }
+});
+
+test("a login whose resolved API differs from the trust context is refused before anything is sent", async () => {
+  const w = await world(LOGIN_ROUTES);
+  try {
+    // resolution would use the project config's API; the trust context (global config) names another
+    await fsp.mkdir(path.join(w.home, ".sentinelayer"), { recursive: true });
+    await fsp.writeFile(path.join(w.home, ".sentinelayer", "config.yml"), `apiUrl: ${w.configured.url}\n`);
+    await fsp.writeFile(path.join(w.home, ".sentinelayer.yml"), `apiUrl: ${w.other.url}\n`);
+    await assert.rejects(
+      loginAndPersistSession({ env: {}, homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 5_000 }),
+      /Refusing to send your SentinelLayer credential .*SENTINELAYER_API_URL/s,
+    );
+    await assert.rejects(
+      loginAndPersistSession({ env: w.env, homeDir: w.home, cwd: w.home, explicitApiUrl: w.other.url, skipBrowserOpen: true }),
+      CredentialDestinationRefused,
+    );
+    assert.deepEqual(w.other.requests, [], "not even the login request");
+    assert.deepEqual(w.configured.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
+test("login, resolution and trust use the injected env, not the process environment", async () => {
+  const w = await world(LOGIN_ROUTES);
+  const saved = process.env.SENTINELAYER_API_URL;
+  process.env.SENTINELAYER_API_URL = w.other.url; // the process names another API; the caller's env wins
+  try {
+    await loginAndPersistSession({ env: w.env, homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 20_000 });
+    assert.ok(w.configured.requests.some((r) => r.path === "/api/v1/auth/me"));
+    assert.deepEqual(w.other.requests, []);
+  } finally {
+    if (saved === undefined) delete process.env.SENTINELAYER_API_URL;
+    else process.env.SENTINELAYER_API_URL = saved;
+    await w.close();
+  }
+});
+
+test("source: the init flow's approval token is sent only as a credential", async () => {
   const w = await world();
   try {
-    await inWorld(w, async () => {
-      await assert.rejects(
-        loginAndPersistSession({ homeDir: w.home, cwd: w.home, explicitApiUrl: w.other.url, skipBrowserOpen: true, timeoutMs: 5_000 }),
-        /Refusing to send your SentinelLayer credential .*SENTINELAYER_API_URL/s,
-      );
-    });
-    assert.deepEqual(w.other.requests, [], "not even the login request");
-  } finally {
-    await w.close();
-  }
-});
-
-test("source: a rotated token (before its first use)", async () => {
-  const probes = [];
-  let w;
-  w = await world({
-    "POST /api/v1/auth/api-tokens": () => ({ id: "tok-new", token: token("rotated"), token_prefix: "rotated_", expires_at: new Date(Date.now() + 30 * 86400_000).toISOString() }),
-    // the rotated token's first use is revoking the token it replaces
-    "DELETE /api/v1/auth/api-tokens/*": async () => {
-      probes.push(await w.refusedElsewhere(token("rotated")));
-      return { ok: true };
-    },
-  });
-  try {
-    await inWorld(w, async () => {
-      const nearExpiry = new Date(Date.now() + 86400_000).toISOString();
-      await writeStoredSession(
-        { apiUrl: w.configured.url, token: token("expiring"), tokenId: "tok-old", tokenExpiresAt: nearExpiry },
-        { homeDir: w.home },
-      );
-      const auth = await resolveActiveAuthSession({ env: {}, homeDir: w.home, cwd: w.home });
-      assert.equal(auth.token, token("rotated"));
-      assert.equal(auth.rotated, true);
-      assert.deepEqual(probes, [true], "the rotated token was recognised before it was first sent");
-    });
+    const credential = await userCredential("n1", { env: w.env, source: "init_approval" });
+    await assert.rejects(
+      legacy.generateArtifacts({ apiUrl: w.other.url, credential, payload: {} }),
+      CredentialDestinationRefused,
+    );
+    await assert.rejects(legacy.issueBootstrapToken({ apiUrl: w.other.url, credential }), CredentialDestinationRefused);
     assert.deepEqual(w.other.requests, []);
-  } finally {
-    await w.close();
-  }
-});
-
-test("source: the init flow's approval token", async () => {
-  const w = await world({
-    "POST /api/v1/auth/cli/sessions/poll": () => ({ status: "approved", auth_token: token("init_approval") }),
-  });
-  try {
-    await inWorld(w, async () => {
-      const approval = await legacy.pollCliSession({ apiUrl: w.configured.url, sessionId: "s-1", challenge: "c", pollIntervalSeconds: 1, timeoutMs: 10_000 });
-      assert.equal(approval.auth_token, token("init_approval"));
-      assert.equal(await w.refusedElsewhere(approval.auth_token), true);
-    });
-    assert.deepEqual(w.other.requests, []);
-  } finally {
-    await w.close();
-  }
-});
-
-test("sources: the project tokens the init flow issues", async () => {
-  const w = await world({
-    "POST /api/v1/builder/generate": () => ({ bootstrap_token: { token: token("bootstrap_generated") } }),
-    "POST /api/v1/builder/bootstrap-token": () => ({ token: token("bootstrap_issued") }),
-  });
-  try {
-    await inWorld(w, async () => {
-      await legacy.generateArtifacts({ apiUrl: w.configured.url, authToken: "unused", payload: {} });
-      await legacy.issueBootstrapToken({ apiUrl: w.configured.url, authToken: "unused" });
-      assert.equal(await w.refusedElsewhere(token("bootstrap_generated")), true);
-      assert.equal(await w.refusedElsewhere(token("bootstrap_issued")), true);
-    });
-    assert.deepEqual(w.other.requests, []);
+    await legacy.issueBootstrapToken({ apiUrl: w.configured.url, credential });
+    assert.equal(w.configured.requests[0].authorization, "Bearer n1");
   } finally {
     await w.close();
   }
@@ -280,19 +233,123 @@ test("sources: the project tokens the init flow issues", async () => {
 
 test("source: a hosted MCP bearer minted for the user", async () => {
   const w = await world({
-    "POST /api/v1/auth/mcp-token": () => ({ access_token: token("mcp_access"), token_type: "Bearer", expires_in: 60 }),
+    "POST /api/v1/auth/mcp-token": () => ({ access_token: "m1", token_type: "Bearer", expires_in: 60 }),
   });
   try {
-    await inWorld(w, async () => {
-      const minted = await requestHostedMcpAccessToken({
-        env: { SENTINELAYER_TOKEN: token("mint_caller"), SENTINELAYER_API_URL: w.configured.url },
-        homeDir: w.home,
-        cwd: w.home,
-      });
-      assert.equal(minted.accessToken, token("mcp_access"));
-      assert.equal(await w.refusedElsewhere(minted.accessToken), true);
-    });
+    const minted = await requestHostedMcpAccessToken({ env: { ...w.env, SENTINELAYER_TOKEN: "m0" }, homeDir: w.home, cwd: w.home });
+    assert.equal(minted.credential.token, "m1");
+    assert.equal(minted.credential.origin, w.configured.url);
+    await w.assertHeldBack(minted.credential);
+  } finally {
+    await w.close();
+  }
+});
+
+test("the MCP smoke sends nothing to another origin, through an injected mint and transport", async () => {
+  const w = await world();
+  try {
+    const sent = [];
+    const fetchImpl = async (url, init) => {
+      sent.push(url);
+      return fetch(url, init);
+    };
+    for (const requestTokenImpl of [
+      async () => ({ apiUrl: w.other.url, accessToken: "x1" }), // a bare token
+      async () => ({ apiUrl: w.other.url, accessToken: "x2", credential: await userCredential("x2", { env: w.env }) }),
+    ]) {
+      await assert.rejects(
+        runHostedMcpSmoke({ env: w.env, homeDir: w.home, requestTokenImpl, fetchImpl }),
+        CredentialDestinationRefused,
+      );
+    }
+    assert.deepEqual(sent, [], "the injected transport was never called");
     assert.deepEqual(w.other.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
+test("source: SENTINELAYER_TOKEN used for the memory API reaches only the configured origin", async () => {
+  const w = await world();
+  try {
+    const sent = [];
+    const result = await queryHybridRetriever({
+      query: "q",
+      provider: "api",
+      apiEndpoint: `${w.other.url}/memory`,
+      credential: await userCredential("y1", { env: w.env }),
+      fetchImpl: async (url, init) => {
+        sent.push(url);
+        return fetch(url, init);
+      },
+    });
+    assert.equal(result.providerUsed, "local");
+    assert.match(result.apiError, /Refusing to send your SentinelLayer credential/);
+    assert.deepEqual(sent, []);
+    assert.deepEqual(w.other.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
+test("source: a token handed to the LLM proxy is bound to the configured API", async () => {
+  const w = await world();
+  const saved = process.env.SENTINELAYER_API_URL;
+  process.env.SENTINELAYER_API_URL = w.configured.url;
+  try {
+    const sent = [];
+    await assert.rejects(
+      invokeViaProxy({
+        prompt: "p",
+        apiUrl: w.other.url,
+        token: "z1",
+        fetchImpl: async (url, init) => {
+          sent.push(url);
+          return fetch(url, init);
+        },
+      }),
+      CredentialDestinationRefused,
+    );
+    assert.deepEqual(sent, []);
+    assert.deepEqual(w.other.requests, []);
+  } finally {
+    if (saved === undefined) delete process.env.SENTINELAYER_API_URL;
+    else process.env.SENTINELAYER_API_URL = saved;
+    await w.close();
+  }
+});
+
+test("source: a bare token from an injected resolver is bound to the configured API, never to the origin it names", async () => {
+  const w = await world();
+  try {
+    const credential = await credentialFor({ token: "j1", apiUrl: w.other.url }, { env: w.env });
+    assert.equal(credential.origin, w.configured.url);
+    await w.assertHeldBack(credential);
+  } finally {
+    await w.close();
+  }
+});
+
+test("source: an agent's admission credential is bound to the API that issued it", async () => {
+  const w = await world();
+  try {
+    const credential = admissionCredential({ token: "d1", apiUrl: w.configured.url });
+    assert.equal(credential.origin, w.configured.url);
+    assert.equal(credential.source, "session_admission");
+    await w.assertHeldBack(credential);
+  } finally {
+    await w.close();
+  }
+});
+
+test("the pocket gateway credential comes from SENTI_POCKET_URL only", async () => {
+  const w = await world();
+  try {
+    const api = await userCredential("g1", { env: w.env });
+    assert.equal(await gatewayCredential(api, { env: { ...w.env, POCKET_GATEWAY_URL: w.other.url } }), null);
+    const gateway = await gatewayCredential(api, { env: { ...w.env, SENTI_POCKET_URL: w.configured.url } });
+    assert.equal(gateway.origin, w.configured.url);
+    await w.assertHeldBack(gateway);
   } finally {
     await w.close();
   }

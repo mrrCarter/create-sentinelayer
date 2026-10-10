@@ -7,6 +7,7 @@ import { spawn as defaultSpawn } from "node:child_process";
 
 import pc from "picocolors";
 
+import { credentialFor } from "../auth/credential-destinations.js";
 import { SentinelayerApiError, requestJsonMutation } from "../auth/http.js";
 import {
   buildProvisionEmailPayload,
@@ -1458,12 +1459,12 @@ async function findReusableSessionCandidate({
 //   - When `SENTINELAYER_SKIP_REMOTE_SYNC=1` (test bootstrap), short-circuits
 //     to `{ ok: true, source: "skipped", session: null }` so unit tests
 //     can exercise the local materialization path without a real API.
-async function fetchRemoteSessionDetail(endpoint, headers) {
+async function fetchRemoteSessionDetail(endpoint, credential) {
   let response;
   let payload;
   try {
     ({ response, payload } = await fetchJsonWithFullTimeout(
-      endpoint, { method: "GET", headers, redirect: "error" }, 2_000,
+      endpoint, { method: "GET", credential, redirect: "error" }, 2_000,
     ));
   } catch (err) {
     return {
@@ -1524,10 +1525,10 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
     return { ok: false, reason: "no_api_url" };
   }
   const endpoint = `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
-  const headers = { Authorization: `Bearer ${auth.token}` };
-  const firstAttempt = await fetchRemoteSessionDetail(endpoint, headers);
+  const credential = await credentialFor(auth);
+  const firstAttempt = await fetchRemoteSessionDetail(endpoint, credential);
   const detail = firstAttempt.retryable
-    ? await fetchRemoteSessionDetail(endpoint, headers)
+    ? await fetchRemoteSessionDetail(endpoint, credential)
     : firstAttempt;
   if (detail.ok) {
     return {
@@ -2802,10 +2803,8 @@ async function postAdminSessionMutation({
   return requestJsonMutation(`${apiUrl}${pathSuffix}`, {
     method: "POST",
     operationName,
-    headers: {
-      Authorization: `Bearer ${normalizeString(session.token)}`,
-      ...headers,
-    },
+    credential: await credentialFor(session),
+    headers,
     body,
   });
 }
@@ -3315,7 +3314,7 @@ export function registerSessionCommand(program) {
         {
           method: "POST",
           operationName: "session.set_title",
-          headers: { Authorization: `Bearer ${session.token}` },
+          credential: session.credential,
           body: { title: normalizedTitle },
         },
       );
@@ -3365,7 +3364,7 @@ export function registerSessionCommand(program) {
         {
           method: "POST",
           operationName: "session.sweep_empty",
-          headers: { Authorization: `Bearer ${session.token}` },
+          credential: session.credential,
           body: {
             cutoffMinutes,
             maxEvents,
@@ -6674,13 +6673,13 @@ export function registerSessionCommand(program) {
           autoRotate: false,
         }).catch(() => null);
         const apiBaseUrl = session?.apiUrl || "";
-        const token = session?.token || "";
+        const credential = session?.credential || null;
         try {
           for await (const item of mergeLiveSources({
             sessionId: normalizedSessionId,
             targetPath,
             apiBaseUrl: apiBaseUrl || undefined,
-            token: token || undefined,
+            credential: credential || undefined,
             signal: ac.signal,
           })) {
             if (item.event) {
@@ -8615,7 +8614,7 @@ export function registerSessionCommand(program) {
           ? () =>
               fetchAidenIdCredentials({
                 apiUrl: storedSession.apiUrl,
-                token: storedSession.token,
+                auth: storedSession,
               })
           : null;
       const credentials = await resolveAidenIdCredentials({

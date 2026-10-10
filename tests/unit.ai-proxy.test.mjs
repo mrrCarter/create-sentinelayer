@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { invokeViaProxy, SentinelayerProxyError, serializeProxyError } from "../src/ai/proxy.js";
 
 const authFixture = ["fixture", "auth", "value"].join("-");
+// The fixture API is the configured API: the user's token is only sent to that origin.
+process.env.SENTINELAYER_API_URL = "https://api.example.test";
 
 function createProxyResponse(payload = {}) {
   return {
