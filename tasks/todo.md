@@ -4060,5 +4060,9 @@ Review evidence:
 - Activation remains an explicit owner action: `required` enforces admission;
   `legacy` is the explicit rollback. The CLI does not change room modes while
   requesting, approving, or joining.
-- Local only. No push, PR, npm publication, installation, or deployment was
-  performed from this worktree. Independent review remains.
+- Independent release review found and closed one remaining terminal boundary:
+  the waiting `session access request` path no longer wraps its remote approval
+  URL in ANSI color controls. A hostile ANSI/OSC/bidi regression now covers it.
+- Post-fix verification passes: focused admission/access suite `95/95`, static
+  check `394 files`, and `git diff --check` has no content errors (only expected
+  Windows line-ending notices). PR/release state is recorded by the release gate.

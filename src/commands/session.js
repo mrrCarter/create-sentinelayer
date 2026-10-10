@@ -6924,7 +6924,11 @@ export function registerSessionCommand(program) {
             ? "Approval received; waiting for the AIdenID email and signed purpose receipt."
             : `Waiting for a room owner to approve this agent: ${terminalText(approveUrl, 1024)}`;
           if (shouldEmitJson(options, command)) process.stderr.write(`${line}\n`);
-          else console.log(pc.yellow(line));
+          // A line carrying a remote URL must remain free of every terminal
+          // control byte, including trusted colour wrappers. This mirrors the
+          // guarded `session join` path and keeps raw support logs auditable.
+          else if (phase === "identity") console.log(pc.yellow(line));
+          else console.log(line);
         },
       });
       const payload = {

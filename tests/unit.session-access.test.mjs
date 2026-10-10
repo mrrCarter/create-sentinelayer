@@ -71,7 +71,10 @@ function fixtureAdmission(overrides = {}) {
   };
 }
 
-function fakeApi({ goalSummary = "Review the release" } = {}) {
+function fakeApi({
+  goalSummary = "Review the release",
+  approveUrl = `https://sentinelayer.com/dashboard/sessions/${SID}?admission=${AID}`,
+} = {}) {
   const state = { requests: [] };
   globalThis.fetch = async (url, init = {}) => {
     const parsed = new URL(String(url));
@@ -87,7 +90,7 @@ function fakeApi({ goalSummary = "Review the release" } = {}) {
         admissionId: AID,
         status: "pending",
         agentId: body.agentId,
-        approveUrl: `https://sentinelayer.com/dashboard/sessions/${SID}?admission=${AID}`,
+        approveUrl,
         pollAfterSeconds: 5,
         pendingExpiresAt: "2026-10-09T00:30:00Z",
       }, 202);
@@ -104,7 +107,7 @@ function fakeApi({ goalSummary = "Review the release" } = {}) {
         admissionId: AID,
         status: "pending",
         agentId: "review-agent",
-        approveUrl: `https://sentinelayer.com/dashboard/sessions/${SID}?admission=${AID}`,
+        approveUrl,
         pollAfterSeconds: 5,
       });
     }
@@ -193,6 +196,27 @@ test("access request uses the hardened admission request path and returns pendin
   assert.equal(request.headers.origin, "https://sentinelayer.com");
   assert.match(request.headers["x-csrf-token"], /^[a-f0-9]{64}$/);
   assert.equal(state.requests.some((item) => !item.path.endsWith("/admissions")), false);
+});
+
+test("waiting access request neutralizes controls and emits no ANSI around a remote approval URL", async () => {
+  const workspace = await fsp.mkdtemp(path.join(scratch, "request-wait-workspace-"));
+  fakeApi({
+    approveUrl: "https://sentinelayer.com/approve\u001b]8;;https://evil.example\u0007link\u001b]8;;\u0007\u202Etxt.exe",
+  });
+  const result = await sl([
+    "session", "access", "request", SID,
+    "--agent", "waiting-review-agent",
+    "--goal", "Review later",
+    "--wait",
+    "--wait-seconds", "0",
+    "--path", workspace,
+  ]);
+  assert.equal(result.error, null, String(result.error?.stack || result.error));
+  assert.equal(result.text.includes("\u001b"), false);
+  assert.equal(result.text.includes("\u0007"), false);
+  assert.equal(result.text.includes("\u202E"), false);
+  assert.match(result.text, /Waiting for a room owner/);
+  assert.match(result.text, /Access requested/);
 });
 
 test("access mode enables the room's fail-closed required-admission policy", async () => {
