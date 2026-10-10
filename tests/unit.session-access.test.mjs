@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-session-access-"));
 const homeDir = path.join(scratch, "home");
@@ -490,6 +491,22 @@ test("access owner actions are unavailable while this machine stores agent admis
   } finally {
     await fsp.rm(path.join(homeDir, ".sentinelayer", "agents"), { recursive: true, force: true });
   }
+});
+
+test("README and docs/sessions.md describe access behavior that holds on every API version", async () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  for (const file of ["README.md", "docs/sessions.md"]) {
+    const text = (await fsp.readFile(path.join(root, file), "utf8")).replace(/\s+/g, " ");
+    // the identity wait depends on what the API reports, never unconditionally
+    assert.match(text, /reports? identity readiness/, `${file}: identity wait is conditional`);
+    assert.doesNotMatch(text, /the API withholds the claim challenge until both identity artifacts are ready/, file);
+    assert.doesNotMatch(text, /New rooms default to (fail-closed )?`required`/, file);
+    // owner actions and the bridge
+    assert.match(text, /unavailable in an agent context/, `${file}: owner actions in an agent context`);
+    assert.match(text, /not exposed through the MCP CLI bridge/, `${file}: bridge exposure`);
+  }
+  const sessions = (await fsp.readFile(path.join(root, "docs/sessions.md"), "utf8")).replace(/\s+/g, " ");
+  assert.match(sessions, /revoked, or stopped grants never join/);
 });
 
 test.after(async () => {
