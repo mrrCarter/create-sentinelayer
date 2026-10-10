@@ -438,7 +438,7 @@ export async function revokeIdentity({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/revoke`,
+    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/squash`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -448,7 +448,7 @@ export async function revokeIdentity({
   if (!response.ok) {
     const details = await parseErrorBody(response);
     throw new Error(
-      `AIdenID revoke request failed with status ${response.status}${details ? `: ${details}` : ""}`
+      `AIdenID squash (revoke) request failed with status ${response.status}${details ? `: ${details}` : ""}`
     );
   }
 
