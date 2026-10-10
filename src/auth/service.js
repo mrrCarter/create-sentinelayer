@@ -6,7 +6,7 @@ import open from "open";
 
 import { loadConfig } from "../config/service.js";
 import { scopedAdmissionAuth } from "./admission-scope.js";
-import { DEFAULT_API_URL, noteUserCredential } from "./credential-destinations.js";
+import { DEFAULT_API_URL, assertTrustedCredentialOrigin, noteUserCredential } from "./credential-destinations.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
@@ -457,6 +457,7 @@ async function rotateStoredApiTokenIfNeeded({
     tokenLabel,
     tokenTtlDays,
   });
+  noteUserCredential(issued?.token); // before its first use (the revoke below)
 
   const nextSession = await writeStoredSession(
     {
@@ -536,6 +537,9 @@ export async function loginAndPersistSession({
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  // The token this flow issues is the user's, so the API that issues it must be one it may be sent
+  // to: refuse an unconfigured API before the browser step, not after it.
+  await assertTrustedCredentialOrigin(apiUrl);
   const challenge = generateChallenge();
   const flowRequestId = createFlowRequestId();
   const session = await startCliAuthSession({
@@ -574,6 +578,7 @@ export async function loginAndPersistSession({
       requestId: flowRequestId || null,
     });
   }
+  noteUserCredential(approvalToken); // before its first use (the user and token requests below)
 
   const user = normalizeUser(
     approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken, flowRequestId }))
@@ -585,6 +590,7 @@ export async function loginAndPersistSession({
     tokenTtlDays,
     flowRequestId,
   });
+  noteUserCredential(issuedApiToken?.token);
 
   // Extract AIdenID metadata from approval (no secret stored locally)
   const rawAidenId = approval.aidenidCredentials || approval.aidenid_credentials || null;
@@ -743,7 +749,6 @@ export async function resolveActiveAuthSession({
     }
   }
 
-  noteUserCredential(active.token);
   return {
     apiUrl,
     token: active.token,

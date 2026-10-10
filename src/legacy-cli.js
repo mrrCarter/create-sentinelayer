@@ -20,6 +20,7 @@ import {
   listSupportedCodingAgents,
   resolveCodingAgent,
 } from "./config/agent-dictionary.js";
+import { noteUserCredential } from "./auth/credential-destinations.js";
 import { resolveOutputRoot } from "./config/service.js";
 import { normalizeAgentEvent } from "./events/schema.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
@@ -541,6 +542,7 @@ async function pollCliSession({
       },
     });
     if (response.status === "approved" && response.auth_token) {
+      noteUserCredential(response.auth_token); // the user's token, from here on
       return response;
     }
     await sleep(Math.max(1, Number(pollIntervalSeconds) || 2) * 1000);
@@ -552,7 +554,7 @@ async function pollCliSession({
 }
 
 async function generateArtifacts({ apiUrl, authToken, payload }) {
-  return requestJson(`${apiUrl}/api/v1/builder/generate`, {
+  const generated = await requestJson(`${apiUrl}/api/v1/builder/generate`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${authToken}`,
@@ -560,16 +562,23 @@ async function generateArtifacts({ apiUrl, authToken, payload }) {
     body: payload,
     timeoutMs: 180_000,
   });
+  noteUserCredential(generated?.bootstrap_token?.token); // a project token issued for the user
+  return generated;
 }
 
 async function issueBootstrapToken({ apiUrl, authToken }) {
-  return requestJson(`${apiUrl}/api/v1/builder/bootstrap-token`, {
+  const issued = await requestJson(`${apiUrl}/api/v1/builder/bootstrap-token`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${authToken}`,
     },
   });
+  noteUserCredential(issued?.token); // a project token issued for the user
+  return issued;
 }
+
+// The init flow's credential steps, for tests.
+export const __legacyCredentialFlowForTests = Object.freeze({ pollCliSession, generateArtifacts, issueBootstrapToken });
 
 function detectRepoSlug(cwd) {
   const gitRemote = spawnSync("git", ["config", "--get", "remote.origin.url"], {

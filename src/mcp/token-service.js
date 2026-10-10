@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { noteUserCredential } from "../auth/credential-destinations.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestJsonMutation } from "../auth/http.js";
 import {
   DEFAULT_API_TOKEN_TTL_DAYS,
@@ -140,6 +141,7 @@ export async function requestHostedMcpAccessToken({
       timeoutMs: normalizedTimeoutMs,
     }
   );
+  noteUserCredential(response?.access_token); // a bearer issued for the user, held to the same origins
 
   return {
     apiUrl: session.apiUrl,

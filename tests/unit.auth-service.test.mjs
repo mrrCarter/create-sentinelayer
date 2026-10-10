@@ -204,10 +204,17 @@ async function startAuthRuntimeMockApi({ pollResponses = null } = {}) {
     throw new Error("Unable to resolve mock API address.");
   }
 
+  // The user's token is only sent to the configured API, so this mock is configured as that API.
+  const apiUrl = `http://127.0.0.1:${address.port}`;
+  const previousApiUrl = process.env.SENTINELAYER_API_URL;
+  process.env.SENTINELAYER_API_URL = apiUrl;
+
   return {
     state,
-    apiUrl: `http://127.0.0.1:${address.port}`,
+    apiUrl,
     async close() {
+      if (previousApiUrl === undefined) delete process.env.SENTINELAYER_API_URL;
+      else process.env.SENTINELAYER_API_URL = previousApiUrl;
       server.close();
       await once(server, "close");
     },
