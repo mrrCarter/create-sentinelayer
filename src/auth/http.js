@@ -448,6 +448,10 @@ export async function requestJson(
   if (credential && !isCredential(credential)) {
     throw new TypeError("requestJson: credential must come from src/auth/credential-destinations.js.");
   }
+  // Checked here, before any retry or breaker accounting: credentialedRequest takes a URL string.
+  if (credential && typeof url !== "string") {
+    throw new TypeError("requestJson: a credentialed request takes its URL as a string, not a URL object.");
+  }
   // Without a credential, nothing here attaches one: a caller-built Authorization header is refused.
   if (Object.keys(headers || {}).some((name) => /^(?:proxy-)?authorization$/i.test(name))) {
     throw new TypeError("requestJson: send a credential with { credential }, not an Authorization header.");

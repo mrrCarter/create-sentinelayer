@@ -85,8 +85,13 @@ async function authContext(targetPath, resolveAuthSession) {
   };
 }
 
-function admissionsUrl(apiUrl, sessionId, suffix = "") {
-  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/admissions${suffix}`;
+function admissionsUrl(apiUrl, sessionId) {
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/admissions`;
+}
+
+/** One admission's URL: the raw admission id is encoded here; `route` is a fixed route ("/revoke"). */
+function admissionMemberUrl(apiUrl, sessionId, admissionId, route = "") {
+  return `${admissionsUrl(apiUrl, sessionId)}/${urlPathSegment(admissionId, { label: "admissionId" })}${route}`;
 }
 
 function boundedIdempotencyKey(value, operation) {
@@ -97,7 +102,8 @@ function boundedIdempotencyKey(value, operation) {
 
 async function mutateAdmission(
   sessionId,
-  suffix,
+  admissionId,
+  route,
   routeId,
   body,
   {
@@ -111,7 +117,7 @@ async function mutateAdmission(
 ) {
   const key = boundedIdempotencyKey(idempotencyKey, operationName);
   const auth = await authContext(targetPath, resolveAuthSession);
-  const result = await checkedTransport(requestMutation)(admissionsUrl(auth.apiUrl, sessionId, suffix), {
+  const result = await checkedTransport(requestMutation)(admissionMemberUrl(auth.apiUrl, sessionId, admissionId, route), {
     method: "POST",
     operationName,
     idempotencyKey: key,
@@ -164,7 +170,7 @@ export async function getSessionAdmission(
   const sid = required(sessionId, "session id");
   const aid = required(admissionId, "admission id");
   const auth = await authContext(targetPath, resolveAuthSession);
-  return checkedTransport(requestRead)(admissionsUrl(auth.apiUrl, sid, `/${urlPathSegment(aid, { label: "admissionId" })}`), {
+  return checkedTransport(requestRead)(admissionMemberUrl(auth.apiUrl, sid, aid), {
     method: "GET",
     credential: auth.credential,
   });
@@ -202,7 +208,8 @@ export async function decideSessionAdmission(
   await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
-    `/${urlPathSegment(aid, { label: "admissionId" })}/decision`,
+    aid,
+    "/decision",
     ROUTES.decision,
     body,
     {
@@ -234,7 +241,8 @@ export async function revokeSessionAdmission(
   await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
-    `/${urlPathSegment(aid, { label: "admissionId" })}/revoke`,
+    aid,
+    "/revoke",
     ROUTES.revoke,
     normalizedReason ? { reason: normalizedReason } : {},
     {

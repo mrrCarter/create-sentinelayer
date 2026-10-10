@@ -4,7 +4,7 @@ Date: 2026-10-10
 
 ## Scope
 
-This PR keeps every identifier the CLI places in an API URL path to exactly one path segment, through one helper, `urlPathSegment` (`src/net/url-path.js`). The credential sender also refuses a URL whose path contains a `.` or `..` segment in any spelling.
+This PR keeps every identifier the CLI places in an API URL path to exactly one path segment, through one helper, `urlPathSegment` (`src/net/url-path.js`). The credential sender also takes the URL as a string only, and refuses one whose path is not plain segments: a segment that is, or decodes to, `.` or `..`, that decodes to something containing `/` or `\`, or that does not decode.
 
 Touched AI-impacting files:
 
@@ -22,6 +22,8 @@ Touched AI-impacting files:
 
 Prompt text, model selection, provider routing, request bodies, retries, tool permissions and response parsing are unchanged.
 
+The AIdenID and Gemini requests carry their own keys and are sent with their own transport, not through `credentialedRequest`, so the sender check does not apply to them; `urlPathSegment` does.
+
 ## Risk Assessment
 
 - Prompt-output behavior risk: none. No prompts, parsers or model parameters changed.
@@ -30,6 +32,6 @@ Prompt text, model selection, provider routing, request bodies, retries, tool pe
 
 ## Verification
 
-- `tests/unit.url-path-segments.test.mjs` covers the helper, the sender refusal, and the CLI and MCP paths end to end.
-- `tests/unit.credential-census.test.mjs` fails on a URL path built with `encodeURIComponent` outside the helper.
+- `tests/unit.url-path-segments.test.mjs` covers the helper, the URL builders that take raw ids, the sender refusal, and the CLI and MCP paths end to end.
+- The census of `src/` is also in `tests/unit.url-path-segments.test.mjs` (not `tests/unit.credential-census.test.mjs`); the rules it applies are listed next to it in that file. In every file it fails on `encodeURIComponent` next to a `/` and on a raw value in a versioned API path; in every file that sends a request it also fails on any other way of building a path from a value unless the line is on its reviewed list.
 - Existing AIdenID and AI client tests pass unchanged.

@@ -494,8 +494,9 @@ function leaseCollectionUrl(apiUrl, sessionId) {
   return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/file-leases`;
 }
 
-function leaseMemberUrl(apiUrl, sessionId, leaseId, action) {
-  return `${leaseCollectionUrl(apiUrl, sessionId)}/${urlPathSegment(leaseId, { label: "leaseId" })}/${action}`;
+/** One lease's URL: the raw lease id is encoded here; `route` is a fixed route ("/renew"). */
+function leaseMemberUrl(apiUrl, sessionId, leaseId, route) {
+  return `${leaseCollectionUrl(apiUrl, sessionId)}/${urlPathSegment(leaseId, { label: "leaseId" })}${route}`;
 }
 
 async function listRemoteLeases(
@@ -795,7 +796,7 @@ export async function lockFile(
     let compensated = false;
     try {
       const release = await checkedTransport(requestMutation)(
-        leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "release"),
+        leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "/release"),
         {
           method: "POST",
           operationName: "session-file-lease-acquire-compensation",
@@ -851,7 +852,7 @@ async function releaseCapabilityClaim(
   let response;
   try {
     response = await checkedTransport(requestMutation)(
-      leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "release"),
+      leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "/release"),
       {
         method: "POST",
         operationName: "session-file-lease-release",
@@ -1011,7 +1012,7 @@ export async function renewFileLease(
 
   const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
   const response = await checkedTransport(requestMutation)(
-    leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "renew"),
+    leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "/renew"),
     {
       method: "POST",
       operationName: "session-file-lease-renew",

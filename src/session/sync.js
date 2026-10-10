@@ -11,7 +11,7 @@ import { isSessionControlEvent } from "./control-events.js";
 import { createSessionMutationHeaders } from "./invitations.js";
 import { messageRevision } from "./message-edits.js";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
-import { urlPathSegment } from "../net/url-path.js";
+import { isUrlPathSegment, urlPathSegment } from "../net/url-path.js";
 
 // No-op outside tests; inside a test process (or a child it spawned) every fetch
 // to a non-loopback host is refused before a socket opens.
@@ -2848,7 +2848,10 @@ export async function editSessionMessage(sessionId, {
   let revision = expectedRevision === null || expectedRevision === undefined ? null : Number(expectedRevision);
   const validSequence = Number.isSafeInteger(sequence) && sequence > 0;
   const mutationKey = normalizeString(idempotencyKey) || `sl-message-edit-${randomUUID()}`;
-  if (!sid || typeof text !== "string" || !text.trim() || (!replyId && !messageId && !validSequence) ||
+  // Every id is checked here, before the request try below: an id that is not one URL path
+  // segment sends nothing and is never counted against the outbound breaker.
+  const idsAreSegments = isUrlPathSegment(sid) && [replyId, messageId].every((id) => !id || isUrlPathSegment(id));
+  if (!idsAreSegments || typeof text !== "string" || !text.trim() || (!replyId && !messageId && !validSequence) ||
       (revision !== null && (!Number.isSafeInteger(revision) || revision <= 0)) || mutationKey.length > 128) {
     return { ok: false, reason: "invalid_input" };
   }
@@ -2860,6 +2863,10 @@ export async function editSessionMessage(sessionId, {
   catch { return { ok: false, reason: "no_session" }; }
   if (!isAuthenticated(auth)) return { ok: false, reason: "not_authenticated" };
   const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${urlPathSegment(sid, { label: "sessionId" })}`;
+  // The edit target: a reply by its id, or a message by its id (checked above, or from the lookup).
+  const targetUrl = (id) => (replyId
+    ? `${base}/replies/${urlPathSegment(replyId, { label: "replyId" })}`
+    : `${base}/messages/${urlPathSegment(id, { label: "messageId" })}`);
   const credential = await credentialFor(auth);
   const failure = (response, payload) => {
     const code = normalizeString(payload?.detail?.code || payload?.error?.code || payload?.code);
@@ -2870,21 +2877,23 @@ export async function editSessionMessage(sessionId, {
   try {
     // Sequence resolution and omitted-revision lookup are one authenticated GET.
     if ((!replyId && !messageId) || revision === null) {
-      const resource = replyId ? `replies/${urlPathSegment(replyId, { label: "replyId" })}` : messageId
-        ? `messages/${urlPathSegment(messageId, { label: "messageId" })}` : `messages/by-sequence/${sequence}`;
+      const lookupUrl = replyId || messageId
+        ? targetUrl(messageId)
+        : `${base}/messages/by-sequence/${urlPathSegment(sequence, { label: "targetSequenceId" })}`;
       const authorQuery = normalizeString(agentId) ? `?agentId=${encodeURIComponent(normalizeString(agentId))}` : "";
-      const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}${authorQuery}`, { method: "GET", credential, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
+      const { response, payload } = await fetchJsonWithFullTimeout(`${lookupUrl}${authorQuery}`, { method: "GET", credential, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
       if (!response?.ok || payload?.ok === false) return failure(response, payload);
       const current = replyId ? payload?.reply : payload?.event;
       const fetchedRevision = Number(current?.messageRevision ?? 1);
-      if (!current?.id || (replyId && current.id !== replyId) || !Number.isSafeInteger(fetchedRevision) || fetchedRevision <= 0) return { ok: false, reason: "invalid_edit_target" };
+      // A message id from the lookup is held to the same rule before it is used in a URL.
+      if (!current?.id || (replyId ? current.id !== replyId : !isUrlPathSegment(current.id)) ||
+          !Number.isSafeInteger(fetchedRevision) || fetchedRevision <= 0) return { ok: false, reason: "invalid_edit_target" };
       if (current.canEdit === false) return { ok: false, reason: "MESSAGE_EDIT_FORBIDDEN", status: 403 };
       if (!replyId) messageId = current.id;
       if (revision === null) revision = fetchedRevision;
     }
-    const resource = replyId ? `replies/${urlPathSegment(replyId, { label: "replyId" })}` : `messages/${urlPathSegment(messageId, { label: "messageId" })}`;
     const body = { text, expectedRevision: revision, ...(normalizeString(agentId) ? { agentId: normalizeString(agentId) } : {}) };
-    const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}`, {
+    const { response, payload } = await fetchJsonWithFullTimeout(targetUrl(messageId), {
       method: "PATCH",
       headers: {
         ...createSessionMutationHeaders({ credential, sessionId: sid, routeId: replyId
