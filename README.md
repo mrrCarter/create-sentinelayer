@@ -912,7 +912,7 @@ gh secret list --repo <owner/repo>
 - `SENTINELAYER_DISABLE_KEYRING=1` (force file-based credential storage)
 - `AIDENID_API_KEY`, `AIDENID_ORG_ID`, `AIDENID_PROJECT_ID` (used by `sl ai provision-email --execute`)
 
-Your SentinelLayer token is sent only to the API named by `SENTINELAYER_API_URL`, else by `apiUrl` in `~/.sentinelayer/config.yml`, else the default API, and to the pocket gateway named by `SENTI_POCKET_URL`. An `--api-url` or `--gateway-url` that names another origin is refused for any request that would carry the token; set the environment variable instead. A project `.sentinelayer.yml` does not change where the token may be sent.
+When the CLI sends your SentinelLayer token over HTTP, it sends it only to the API named by `SENTINELAYER_API_URL` (else by `apiUrl` in `~/.sentinelayer/config.yml`, else the default API), or to the pocket gateway named by `SENTI_POCKET_URL`. Custom API origins must be configured: an `--api-url` or `--gateway-url` that names another origin is refused for any request that would carry the token, and a project `.sentinelayer.yml` does not change where the token may be sent. Requests that carry the token do not follow redirects. One operator command hands the token elsewhere on purpose: `sl scan setup-secrets` writes it to a GitHub Actions secret with the `gh` CLI (it is not available through the MCP bridge). Other services' keys (model providers, AIdenID, a memory or embedding service) are sent to their own endpoints.
 
 ## Layered config (PR 0.2)
 
