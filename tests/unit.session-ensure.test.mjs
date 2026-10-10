@@ -224,6 +224,7 @@ test("Unit session ensure: server-missing local resume is expired and a fresh se
     SENTINELAYER_SKIP_REMOTE_SYNC: process.env.SENTINELAYER_SKIP_REMOTE_SYNC,
     SENTINELAYER_TOKEN: process.env.SENTINELAYER_TOKEN,
     SENTINELAYER_API_URL: process.env.SENTINELAYER_API_URL,
+    SENTINELAYER_API_ALLOWED_HOSTS: process.env.SENTINELAYER_API_ALLOWED_HOSTS,
     SENTINELAYER_DISABLE_KEYRING: process.env.SENTINELAYER_DISABLE_KEYRING,
   };
   try {
@@ -235,6 +236,8 @@ test("Unit session ensure: server-missing local resume is expired and a fresh se
     delete process.env.SENTINELAYER_SKIP_REMOTE_SYNC;
     process.env.SENTINELAYER_TOKEN = "tok_session_start_reconcile";
     process.env.SENTINELAYER_API_URL = "https://api.sentinelayer.test";
+    // a configured API outside session sync's built-in host list is added to it explicitly
+    process.env.SENTINELAYER_API_ALLOWED_HOSTS = "api.sentinelayer.test";
     process.env.SENTINELAYER_DISABLE_KEYRING = "1";
     global.fetch = async (url, init = {}) => {
       const endpoint = String(url);

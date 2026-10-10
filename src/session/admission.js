@@ -30,6 +30,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleepMs } from "node:timers/promises";
 
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { canonicalize } from "../engram/canonical.js";
@@ -366,10 +367,10 @@ function requestFingerprint({ apiUrl, agentId, publicKey, goal, actions, ttlSeco
 
 async function authContext({ targetPath, resolveAuthSession }) {
   const auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
-  return { token: auth.token, apiUrl: normalizeString(auth.apiUrl).replace(/\/+$/, "") };
+  return { credential: await credentialFor(auth), apiUrl: normalizeString(auth.apiUrl).replace(/\/+$/, "") };
 }
 
 function admissionUrl(apiUrl, sessionId, suffix = "") {
@@ -378,12 +379,13 @@ function admissionUrl(apiUrl, sessionId, suffix = "") {
 
 async function mutate(auth, sessionId, routeId, url, body, { requestMutation, operationName, origin }) {
   const idempotencyKey = createSessionMutationIdempotencyKey(operationName);
-  return requestMutation(url, {
+  return checkedTransport(requestMutation)(url, {
     method: "POST",
     operationName,
     idempotencyKey,
+    credential: auth.credential,
     headers: createSessionMutationHeaders({
-      bearerToken: auth.token,
+      credential: auth.credential,
       sessionId,
       routeId,
       idempotencyKey,
@@ -528,9 +530,9 @@ export async function runAdmissionJoin(
   const deadline = now() + Math.max(0, waitTimeoutMs);
   let polled;
   for (;;) {
-    polled = await requestRead(admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}`), {
+    polled = await checkedTransport(requestRead)(admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}`), {
       method: "GET",
-      headers: { Authorization: `Bearer ${auth.token}` },
+      credential: auth.credential,
     });
     state.status = polled.status;
     // Identity readiness is a server capability: a server that gates the claim on
@@ -668,13 +670,13 @@ export async function fetchOwnAdmissionReceipt(
 ) {
   const sid = normalizeString(sessionId);
   const auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false });
-  if (!auth?.token || auth.source !== "session_admission") {
+  if (!isAuthenticated(auth) || auth.source !== "session_admission") {
     throw new Error("The admission receipt must be fetched with the admission credential.");
   }
   const apiUrl = normalizeString(auth.apiUrl).replace(/\/+$/, "");
-  return requestRead(admissionUrl(apiUrl, sid, "/self"), {
+  return checkedTransport(requestRead)(admissionUrl(apiUrl, sid, "/self"), {
     method: "GET",
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential: await credentialFor(auth),
   });
 }
 

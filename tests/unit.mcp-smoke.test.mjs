@@ -157,7 +157,7 @@ test("Unit MCP smoke: proves tools/list and session read without returning beare
   await withStoredSession(async ({ tempRoot, mock }) => {
     const result = await runHostedMcpSmoke({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       autoRotate: false,
@@ -203,7 +203,7 @@ test("Unit MCP smoke: rejects the legacy dotted session tool alias", async () =>
     async ({ tempRoot, mock }) => {
       const result = await runHostedMcpSmoke({
         cwd: tempRoot,
-        env: {},
+        env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
         homeDir: tempRoot,
         explicitApiUrl: mock.apiUrl,
         autoRotate: false,
@@ -246,7 +246,7 @@ test("Unit MCP smoke: redacts token-like JSON-RPC errors", async () => {
 
     const result = await runHostedMcpSmoke({
       cwd: tempRoot,
-      env: {},
+      env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
       homeDir: tempRoot,
       explicitApiUrl: mock.apiUrl,
       autoRotate: false,

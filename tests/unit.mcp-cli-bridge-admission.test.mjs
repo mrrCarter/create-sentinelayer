@@ -71,7 +71,8 @@ async function bridgeFixture({ agentEnv } = {}) {
   delete env.SENTINELAYER_AGENT_ID;
   if (agentEnv) env.SENTINELAYER_AGENT_ID = agentEnv;
   const tools = await buildCliCommandMcpTools({ buildProgramFn: async () => buildCliProgram({ invokeLegacy: async () => {} }) });
-  const handlers = createCliCommandMcpToolHandlers(tools, { targetPath: ws, env });
+  // the bridge's own behaviour past the approval gate (the MCP dispatcher refuses CLI tools)
+  const handlers = createCliCommandMcpToolHandlers(tools, { targetPath: ws, env, approve: () => true });
   const store = async (agentId, overrides = {}) => {
     const file = admissionCredentialPath(SID, agentId, { homeDir: home });
     await fsp.mkdir(path.dirname(file), { recursive: true });
@@ -92,8 +93,8 @@ async function bridgeFixture({ agentEnv } = {}) {
     );
   };
   const say = (agent) =>
-    handlers["sl.session.say"]({ sessionId: SID, message: ["status from the bridge"], agent, path: ws, timeoutMs: 60_000 });
-  const locks = () => handlers["sl.session.locks"]({ sessionId: SID, path: ws, timeoutMs: 60_000 });
+    handlers["sl.session.say"]({ sessionId: SID, message: ["status from the bridge"], agent, path: ".", timeoutMs: 60_000 });
+  const locks = () => handlers["sl.session.locks"]({ sessionId: SID, path: ".", timeoutMs: 60_000 });
   // The bridge handler for a tool, and the argv it builds for an input run directly in the
   // bridge's child environment, so the CLI's own checks are exercised without the handler's.
   const call = (toolName, input) => handlers[toolName]({ ...input, timeoutMs: 60_000 });
@@ -212,7 +213,7 @@ for (const [label, toolName, input, agentEnv] of DASH_VALUE_CASES) {
     const fx = await bridgeFixture({ agentEnv });
     try {
       await fx.store(AGENT);
-      const viaBridge = await fx.call(toolName, { ...input, path: fx.ws });
+      const viaBridge = await fx.call(toolName, { ...input, path: "." }); // a bridge path is workspace-relative
       assert.equal(viaBridge.ok, false);
       assert.equal(viaBridge.reason, "invalid_cli_tool_input");
       assert.equal(viaBridge.detail, "unsupported_input_value:sessionId");
@@ -236,7 +237,7 @@ for (const [label, toolName, input] of [
     const fx = await bridgeFixture({ agentEnv: AGENT });
     try {
       await fx.store(AGENT);
-      await fx.call(toolName, { ...input, path: fx.ws });
+      await fx.call(toolName, { ...input, path: "." });
       assert.ok(fx.api.requests.length >= 1, "the command reached the API");
       assert.deepEqual(fx.api.requests.filter((r) => r.bearer !== ADMISSION_TOKEN), [], "admission credential only");
     } finally {

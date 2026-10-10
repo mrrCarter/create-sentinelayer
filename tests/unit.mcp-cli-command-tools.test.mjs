@@ -12,7 +12,7 @@ import {
   executeCliCommand,
 } from "../src/mcp/cli-command-tools.js";
 import { buildCliProgram } from "../src/cli.js";
-import { createSessionMcpRuntime } from "../src/mcp/session-stdio-server.js";
+import { createSessionMcpRuntime, handleMcpJsonRpcMessage } from "../src/mcp/session-stdio-server.js";
 
 function buildFakeProgram() {
   const program = new Command();
@@ -22,7 +22,8 @@ function buildFakeProgram() {
     .command("say <sessionId> <message...>")
     .description("Send a session message")
     .option("--to <agent>", "Recipient agent")
-    .option("--force-new", "Force a new route")
+    // a real `session say` option: the bridge exposes only the inputs listed for the command
+    .option("--local-only", "Keep the message local")
     .option("--json", "Emit JSON");
   const auth = program.command("auth").description("Manage auth");
   auth.command("logout").description("Clear local credentials");
@@ -192,7 +193,9 @@ test("Unit MCP CLI command tools: blocks sensitive AIdenID commands in the real 
   ]) {
     const tool = byName.get(name);
     assert.ok(tool, `expected real CLI bridge tool ${name}`);
-    assert.equal(tool.security.runtime_blocked, undefined, `${name} should stay bridge-callable`);
+    // not blocked outright; held only by the approval gate, like every CLI tool
+    assert.equal(tool.metadata.blocked, false, `${name} should not be blocked outright`);
+    assert.equal(tool.security.runtime_block_reason, "approval_required", name);
   }
 });
 
@@ -231,8 +234,10 @@ test("Unit MCP CLI command tools: session access administration is not bridge-ca
     assert.equal(result.reason, "blocked_sensitive_cli_command", name);
   }
   assert.equal(executed, 0, "no access command is executed through the bridge");
-  // ordinary session tools stay callable
-  assert.equal(tools.find((tool) => tool.name === "sl.session.say")?.security.runtime_blocked, undefined);
+  // ordinary session tools are not blocked outright; only the approval gate holds them
+  const say = tools.find((tool) => tool.name === "sl.session.say");
+  assert.equal(say?.metadata.blocked, false);
+  assert.equal(say?.security.runtime_block_reason, "approval_required");
 });
 
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {
@@ -251,7 +256,7 @@ test("Unit MCP CLI command tools: generates leaf tools from commander tree", asy
   assert.equal(say.inputSchema.properties.sessionId.type, "string");
   assert.equal(say.inputSchema.properties.message.type, "array");
   assert.equal(say.inputSchema.properties.to.type, "string");
-  assert.equal(say.inputSchema.properties.forceNew.type, "boolean");
+  assert.equal(say.inputSchema.properties.localOnly.type, "boolean");
   assert.equal(say.inputSchema.properties.timeoutMs.maximum, 300000);
   assert.equal(say.security.requires_human_approval, true);
   assert.equal(say.metadata.supportsJson, true);
@@ -269,9 +274,9 @@ test("Unit MCP CLI command tools: maps tool input to CLI args and forces json wh
       sessionId: "sess-1",
       message: ["hello", "world"],
       to: "claude",
-      forceNew: true,
+      localOnly: true,
     }),
-    ["session", "say", "sess-1", "hello", "world", "--to", "claude", "--force-new", "--json"],
+    ["session", "say", "sess-1", "hello", "world", "--to", "claude", "--local-only", "--json"],
   );
 });
 
@@ -281,6 +286,7 @@ test("Unit MCP CLI command tools: handler executes bridge command and parses jso
   });
   const handlers = createCliCommandMcpToolHandlers(tools, {
     targetPath: "workspace",
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async (args, options) => ({
       exitCode: 0,
       signal: null,
@@ -346,6 +352,7 @@ test("Unit MCP CLI command tools: rejects unsupported tool inputs before executi
     buildProgramFn: async () => buildFakeProgram(),
   });
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate, inputs are still checked
     executeCliCommandFn: async () => {
       throw new Error("must not execute");
     },
@@ -464,6 +471,7 @@ test("Unit MCP CLI command tools: redacts secret-like command output", async () 
   });
   const tokenFixture = ["VcheWKR65eHb", "1234567890abcdef"].join("");
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async () => ({
       exitCode: 0,
       signal: null,
@@ -496,6 +504,7 @@ test("Unit MCP CLI command tools: redacts secret-like raw output and command ech
   });
   const tokenFixture = ["VcheWKR65eHb", "1234567890abcdef"].join("");
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async () => ({
       exitCode: 1,
       signal: null,
@@ -571,4 +580,17 @@ test("Unit MCP session runtime: combines session tools with generated CLI bridge
   assert.equal(typeof runtime.handlers.poll_inbox, "function");
   assert.equal(typeof runtime.handlers["sl.session.say"], "function");
   assert.equal(runtime.commandToolCount, 1);
+
+  // The runtime holds the CLI tool so the dispatcher can refuse it; MCP clients never see or run it.
+  const listed = await handleMcpJsonRpcMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" }, runtime);
+  const listedNames = listed.result.tools.map((tool) => tool.name);
+  assert.equal(listedNames.includes("poll_inbox"), true);
+  assert.equal(listedNames.includes("sl.session.say"), false);
+  const called = await handleMcpJsonRpcMessage(
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "sl.session.say", arguments: {} } },
+    runtime,
+  );
+  assert.equal(called.result, undefined);
+  assert.equal(called.error.code, -32001);
+  assert.equal(called.error.data.reason, "human_approval_required");
 });

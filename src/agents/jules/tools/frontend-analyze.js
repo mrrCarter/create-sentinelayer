@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { glob as globTool } from "./glob.js";
 import { grep as grepTool } from "./grep.js";
 import { fileRead } from "./file-read.js";
+import { buildScrubbedEnv } from "../../shared-tools/shell.js";
 
 /**
  * FrontendAnalyze — 24 deterministic operations for the Jules Tanaka persona.
@@ -346,11 +347,22 @@ function checkErrorBoundaries(rootPath) {
   };
 }
 
+// npm runs in the repository with credentials removed from its environment, so the repository's
+// .npmrc cannot place them in a request.
+function npmAuditInvocation(rootPath, env = process.env) {
+  return {
+    file: "npm",
+    args: ["audit", "--json", "--production"],
+    options: { cwd: rootPath, encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"], env: buildScrubbedEnv(env) },
+  };
+}
+
+export const __frontendAnalyzeForTests = Object.freeze({ npmAuditInvocation });
+
 function auditNpmDeps(rootPath) {
   try {
-    const output = execFileSync("npm", ["audit", "--json", "--production"], {
-      cwd: rootPath, encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"],
-    });
+    const invocation = npmAuditInvocation(rootPath);
+    const output = execFileSync(invocation.file, invocation.args, invocation.options);
     const audit = JSON.parse(output);
     return {
       vulnerabilities: audit.metadata?.vulnerabilities || {},

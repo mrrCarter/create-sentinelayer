@@ -110,7 +110,7 @@ test("Unit MCP token service: requests hosted token with active CLI auth session
 
       const minted = await requestHostedMcpAccessToken({
         cwd: tempRoot,
-        env: {},
+        env: { SENTINELAYER_API_URL: mock.apiUrl }, // the configured API
         homeDir: tempRoot,
         explicitApiUrl: mock.apiUrl,
         autoRotate: false,

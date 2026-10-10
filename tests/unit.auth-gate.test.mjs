@@ -8,6 +8,7 @@ import { mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 
 import { checkAuthGate } from "../src/auth/gate.js";
 import { writeStoredSession } from "../src/auth/session-store.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 const TEST_BYPASS_NONCE_FILENAME_PREFIX = "sentinelayer-cli-test-bypass";
 
@@ -68,7 +69,7 @@ test("Unit auth gate: accepts env token without stored session", async () => {
     assert.equal(result.authenticated, true);
     assert.equal(result.bypassReason, null);
     assert.equal(result.session?.source, "env");
-    assert.equal(result.session?.token, "env_token_live");
+    assert.equal(await bearerOf(result.session?.credential), "env_token_live");
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

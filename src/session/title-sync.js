@@ -1,5 +1,6 @@
 import process from "node:process";
 
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { SentinelayerApiError, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { recordSessionRemoteTitleSync } from "./store.js";
@@ -66,7 +67,7 @@ export async function pushSessionTitleToApi(
       env,
       autoRotate,
     });
-    if (!session?.token || !session?.apiUrl) {
+    if (!isAuthenticated(session) || !session?.apiUrl) {
       await recordRemoteTitleSync(normalizedSessionId, {
         targetPath,
         title: normalizedTitle,
@@ -76,12 +77,12 @@ export async function pushSessionTitleToApi(
       return { synced: false, reason: "not_authenticated" };
     }
     const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
-    const result = await requestMutation(
+    const result = await checkedTransport(requestMutation)(
       `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/title`,
       {
         method: "POST",
         operationName: "session.set_title",
-        headers: { Authorization: `Bearer ${session.token}` },
+        credential: await credentialFor(session, { env }),
         body: { title: normalizedTitle },
         timeoutMs,
         maxRetries,

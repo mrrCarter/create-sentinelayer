@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 
+import { bridgeAllowedInputs } from "./bridge-inputs.js";
 import { buildSentinelayerCliRegistryTemplate } from "./cli-registry.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -54,6 +56,11 @@ const SENSITIVE_COMMAND_PATHS = new Set([
   "ai.identity.events",
   "ai.identity.latest",
   "ai.identity.wait-for-otp",
+  // Resumes a local Codex session: --message-file and --cwd name files it reads (a dry run returns
+  // the message), and --model and --last choose what runs. Blocked outright, not only behind the
+  // approval gate; unblocking it needs an argument-bound approval, workspace-scoped paths, and a
+  // model and session that the caller cannot choose freely.
+  "session.wake.codex",
 ]);
 
 // Whole governance sub-trees under ai.identity (domain/target/site/legal-hold) are live
@@ -69,6 +76,10 @@ const SENSITIVE_COMMAND_PREFIXES = [
   "session.access.",
 ];
 const REDACTION_MARKER = "[REDACTED]";
+
+// Which inputs each command exposes is an explicit, default-deny list: src/mcp/bridge-inputs.js.
+// Nothing there names where a request goes, so a tool caller never chooses a destination for this
+// machine's credentials.
 
 function normalizeString(value) {
   return String(value == null ? "" : value).trim();
@@ -117,11 +128,21 @@ function optionFlagFromFlags(flags) {
   return short ? short[0] : "";
 }
 
+// An input that names a file or directory: by its placeholder (<path>, <file>, <dir>) or its name.
+const PATH_PLACEHOLDER_RE = /<(?:[a-z-]*-)?(?:path|file|dir|directory|folder)s?(?:\.\.\.)?>/i;
+const PATH_NAME_RE = /^(?:cwd|path|paths|file|files|dir|out|output|plan|spec)$|^(?!(?:max|min|num)[A-Z]).*(?:Path|File|Dir|Directory|Folder)s?$/;
+
+function isPathLikeInput(name, flags = "") {
+  return PATH_NAME_RE.test(String(name || "")) || PATH_PLACEHOLDER_RE.test(String(flags || ""));
+}
+
 function normalizePositionalSpec(argument = {}, index = 0) {
+  const name = normalizePropertyName(argument.name, `arg${index + 1}`);
   return {
-    name: normalizePropertyName(argument.name, `arg${index + 1}`),
+    name,
     required: Boolean(argument.required),
     variadic: Boolean(argument.variadic),
+    pathLike: Boolean(argument.pathLike) || isPathLikeInput(name),
   };
 }
 
@@ -136,6 +157,7 @@ function normalizeOptionSpec(option = {}, index = 0) {
     expectsValue,
     variadic: Boolean(option.variadic),
     json: name === "json" || flag === "--json",
+    pathLike: Boolean(option.pathLike) || (expectsValue && isPathLikeInput(name, option.flags)),
   };
 }
 
@@ -227,6 +249,52 @@ function isAllowedInputValue(value) {
   return false;
 }
 
+function realpathOfNearestExisting(target) {
+  let current = target;
+  for (;;) {
+    try {
+      return fs.realpathSync.native(current);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return current;
+      current = parent;
+    }
+  }
+}
+
+function isInsideRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+// An input that names a file or directory stays inside the workspace: it is relative, does not
+// leave the workspace with "..", and does not leave it through a symlink (the nearest existing
+// ancestor's real path is checked). Returns the offending input's name, or "".
+function workspacePathInputError(tool = {}, input = {}, targetPath = process.cwd()) {
+  const metadata = tool.metadata || {};
+  const specs = [
+    ...(Array.isArray(metadata.positional) ? metadata.positional : []),
+    ...(Array.isArray(metadata.options) ? metadata.options : []),
+  ].filter((spec) => spec.pathLike);
+  if (specs.length === 0) return "";
+  const root = realpathOfNearestExisting(path.resolve(String(targetPath || ".")));
+  for (const spec of specs) {
+    const value = input[spec.name];
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (typeof item !== "string" || !item.trim()) continue;
+      const raw = item.trim();
+      if (path.isAbsolute(raw) || path.win32.isAbsolute(raw) || /^[A-Za-z]:/.test(raw) || raw.startsWith("~")) {
+        return spec.name;
+      }
+      const resolved = path.resolve(root, raw);
+      if (!isInsideRoot(root, resolved) || !isInsideRoot(root, realpathOfNearestExisting(resolved))) {
+        return spec.name;
+      }
+    }
+  }
+  return "";
+}
+
 function validateBridgeToolInput(tool = {}, input = {}) {
   if (!isPlainObject(input)) {
     return "input_must_be_object";
@@ -268,6 +336,32 @@ function dashLeadingValueKey(tool = {}, input = {}) {
   return "";
 }
 
+// The inputs a command does not expose, and whether that leaves it unusable through the bridge:
+// it has no entry, or an argument or a required option is not listed.
+function unlistedInputs(commandPathKey, schema = {}, positionalSource = [], optionSource = []) {
+  const allowed = bridgeAllowedInputs(commandPathKey);
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const withheld = new Set();
+  let unusable = !allowed;
+  for (const argument of positionalSource) {
+    if (!allowed?.has(argument.name)) unusable = true;
+  }
+  for (const option of optionSource) {
+    const { name } = normalizeOptionSpec(option);
+    if (allowed?.has(name)) continue;
+    withheld.add(name);
+    if (required.has(name)) unusable = true;
+  }
+  return { withheld, unusable };
+}
+
+function withoutInputs(schema = {}, names = new Set()) {
+  if (names.size === 0) return schema;
+  const properties = Object.fromEntries(Object.entries(schema.properties || {}).filter(([key]) => !names.has(key)));
+  const required = (Array.isArray(schema.required) ? schema.required : []).filter((key) => !names.has(key));
+  return { ...schema, properties, ...(Array.isArray(schema.required) ? { required } : {}) };
+}
+
 function normalizeRegistryTool(tool = {}) {
   const metadata = tool.metadata || {};
   const cliPath = Array.isArray(metadata.cliPath)
@@ -282,19 +376,28 @@ function normalizeRegistryTool(tool = {}) {
       ? metadata.arguments
       : [];
   const optionSource = Array.isArray(metadata.options) ? metadata.options : [];
-  const options = optionSource.map(normalizeOptionSpec).filter((option) => option.flag);
+  const rawSchema = normalizeInputSchema(tool);
+  const { withheld, unusable } = unlistedInputs(commandPathKey, rawSchema, positionalSource, optionSource);
+  const options = optionSource
+    .map(normalizeOptionSpec)
+    .filter((option) => option.flag && !withheld.has(option.name));
   const name = normalizeToolName(tool.name || commandPathKey);
-  const blockedReason = blockedReasonForCommandPath(commandPathKey);
+  const blockedReason =
+    blockedReasonForCommandPath(commandPathKey) || (unusable ? "blocked_unlisted_input" : "");
+  // The approval flag is enforced, not described: a tool that requires human approval (or whose
+  // flag is missing) is runtime-blocked until a server-validated, argument-bound approval exists.
+  const approvalRequired = tool.security?.requires_human_approval !== false;
+  const runtimeBlockReason = blockedReason || (approvalRequired ? "approval_required" : "");
   const security = {
     ...(tool.security || {}),
-    ...(blockedReason ? { runtime_blocked: true, runtime_block_reason: blockedReason } : {}),
+    ...(runtimeBlockReason ? { runtime_blocked: true, runtime_block_reason: runtimeBlockReason } : {}),
   };
 
   return {
     name,
     title: tool.title || `sl ${cliPath.join(" ")}`.trim(),
     description: tool.description || `Run SentinelLayer CLI command sl ${cliPath.join(" ")}.`,
-    inputSchema: normalizeInputSchema(tool),
+    inputSchema: withoutInputs(rawSchema, withheld),
     security,
     annotations: {
       ...(tool.annotations || {}),
@@ -307,9 +410,11 @@ function normalizeRegistryTool(tool = {}) {
       cliPath,
       positional: positionalSource.map(normalizePositionalSpec),
       options,
+      withheldOptions: [...withheld].sort(),
       supportsJson: options.some((option) => option.json),
       blocked: Boolean(metadata.blocked) || Boolean(blockedReason),
       blockedReason: metadata.blockedReason || blockedReason,
+      approvalRequired,
     },
   };
 }
@@ -512,6 +617,10 @@ export function createCliCommandMcpToolHandlers(
     targetPath = process.cwd(),
     executeCliCommandFn = executeCliCommand,
     env = process.env,
+    // Every CLI tool requires human approval, and no server-validated, argument-bound approval
+    // exists yet, so none is approved. Tests pass a validator to exercise the bridge itself; the
+    // MCP server passes none, and its dispatcher refuses these tools before any handler runs.
+    approve = () => false,
   } = {},
 ) {
   const handlers = {};
@@ -534,6 +643,21 @@ export function createCliCommandMcpToolHandlers(
           tool: tool.name,
         };
       }
+      // a blocked tool, or one without approval, is refused before its inputs are looked at
+      if (tool.metadata.blocked) {
+        return {
+          ok: false,
+          reason: tool.metadata.blockedReason || "blocked_cli_command",
+          tool: tool.name,
+        };
+      }
+      if (tool.metadata.approvalRequired !== false && !approve(tool, input)) {
+        return {
+          ok: false,
+          reason: "approval_required",
+          tool: tool.name,
+        };
+      }
       const inputError = validateBridgeToolInput(tool, input);
       if (inputError) {
         return {
@@ -543,10 +667,12 @@ export function createCliCommandMcpToolHandlers(
           tool: tool.name,
         };
       }
-      if (tool.metadata.blocked) {
+      const pathInput = workspacePathInputError(tool, input, targetPath);
+      if (pathInput) {
         return {
           ok: false,
-          reason: tool.metadata.blockedReason || "blocked_cli_command",
+          reason: "path_outside_workspace",
+          detail: pathInput,
           tool: tool.name,
         };
       }

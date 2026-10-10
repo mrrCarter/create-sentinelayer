@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { checkedTransport, credentialFor, credentialHmac, isAuthenticated, isCredential } from "../auth/credential-destinations.js";
 import { requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { renderCoordinationBulletList } from "./coordination-guidance.js";
@@ -30,6 +31,16 @@ export function canonicalSessionRef(value) {
   return raw.toLowerCase();
 }
 
+function sessionMutationCsrfMessage({ sessionId, routeId, idempotencyKey } = {}) {
+  return [
+    "session-mutation-csrf:v1",
+    canonicalSessionRef(sessionId),
+    normalizeString(routeId),
+    normalizeString(idempotencyKey),
+  ].join("\0");
+}
+
+// The API's CSRF proof for a given bearer: what the server (or a test fixture) checks against.
 export function createSessionMutationCsrfToken({
   bearerToken,
   sessionId,
@@ -38,35 +49,29 @@ export function createSessionMutationCsrfToken({
 } = {}) {
   const secret = normalizeString(bearerToken);
   if (!secret) return "";
-  const message = [
-    "session-mutation-csrf:v1",
-    canonicalSessionRef(sessionId),
-    normalizeString(routeId),
-    normalizeString(idempotencyKey),
-  ].join("\0");
-  return createHmac("sha256", secret).update(message, "utf-8").digest("hex");
+  return createHmac("sha256", secret)
+    .update(sessionMutationCsrfMessage({ sessionId, routeId, idempotencyKey }), "utf-8")
+    .digest("hex");
 }
 
+// The session-mutation headers: origin and a CSRF proof derived from the credential the request
+// is sent with. The credential itself is attached by credentialedRequest, never here.
 export function createSessionMutationHeaders({
-  bearerToken,
+  credential,
   sessionId,
   routeId,
   idempotencyKey,
   origin = SESSION_MUTATION_ORIGIN,
 } = {}) {
-  const token = normalizeString(bearerToken);
   const normalizedOrigin = normalizeString(origin) || SESSION_MUTATION_ORIGIN;
   return {
-    Authorization: `Bearer ${token}`,
     Origin: normalizedOrigin,
     "Sec-Fetch-Site": "same-site",
     "X-Sentinelayer-Session-Mutation": "session-mutation",
-    "X-CSRF-Token": createSessionMutationCsrfToken({
-      bearerToken: token,
-      sessionId,
-      routeId,
-      idempotencyKey,
-    }),
+    // keyed inside src/auth/credential-destinations.js; the token never leaves it
+    "X-CSRF-Token": isCredential(credential)
+      ? credentialHmac(credential, sessionMutationCsrfMessage({ sessionId, routeId, idempotencyKey }))
+      : "",
   };
 }
 
@@ -106,10 +111,11 @@ export async function acceptSessionInvitation(
     env: process.env,
     autoRotate: false,
   });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
 
+  const credential = await credentialFor(auth);
   const resolvedIdempotencyKey =
     normalizeString(idempotencyKey) || createSessionMutationIdempotencyKey("session-invite-accept");
   const apiUrl = normalizeString(auth.apiUrl).replace(/\/+$/, "");
@@ -121,14 +127,15 @@ export async function acceptSessionInvitation(
   if (normalizedSeatKey) body.seatKey = normalizedSeatKey;
   if (normalizedAgentId) body.agentId = normalizedAgentId;
 
-  const result = await requestMutation(
+  const result = await checkedTransport(requestMutation)(
     `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/invitations/accept`,
     {
       method: "POST",
       operationName: "session.invitation_accept",
       idempotencyKey: resolvedIdempotencyKey,
+      credential,
       headers: createSessionMutationHeaders({
-        bearerToken: auth.token,
+        credential,
         sessionId: normalizedSessionId,
         routeId: SESSION_INVITATION_ACCEPT_ROUTE_ID,
         idempotencyKey: resolvedIdempotencyKey,

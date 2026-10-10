@@ -12,6 +12,8 @@ import {
   normalizeSessionOnboarding,
   writeSessionOnboardingBrief,
 } from "../src/session/invitations.js";
+import { userCredential } from "../src/auth/credential-destinations.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 function jsonResponse(status, body = {}) {
   return {
@@ -25,15 +27,17 @@ function jsonResponse(status, body = {}) {
   };
 }
 
-test("Unit session invitations: session mutation headers match API CSRF contract", () => {
+test("Unit session invitations: session mutation headers match API CSRF contract", async () => {
+  const credential = await userCredential("test-token", { env: { SENTINELAYER_API_URL: "https://api.sentinelayer.com" } });
   const headers = createSessionMutationHeaders({
-    bearerToken: "test-token",
+    credential,
     sessionId: "sess-members",
     routeId: SESSION_INVITATION_ACCEPT_ROUTE_ID,
     idempotencyKey: "invite-accept-1",
   });
 
-  assert.equal(headers.Authorization, "Bearer test-token");
+  // the credential attaches itself when the request is sent (credentialedRequest)
+  assert.equal(headers.Authorization, undefined);
   assert.equal(headers.Origin, "https://sentinelayer.com");
   assert.equal(headers["Sec-Fetch-Site"], "same-site");
   assert.equal(headers["X-Sentinelayer-Session-Mutation"], "session-mutation");
@@ -78,7 +82,9 @@ test("Unit session invitations: accept posts token, seat, agent, idempotency, an
     seatKey: "codex-seat",
     agentId: "codex",
   });
-  assert.equal(calls[0].init.headers.Authorization, "Bearer test-token");
+  assert.equal(await bearerOf(calls[0].init.credential), "test-token");
+  assert.equal(calls[0].init.credential.origin, "https://api.sentinelayer.com");
+  assert.equal(calls[0].init.headers.Authorization, undefined);
   assert.equal(calls[0].init.headers["X-Sentinelayer-Session-Mutation"], "session-mutation");
   assert.equal(calls[0].init.headers["X-CSRF-Token"].length, 64);
   assert.equal(result.idempotencyKey, "invite-accept-1");

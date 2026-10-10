@@ -62,9 +62,13 @@ Read cursors and listener presence are operational projections, not transcript e
 
 `sl mcp registry init-cli` writes an MCP registry for every SentinelLayer CLI leaf command using Commander metadata. Tool names use the `sl.<command.path>` form, such as `sl.session.say` and `sl.mcp.registry.init-session`.
 
-The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands.
+The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands. The local stdio server enforces the flag in its dispatcher: a tool that requires approval is refused before its handler runs, until the server can validate an approval bound to the call's arguments. No such approval exists yet, so the `sl.*` tools are not listed, and a call to one returns JSON-RPC error `-32001` with `data.reason` `human_approval_required` and a message that says to run the `sl` command in a terminal. Senti session tools are unaffected. `sl session wake codex` is also blocked outright. `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1` turns off the CLI bridge handler; because every `sl.*` call is already refused before that handler runs, the switch does not change JSON-RPC responses in this version. It is defence in depth for the handler and for approved execution in a future version.
+
+A file or directory input (such as `--path`, `--output-dir`, `--interview-file` or `--message-file`) must stay inside the workspace: an absolute path, a `..` that leaves it, or a symlink out of it is refused before anything runs.
 
 The bridge copies each positional and option value into the command line as a value. It refuses a value that starts with `-` before running anything; run the CLI directly for such values.
+
+The bridge exposes only the inputs listed for each command in `src/mcp/bridge-inputs.js`; anything unlisted is not exposed, and a command without an entry is not run. No listed input names a destination: a URL, host, origin, endpoint or gateway (for example `--api-url` or `--gateway-url`). Nor does any name a program to run or turn off a safety check. Those commands use the configured API, pocket gateway and default executable; run the CLI directly to pass such an option. `sl init --inject-secret` and `--inject-openai-key` are not exposed either, and init refuses an interview that asks for secrets when it runs under the bridge.
 
 Secret-bearing commands are blocked from bridge execution even when they appear in the generated registry. `sl mcp token mint` is one of those blocked commands because it returns a fresh bearer token; operators must run it directly:
 
@@ -265,8 +269,8 @@ an operator workstation before pointing a remote agent at the server.
 If a hosted MCP bearer value is pasted into a transcript, log, ticket, or tool output:
 
 1. Treat it as exposed until it expires. The hosted API caps MCP credential lifetime server-side between 60 and 3600 seconds; prefer the shortest TTL that supports the task.
-2. Stop generated CLI bridge execution for local MCP hosts, then restart the
-   host process:
+2. Turn off the generated CLI bridge handler for local MCP hosts, then restart
+   the host process. In this version the MCP server already refuses every `sl.*` call for human approval, so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.
 
    ```bash
    export SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1
@@ -370,8 +374,9 @@ The MCP/token design intentionally follows these decisions:
 3. Generated CLI bridge execution is approval-oriented and fail-closed for
    secret-bearing commands. `sl mcp token mint` is listed for operator
    discoverability but blocked from bridge execution.
-4. Incident response favors containment before cleanup: disable bridge
-   execution with `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`, restart the MCP
+4. Incident response favors containment before cleanup: turn off the CLI
+   bridge handler with `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1` (defence in
+   depth; in this version every `sl.*` call is already refused), restart the MCP
    host, rotate/revoke the source CLI session, then verify `/mcp` rejects the
    exposed bearer.
 

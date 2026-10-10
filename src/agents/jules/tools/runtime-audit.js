@@ -3,7 +3,9 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { credentialedRequest, isAuthenticated } from "../../../auth/credential-destinations.js";
 import { assertPermittedAuditTarget } from "./url-policy.js";
+import { buildScrubbedEnv } from "../../shared-tools/shell.js";
 
 /**
  * Jules Tanaka — Runtime Audit Tool
@@ -47,6 +49,37 @@ const RUNTIME_DISPATCH = {
 };
 
 /**
+ * How Lighthouse runs. No shell: the target URL can come from the repository (package.json,
+ * vercel.json, .env files), and a shell would expand variables and operators inside it. Credentials
+ * are removed from npx's environment, so a repository .npmrc cannot place them in a request.
+ * On Windows, where npx is a .cmd file, npm's npx script runs under this Node.js instead.
+ */
+function lighthouseInvocation(
+  targetUrl,
+  outputPath,
+  { platform = process.platform, execPath = process.execPath, exists = fs.existsSync, env = process.env } = {},
+) {
+  const args = [
+    "--yes", "lighthouse@12", targetUrl,
+    "--output", "json", "--output-path", outputPath,
+    "--chrome-flags=--headless --no-sandbox --disable-gpu", "--quiet",
+  ];
+  const options = {
+    encoding: "utf-8",
+    timeout: LIGHTHOUSE_TIMEOUT_MS,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: buildScrubbedEnv(env),
+  };
+  if (platform !== "win32") {
+    return { file: "npx", args, options };
+  }
+  const npxCli = path.join(path.dirname(execPath), "node_modules", "npm", "bin", "npx-cli.js");
+  return exists(npxCli) ? { file: execPath, args: [npxCli, ...args], options } : null;
+}
+
+export const __runtimeAuditForTests = Object.freeze({ lighthouseInvocation, detectDeployedUrl });
+
+/**
  * Run Lighthouse via npx (no install required).
  * Returns performance, accessibility, best-practices, SEO scores + key metrics.
  */
@@ -74,16 +107,11 @@ async function lighthouseScan(input) {
     const outputDir = path.dirname(outputPath);
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    execFileSync("npx", [
-      "--yes", "lighthouse@12", targetUrl,
-      "--output", "json", "--output-path", outputPath,
-      "--chrome-flags=--headless --no-sandbox --disable-gpu", "--quiet",
-    ], {
-      encoding: "utf-8",
-      timeout: LIGHTHOUSE_TIMEOUT_MS,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: true, // Windows: npx is npx.cmd, needs shell resolution
-    });
+    const invocation = lighthouseInvocation(targetUrl, outputPath);
+    if (!invocation) {
+      return { available: false, reason: "npx is not available next to this Node.js" };
+    }
+    execFileSync(invocation.file, invocation.args, invocation.options);
 
     if (!fs.existsSync(outputPath)) {
       return { available: false, reason: "Lighthouse produced no output" };
@@ -437,7 +465,7 @@ async function callScannerApi(url) {
     });
   } catch { /* session read failed */ }
 
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { available: false, reason: "Not authenticated — run sl auth login" };
   }
 
@@ -445,14 +473,16 @@ async function callScannerApi(url) {
   const scanEndpoint = apiUrl + "/api/v1/scan/url";
 
   // Submit scan
-  const submitResponse = await fetchWithTimeout(scanEndpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + session.token,
+  const submitResponse = await credentialedRequest(
+    session.credential,
+    scanEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, scan_type: "lighthouse" }),
     },
-    body: JSON.stringify({ url, scan_type: "lighthouse" }),
-  }, 15000);
+    { fetchImpl: (target, init) => fetchWithTimeout(target, init, 15000) },
+  );
 
   if (!submitResponse.ok) {
     return { available: false, reason: "Scanner API returned " + submitResponse.status };
@@ -469,9 +499,9 @@ async function callScannerApi(url) {
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise(r => setTimeout(r, 3000));
     try {
-      const pollResponse = await fetchWithTimeout(pollUrl, {
-        headers: { "Authorization": "Bearer " + session.token },
-      }, 10000);
+      const pollResponse = await credentialedRequest(session.credential, pollUrl, {}, {
+        fetchImpl: (target, init) => fetchWithTimeout(target, init, 10000),
+      });
       if (!pollResponse.ok) continue;
       const pollData = await pollResponse.json();
       if (pollData.status === "completed" || pollData.status === "complete") {

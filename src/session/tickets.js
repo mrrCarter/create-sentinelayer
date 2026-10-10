@@ -19,6 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
@@ -70,8 +71,8 @@ async function writeState(filePath, state) {
 
 async function auth(targetPath, resolveAuthSession) {
   const session = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false });
-  if (!session?.token || !session?.apiUrl) throw new Error("Not authenticated for this session.");
-  return { token: session.token, apiUrl: normalizeString(session.apiUrl).replace(/\/+$/, "") };
+  if (!isAuthenticated(session) || !session?.apiUrl) throw new Error("Not authenticated for this session.");
+  return { credential: await credentialFor(session), apiUrl: normalizeString(session.apiUrl).replace(/\/+$/, "") };
 }
 
 function ticketsUrl(apiUrl, sessionId, suffix = "") {
@@ -155,7 +156,7 @@ export async function listTickets(
     maxPages = SNAPSHOT_MAX_PAGES,
   } = {}
 ) {
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const items = [];
   let cursor = null;
   let afterId = null;
@@ -164,9 +165,9 @@ export async function listTickets(
     const query = new URLSearchParams({ limit: String(pageSize) });
     if (afterId) query.set("afterId", afterId);
     const body = validatedSnapshotPage(
-      await requestRead(`${ticketsUrl(apiUrl, sessionId, "/snapshot")}?${query}`, {
+      await checkedTransport(requestRead)(`${ticketsUrl(apiUrl, sessionId, "/snapshot")}?${query}`, {
         method: "GET",
-        headers: { Authorization: `Bearer ${token}` },
+        credential,
       }),
       { first: page === 0, afterId },
     );
@@ -192,19 +193,20 @@ export async function ticketEvents(
   sessionId,
   { after = 0, targetPath = process.cwd(), resolveAuthSession = resolveActiveAuthSession, requestRead = requestJson } = {}
 ) {
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
-  return requestRead(`${ticketsUrl(apiUrl, sessionId, "/events")}?after=${encodeURIComponent(String(after))}`, {
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
+  return checkedTransport(requestRead)(`${ticketsUrl(apiUrl, sessionId, "/events")}?after=${encodeURIComponent(String(after))}`, {
     method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
+    credential,
   });
 }
 
-async function mutate(url, { token, key, operation, body, requestMutation }) {
-  return requestMutation(url, {
+async function mutate(url, { credential, key, operation, body, requestMutation }) {
+  return checkedTransport(requestMutation)(url, {
     method: "POST",
     operationName: `session.ticket_${operation}`,
     idempotencyKey: key,
-    headers: { Authorization: `Bearer ${token}`, "Idempotency-Key": key },
+    credential,
+    headers: { "Idempotency-Key": key },
     body,
   });
 }
@@ -222,10 +224,10 @@ export async function claimTicket(
   } = {}
 ) {
   const statePath = ticketLeasePath(sessionId, ticketId, identity, { homeDir });
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "claim", String(expectedVersion ?? "any"));
   const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/claim`), {
-    token, key, operation: "claim", requestMutation,
+    credential, key, operation: "claim", requestMutation,
     body: expectedVersion == null ? {} : { expectedVersion: Number(expectedVersion) },
   });
   // The lease is recorded here only if the server says it is held by the identity that
@@ -258,10 +260,10 @@ export async function renewTicketLease(
 ) {
   const statePath = ticketLeasePath(sessionId, ticketId, identity, { homeDir });
   const held = await heldLease(statePath);
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "renew", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
   const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/lease/renew`), {
-    token, key, operation: "renew", requestMutation, body: { leaseId: held.leaseId, fence: held.fence },
+    credential, key, operation: "renew", requestMutation, body: { leaseId: held.leaseId, fence: held.fence },
   });
   await writeState(statePath, leaseState(response));
   return response;
@@ -274,10 +276,10 @@ export async function releaseTicketLease(
 ) {
   const statePath = ticketLeasePath(sessionId, ticketId, identity, { homeDir });
   const held = await heldLease(statePath);
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "release", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
   const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/lease/release`), {
-    token, key, operation: "release", requestMutation,
+    credential, key, operation: "release", requestMutation,
     body: { leaseId: held.leaseId, fence: held.fence, expectedVersion: held.ticketVersion, ...(reason ? { reason } : {}) },
   });
   await fsp.rm(statePath, { force: true });
@@ -299,10 +301,10 @@ export async function submitTicket(
 ) {
   const statePath = ticketLeasePath(sessionId, ticketId, identity, { homeDir });
   const held = await heldLease(statePath);
-  const { token, apiUrl } = await auth(targetPath, resolveAuthSession);
+  const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "submit", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
   const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/submit`), {
-    token, key, operation: "submit", requestMutation,
+    credential, key, operation: "submit", requestMutation,
     body: {
       leaseId: held.leaseId,
       fence: held.fence,

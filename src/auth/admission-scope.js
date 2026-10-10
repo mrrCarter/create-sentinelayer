@@ -8,10 +8,12 @@
 // from inside the scope, so no human-authenticated subrequest can hide behind a
 // scoped main request.
 //
-// It imports nothing from this codebase, so the auth service can depend on it
-// without an import cycle.
+// It imports only the credential module, so the auth service can depend on it without an
+// import cycle.
 
 import { AsyncLocalStorage } from "node:async_hooks";
+
+import { admissionCredential } from "./credential-destinations.js";
 
 export const admittedAgentScope = new AsyncLocalStorage();
 
@@ -26,7 +28,7 @@ export function scopedAdmissionAuth() {
   if (!(credential.expiresAt * 1000 > Date.now())) return null;
   return {
     apiUrl: credential.apiUrl,
-    token: credential.token,
+    credential: admissionCredential(credential), // bound to the API that issued it; its token stays inside
     source: "session_admission",
     user: null,
     admissionId: credential.admissionId,

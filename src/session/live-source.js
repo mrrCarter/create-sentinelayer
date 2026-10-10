@@ -18,6 +18,7 @@
 import fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { CredentialDestinationRefused, credentialedRequest } from "../auth/credential-destinations.js";
 import { resolveSessionPaths } from "./paths.js";
 import { readStream } from "./stream.js";
 import {
@@ -155,12 +156,12 @@ export async function* watchLocalStream({
 export async function* watchRemoteStream({
   apiBaseUrl,
   sessionId,
-  token,
+  credential,
   signal,
   _sseFetch = fetch,
   reconnectBackoffMs = DEFAULT_RECONNECT_BACKOFF_MS,
 } = {}) {
-  if (!apiBaseUrl || !sessionId || !token) return;
+  if (!apiBaseUrl || !sessionId || !credential) return;
   const endpoint = `${apiBaseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(
     sessionId,
   )}/stream`;
@@ -182,17 +183,16 @@ export async function* watchRemoteStream({
         ? `${endpoint}?fromSequence=${encodeURIComponent(String(resumeSequence))}`
         : endpoint;
     try {
-      response = await _sseFetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "text/event-stream",
-        },
-        signal,
-      });
+      response = await credentialedRequest(
+        credential,
+        url,
+        { method: "GET", headers: { Accept: "text/event-stream" }, signal },
+        { fetchImpl: _sseFetch },
+      );
     } catch (err) {
       if (signal?.aborted) return;
       yield { source: "sse", error: String(err?.message || err) };
+      if (err instanceof CredentialDestinationRefused) return; // final: no reconnect can change it
       await sleep(backoff);
       backoff = Math.min(backoff * 2, MAX_RECONNECT_BACKOFF_MS);
       continue;
@@ -267,7 +267,7 @@ export async function* mergeLiveSources({
   sessionId,
   targetPath,
   apiBaseUrl,
-  token,
+  credential,
   signal,
   _localIterator,
   _remoteIterator,
@@ -278,10 +278,10 @@ export async function* mergeLiveSources({
     ? _localIterator
     : watchLocalStream({ sessionId, targetPath, signal });
   const remoteIterable =
-    _remoteIterator || (apiBaseUrl && token)
+    _remoteIterator || (apiBaseUrl && credential)
       ? _remoteIterator
         ? _remoteIterator
-        : watchRemoteStream({ apiBaseUrl, sessionId, token, signal })
+        : watchRemoteStream({ apiBaseUrl, sessionId, credential, signal })
       : null;
 
   const seen = new Map();

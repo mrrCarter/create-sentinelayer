@@ -13,6 +13,7 @@ import {
 } from "../auth/service.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
+import { isAuthenticated } from "../auth/credential-destinations.js";
 
 const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
@@ -369,7 +370,7 @@ export function registerWatchCommand(program) {
         throw new Error(formatApiError(error));
       }
 
-      if (!session || !session.token) {
+      if (!isAuthenticated(session)) {
         throw new Error(`No active auth token found. Run \`${authLoginHint()}\` first.`);
       }
 
@@ -395,7 +396,7 @@ export function registerWatchCommand(program) {
         while (true) {
           const response = await listRuntimeRunEvents({
             apiUrl: session.apiUrl,
-            authToken: session.token,
+            credential: session.credential,
             runId,
             afterEventId,
           });
@@ -428,7 +429,7 @@ export function registerWatchCommand(program) {
 
           const statusResponse = await getRuntimeRunStatus({
             apiUrl: session.apiUrl,
-            authToken: session.token,
+            credential: session.credential,
             runId,
           });
           latestStatus = String(statusResponse?.status || "unknown").trim().toLowerCase();

@@ -6,6 +6,14 @@ import open from "open";
 
 import { loadConfig } from "../config/service.js";
 import { scopedAdmissionAuth } from "./admission-scope.js";
+import {
+  DEFAULT_API_URL,
+  assertTrustedApiUrl,
+  credentialFor,
+  isAuthenticated,
+  resolveTrustContext,
+  userCredential,
+} from "./credential-destinations.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
@@ -15,7 +23,6 @@ import {
 } from "./session-store.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
-const DEFAULT_API_URL = "https://api.sentinelayer.com";
 /** Default maximum wall-clock wait for browser-based CLI auth approval (ms). */
 export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 /** Default lifetime for issued API tokens used by CLI sessions (days). */
@@ -55,12 +62,6 @@ function normalizePositiveNumber(rawValue, field, fallbackValue) {
     throw new Error(`${field} must be a positive number.`);
   }
   return normalized;
-}
-
-function toAuthHeader(token) {
-  return {
-    Authorization: `Bearer ${String(token || "").trim()}`,
-  };
 }
 
 function normalizeUser(user = {}) {
@@ -171,7 +172,6 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
  * @returns {Promise<string>}
  */
 export async function resolveApiUrl({
-  cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
   homeDir,
@@ -180,19 +180,9 @@ export async function resolveApiUrl({
   if (overrideUrl) {
     return normalizeApiUrl(overrideUrl);
   }
-
-  const envUrl = String(env.SENTINELAYER_API_URL || "").trim();
-  if (envUrl) {
-    return normalizeApiUrl(envUrl);
-  }
-
-  const config = await loadConfig({ cwd, env, homeDir });
-  const configuredApiUrl = String(config.resolved.apiUrl || "").trim();
-  if (configuredApiUrl) {
-    return normalizeApiUrl(configuredApiUrl);
-  }
-
-  return normalizeApiUrl(DEFAULT_API_URL);
+  // The trust context's API (SENTINELAYER_API_URL, else the global config, else the default). A
+  // workspace .sentinelayer.yml does not choose the API.
+  return normalizeApiUrl((await resolveTrustContext({ env, homeDir })).apiOrigin);
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
@@ -379,20 +369,21 @@ async function pollCliAuthSession({
   });
 }
 
-async function fetchCurrentUser({ apiUrl, token, flowRequestId }) {
+async function fetchCurrentUser({ apiUrl, credential, flowRequestId }) {
   return requestAuthJson(
     flowRequestId,
     buildApiPath(apiUrl, "/api/v1/auth/me"),
     {
       method: "GET",
-      headers: withFlowRequestHeaders(toAuthHeader(token), flowRequestId),
+      credential,
+      headers: withFlowRequestHeaders({}, flowRequestId),
     }
   );
 }
 
 async function issueApiToken({
   apiUrl,
-  authToken,
+  credential,
   tokenLabel,
   tokenTtlDays,
   flowRequestId,
@@ -406,12 +397,8 @@ async function issueApiToken({
     {
       method: "POST",
       operationName: "issue-token",
-      headers: withFlowRequestHeaders(
-        {
-          ...toAuthHeader(authToken),
-        },
-        flowRequestId
-      ),
+      credential,
+      headers: withFlowRequestHeaders({}, flowRequestId),
       body: {
         label: String(tokenLabel || "").trim() || defaultTokenLabel(),
         scope: "cli",
@@ -422,7 +409,7 @@ async function issueApiToken({
   );
 }
 
-async function revokeApiToken({ apiUrl, authToken, tokenId }) {
+async function revokeApiToken({ apiUrl, credential, tokenId }) {
   const normalizedTokenId = String(tokenId || "").trim();
   if (!normalizedTokenId) {
     return false;
@@ -430,9 +417,7 @@ async function revokeApiToken({ apiUrl, authToken, tokenId }) {
   await requestJsonMutation(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
     method: "DELETE",
     operationName: "revoke-token",
-    headers: {
-      ...toAuthHeader(authToken),
-    },
+    credential,
   });
   return true;
 }
@@ -443,6 +428,7 @@ async function rotateStoredApiTokenIfNeeded({
   tokenLabel,
   tokenTtlDays,
   homeDir,
+  context,
 }) {
   if (!session || !session.token || !session.tokenExpiresAt) {
     return { session, rotated: false };
@@ -453,7 +439,7 @@ async function rotateStoredApiTokenIfNeeded({
 
   const issued = await issueApiToken({
     apiUrl: session.apiUrl,
-    authToken: session.token,
+    credential: await userCredential(session.token, { context, source: "session" }),
     tokenLabel,
     tokenTtlDays,
   });
@@ -475,7 +461,7 @@ async function rotateStoredApiTokenIfNeeded({
     try {
       await revokeApiToken({
         apiUrl: session.apiUrl,
-        authToken: nextSession.token,
+        credential: await userCredential(nextSession.token, { context, source: "session" }),
         tokenId: session.tokenId,
       });
     } catch (error) {
@@ -536,6 +522,10 @@ export async function loginAndPersistSession({
   homeDir,
 } = {}) {
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  // The token this flow issues is the user's, so the API that issues it must be the configured
+  // one: refuse any other before the browser step. Resolution and trust share env and homeDir.
+  const context = await resolveTrustContext({ env, homeDir });
+  await assertTrustedApiUrl(apiUrl, { context });
   const challenge = generateChallenge();
   const flowRequestId = createFlowRequestId();
   const session = await startCliAuthSession({
@@ -574,13 +564,14 @@ export async function loginAndPersistSession({
       requestId: flowRequestId || null,
     });
   }
+  const approvalCredential = await userCredential(approvalToken, { context, source: "login_approval" });
 
   const user = normalizeUser(
-    approval.user || (await fetchCurrentUser({ apiUrl, token: approvalToken, flowRequestId }))
+    approval.user || (await fetchCurrentUser({ apiUrl, credential: approvalCredential, flowRequestId }))
   );
   const issuedApiToken = await issueApiToken({
     apiUrl,
-    authToken: approvalToken,
+    credential: approvalCredential,
     tokenLabel,
     tokenTtlDays,
     flowRequestId,
@@ -641,7 +632,7 @@ export async function loginAndPersistSession({
  * }} [options]
  * @returns {Promise<null | {
  *   apiUrl: string,
- *   token: string,
+ *   credential: object,
  *   source: "env" | "config" | "session",
  *   user: {
  *     id: string,
@@ -674,12 +665,15 @@ export async function resolveActiveAuthSession({
   if (scoped !== undefined) return scoped;
 
   const apiUrl = await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir });
+  // Each token below is bound to the configured API by the one trust context; `apiUrl` may name
+  // another origin (--api-url, a project config), and then a request carrying it is refused.
+  const context = await resolveTrustContext({ env, homeDir });
 
   const envToken = String(env.SENTINELAYER_TOKEN || "").trim();
   if (envToken) {
     return {
       apiUrl,
-      token: envToken,
+      credential: await userCredential(envToken, { context, source: "env" }),
       source: "env",
       user: null,
       aidenid: null,
@@ -692,12 +686,13 @@ export async function resolveActiveAuthSession({
     };
   }
 
+  // The user's own config only: a workspace .sentinelayer.yml does not choose whose token is used.
   const config = await loadConfig({ cwd, env, homeDir });
-  const configuredToken = String(config.resolved.sentinelayerToken || "").trim();
+  const configuredToken = String(config.layers.global.sentinelayerToken || "").trim();
   if (configuredToken) {
     return {
       apiUrl,
-      token: configuredToken,
+      credential: await userCredential(configuredToken, { context, source: "config" }),
       source: "config",
       user: null,
       aidenid: null,
@@ -725,6 +720,7 @@ export async function resolveActiveAuthSession({
         tokenLabel,
         tokenTtlDays,
         homeDir,
+        context,
       });
       active = rotateResult.session;
       rotated = rotateResult.rotated;
@@ -743,7 +739,7 @@ export async function resolveActiveAuthSession({
 
   return {
     apiUrl,
-    token: active.token,
+    credential: await userCredential(active.token, { context, source: "session" }),
     source: "session",
     user: normalizeUser(active.user || {}),
     aidenid: active.aidenid || null,
@@ -829,7 +825,7 @@ export async function getAuthStatus({
   let remoteError = null;
   if (checkRemote) {
     try {
-      remoteUser = normalizeUser(await fetchCurrentUser({ apiUrl: session.apiUrl, token: session.token }));
+      remoteUser = normalizeUser(await fetchCurrentUser({ apiUrl: session.apiUrl, credential: session.credential }));
     } catch (error) {
       remoteError =
         error instanceof SentinelayerApiError
@@ -938,7 +934,7 @@ export async function revokeAuthToken({
     autoRotate: false,
     homeDir,
   });
-  if (!active || !active.token) {
+  if (!isAuthenticated(active)) {
     throw new SentinelayerApiError(`No active auth token found. Run \`${authLoginHint()}\` first.`, {
       status: 401,
       code: "AUTH_REQUIRED",
@@ -954,7 +950,7 @@ export async function revokeAuthToken({
 
   await revokeApiToken({
     apiUrl: active.apiUrl,
-    authToken: active.token,
+    credential: active.credential,
     tokenId: targetTokenId,
   });
 
@@ -1020,7 +1016,7 @@ export async function logoutSession({
     try {
       await revokeApiToken({
         apiUrl: await resolveApiUrl({ cwd, env, explicitApiUrl, homeDir }),
-        authToken: stored.token,
+        credential: await userCredential(stored.token, { env, homeDir, source: "session" }),
         tokenId: stored.tokenId,
       });
       revokedRemote = true;
@@ -1043,15 +1039,15 @@ export async function logoutSession({
  *
  * @param {{
  *   apiUrl: string,
- *   authToken: string,
+ *   credential: object,
  *   runId: string,
  *   afterEventId?: string | null
- * }} [options]
+ * }} [options] credential: the resolved auth's `credential` (src/auth/credential-destinations.js)
  * @returns {Promise<any>}
  */
 export async function listRuntimeRunEvents({
   apiUrl,
-  authToken,
+  credential,
   runId,
   afterEventId = null,
 } = {}) {
@@ -1062,7 +1058,7 @@ export async function listRuntimeRunEvents({
     buildApiPath(apiUrl, `/api/v1/runtime/runs/${encodeURIComponent(String(runId || ""))}/events/list${query}`),
     {
       method: "GET",
-      headers: toAuthHeader(authToken),
+      credential,
     }
   );
 }
@@ -1070,7 +1066,7 @@ export async function listRuntimeRunEvents({
 /**
  * Fetch runtime run status snapshot from the Sentinelayer API.
  *
- * @param {{ apiUrl: string, authToken: string, runId: string }} [options]
+ * @param {{ apiUrl: string, credential: object, runId: string }} [options]
  * @returns {Promise<any>}
  */
 /**
@@ -1079,13 +1075,13 @@ export async function listRuntimeRunEvents({
  */
 export async function fetchAidenIdCredentials({
   apiUrl = DEFAULT_API_URL,
-  token = "",
+  auth = null,
 } = {}) {
   const response = await requestJson(
     buildApiPath(apiUrl, "/api/v1/aidenid/credentials"),
     {
       method: "GET",
-      headers: toAuthHeader(token),
+      credential: await credentialFor(auth),
     }
   );
   return {
@@ -1099,14 +1095,14 @@ export async function fetchAidenIdCredentials({
 
 export async function getRuntimeRunStatus({
   apiUrl,
-  authToken,
+  credential,
   runId,
 } = {}) {
   return requestJson(
     buildApiPath(apiUrl, `/api/v1/runtime/runs/${encodeURIComponent(String(runId || ""))}/status`),
     {
       method: "GET",
-      headers: toAuthHeader(authToken),
+      credential,
     }
   );
 }

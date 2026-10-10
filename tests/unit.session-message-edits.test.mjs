@@ -37,6 +37,8 @@ async function withRemote(action) {
   try { return await action(); } finally { process.env.SENTINELAYER_SKIP_REMOTE_SYNC = previous; }
 }
 const auth = async () => ({ token: fixtureToken, apiUrl: "http://127.0.0.1:3000" });
+// The fixture API is the configured API: the user's credential is only sent to that origin.
+process.env.SENTINELAYER_API_URL = "http://127.0.0.1:3000";
 const json = (payload, status = 200) => new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
 
 test("human compatibility poll preserves current revision identity and cannot wake a historical directive", async () => {

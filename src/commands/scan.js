@@ -12,7 +12,7 @@ import {
   resolveProvider,
 } from "../ai/client.js";
 import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-usage.js";
-import { loadConfig, resolveOutputRoot } from "../config/service.js";
+import { loadConfig, resolveOutputRoot, userConfigValues } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
@@ -34,6 +34,7 @@ import { detectRepoSlug, setupSecrets } from "../scan/gh-secrets.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
+import { exportCredentialToken, isAuthenticated } from "../auth/credential-destinations.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
 
@@ -578,7 +579,7 @@ export function registerScanCommand(program) {
         configModel: config.resolved.defaultModelId,
       });
       const explicitApiKey = String(options.apiKey || "").trim();
-      const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, config.resolved);
+      const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, userConfigValues(config));
 
       const prompt = buildAiPreScanPrompt({
         targetPath,
@@ -856,8 +857,9 @@ export function registerScanCommand(program) {
           env: process.env,
           autoRotate: false,
         });
-        if (session && session.token) {
-          tokenValue = session.token;
+        if (isAuthenticated(session)) {
+          // the one reviewed export of the token: to a GitHub Actions secret, through gh
+          tokenValue = exportCredentialToken(session.credential, { purpose: "github-actions-secret" });
         }
       } catch {
         /* no active auth session */

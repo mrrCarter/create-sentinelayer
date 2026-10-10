@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import process from "node:process";
 
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { pollSessionEventsBefore } from "./sync.js";
@@ -419,12 +420,12 @@ async function resolveCheckpointApi({
     env: process.env,
     autoRotate: false,
   });
-  if (!auth || !auth.token) {
+  if (!isAuthenticated(auth)) {
     throw new Error("Sentinelayer auth is required. Run `sl auth login` first.");
   }
   return {
     apiUrl: normalizeApiUrl(auth.apiUrl),
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential: await credentialFor(auth),
   };
 }
 
@@ -438,11 +439,11 @@ export async function listSessionCheckpoints(sessionId, {
   if (!normalizedSessionId) {
     throw new Error("session id is required.");
   }
-  const { apiUrl, headers } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
+  const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
   const params = new URLSearchParams({ limit: String(normalizeLimit(limit)) });
   const response = await request(
     `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints?${params.toString()}`,
-    { method: "GET", headers },
+    { method: "GET", credential },
   );
   const checkpoints = Array.isArray(response?.checkpoints) ? response.checkpoints : [];
   return {
@@ -519,12 +520,12 @@ export async function createSessionCheckpoint(sessionId, options = {}) {
     requestMutation = requestJsonMutation,
   } = options;
   const { body, idempotencyKey } = buildManualCheckpointPayload(normalizedSessionId, options);
-  const { apiUrl, headers } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
-  const response = await requestMutation(
+  const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
+  const response = await checkedTransport(requestMutation)(
     `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints`,
     {
       operationName: "session-checkpoint-create",
-      headers,
+      credential,
       body,
       idempotencyKey,
     },
@@ -546,12 +547,12 @@ export async function generateSessionCheckpoint(sessionId, options = {}) {
     requestMutation = requestJsonMutation,
   } = options;
   const { body, idempotencyKey } = buildGenerateCheckpointPayload(normalizedSessionId, options);
-  const { apiUrl, headers } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
-  const response = await requestMutation(
+  const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
+  const response = await checkedTransport(requestMutation)(
     `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints/generate`,
     {
       operationName: "session-checkpoint-generate",
-      headers,
+      credential,
       body,
       idempotencyKey,
     },

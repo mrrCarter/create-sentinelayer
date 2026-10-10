@@ -1,5 +1,6 @@
 import process from "node:process";
 import { authLoginHint } from "../ui/command-hints.js";
+import { isAuthenticated } from "../auth/credential-destinations.js";
 
 export const DEFAULT_AIDENID_API_URL = "https://api.aidenid.com";
 
@@ -179,14 +180,14 @@ async function resolveSessionCredentialContext({
       env,
       autoRotate: false,
     });
-    if (activeSession && activeSession.token) {
+    if (isAuthenticated(activeSession)) {
       resolvedSession = activeSession;
     }
-    if (resolvedSession && resolvedSession.token && (!resolvedFetcher || activeSession?.token)) {
+    if (isAuthenticated(resolvedSession) && (!resolvedFetcher || isAuthenticated(activeSession))) {
       resolvedFetcher = () =>
         fetchAidenIdCredentials({
           apiUrl: resolvedSession.apiUrl || "https://api.sentinelayer.com",
-          token: resolvedSession.token,
+          auth: resolvedSession,
         });
     }
   } catch {
@@ -230,7 +231,7 @@ export async function resolveAidenIdCredentials(
   const activeSession = sessionContext.session;
   const activeFetchCredentials = sessionContext.fetchCredentials;
   const sessionAidenId = activeSession && activeSession.aidenid ? activeSession.aidenid : null;
-  const hasSessionToken = Boolean(String(activeSession && activeSession.token ? activeSession.token : "").trim());
+  const hasSessionToken = isAuthenticated(activeSession);
 
   let resolvedApiKey = String(apiKey || env.AIDENID_API_KEY || "").trim();
   let resolvedOrgId = String(orgId || env.AIDENID_ORG_ID || (sessionAidenId && sessionAidenId.orgId) || "").trim();

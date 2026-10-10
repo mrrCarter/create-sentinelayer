@@ -1740,6 +1740,45 @@ function jsonRpcError(id, code, message, data = undefined) {
   });
 }
 
+// The dispatcher enforces each tool's published policy before its handler runs. A tool that
+// requires human approval is refused: approval would have to be server-validated and bound to the
+// call's arguments, and no such approval exists yet. A runtime-blocked tool is refused too. Refused
+// tools are not advertised by tools/list, and a call to one gets a specific JSON-RPC error.
+export const MCP_HUMAN_APPROVAL_REQUIRED = Object.freeze({ code: -32001, reason: "human_approval_required" });
+export const MCP_TOOL_BLOCKED = Object.freeze({ code: -32002, reason: "tool_blocked" });
+
+function toolRefusal(tool) {
+  const security = isPlainObject(tool?.security) ? tool.security : {};
+  if (security.requires_human_approval === true) return MCP_HUMAN_APPROVAL_REQUIRED.reason;
+  if (tool?.metadata?.bridge === "cli-command" && security.requires_human_approval !== false) {
+    return MCP_HUMAN_APPROVAL_REQUIRED.reason;
+  }
+  if (security.runtime_blocked === true || tool?.metadata?.blocked === true) return MCP_TOOL_BLOCKED.reason;
+  return "";
+}
+
+function terminalCommandFor(tool, toolName) {
+  const cliPath = Array.isArray(tool?.metadata?.cliPath) ? tool.metadata.cliPath : toolName.replace(/^sl\./, "").split(".");
+  return `sl ${cliPath.join(" ")}`;
+}
+
+function refusalError(id, toolName, tool, reason) {
+  if (reason === MCP_HUMAN_APPROVAL_REQUIRED.reason) {
+    return jsonRpcError(
+      id,
+      MCP_HUMAN_APPROVAL_REQUIRED.code,
+      `Human approval is required for ${toolName}. It is not available over the MCP bridge in this version; run \`${terminalCommandFor(tool, toolName)}\` in a terminal instead.`,
+      { reason, tool: toolName },
+    );
+  }
+  return jsonRpcError(
+    id,
+    MCP_TOOL_BLOCKED.code,
+    `${toolName} is not available over the MCP bridge; run \`${terminalCommandFor(tool, toolName)}\` in a terminal instead.`,
+    { reason, tool: toolName },
+  );
+}
+
 export async function handleMcpJsonRpcMessage(
   message,
   {
@@ -1789,7 +1828,7 @@ export async function handleMcpJsonRpcMessage(
   if (method === "tools/list") {
     if (isNotification) return null;
     return jsonRpcSuccess(id, {
-      tools: tools.map((tool) => toMcpTool(tool)),
+      tools: tools.filter((tool) => !toolRefusal(tool)).map((tool) => toMcpTool(tool)),
     });
   }
 
@@ -1798,6 +1837,18 @@ export async function handleMcpJsonRpcMessage(
     const toolName = normalizeString(message.params?.name);
     const args = isPlainObject(message.params?.arguments) ? message.params.arguments : {};
     const handler = handlers[toolName];
+    const tool = (Array.isArray(tools) ? tools : []).find((candidate) => normalizeString(candidate?.name) === toolName);
+    const refusal = typeof handler === "function" && tool ? toolRefusal(tool) : "";
+    if (refusal) {
+      return refusalError(id, toolName, tool, refusal);
+    }
+    if (typeof handler === "function" && !tool) {
+      // a handler without a published definition has no policy to check: refused
+      return jsonRpcSuccess(
+        id,
+        buildToolResult({ ok: false, reason: "unknown_tool", tool: toolName }, { isError: true }),
+      );
+    }
     if (typeof handler !== "function") {
       return jsonRpcSuccess(
         id,

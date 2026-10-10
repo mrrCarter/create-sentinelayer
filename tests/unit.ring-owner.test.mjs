@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ringOwner, resolvePocketGatewayUrl, RING_OWNER_KINDS } from "../src/pocket/ring-owner.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 test("ring-owner: posts question+kind+context to the POCKET gateway with the caller's bearer (target from auth, not body)", async () => {
   const calls = [];
@@ -11,7 +12,7 @@ test("ring-owner: posts question+kind+context to the POCKET gateway with the cal
     sessionId: "6cf7e861",
     whatWeNeed: "master merge go",
     gatewayUrl: "https://pocket.example.com/",
-    env: {},
+    env: { SENTI_POCKET_URL: "https://pocket.example.com" }, // the configured gateway
     resolveAuthSession: async () => ({ token: "tok-abc", apiUrl: "https://api.sentinelayer.com" }),
     requestMutation: async (url, init) => { calls.push({ url, init }); return { dialId: "need_x", dispatched: true, kind: "decisionYours" }; },
   });
@@ -19,7 +20,8 @@ test("ring-owner: posts question+kind+context to the POCKET gateway with the cal
   assert.equal(calls[0].url, "https://pocket.example.com/dial/ring-owner", "hits the gateway /dial/ring-owner (NOT the senti apiUrl); trailing slash normalized");
   assert.equal(calls[0].init.method, "POST");
   assert.equal(calls[0].init.operationName, "pocket.ring_owner");
-  assert.equal(calls[0].init.headers.Authorization, "Bearer tok-abc", "caller's own bearer — the gateway derives the ring TARGET from it, never a body field");
+  assert.equal(await bearerOf(calls[0].init.credential), "tok-abc", "caller's own bearer — the gateway derives the ring TARGET from it, never a body field");
+  assert.equal(calls[0].init.credential.origin, "https://pocket.example.com", "bound to the configured gateway");
   assert.deepEqual(calls[0].init.body, {
     question: "Ship the consolidation to master?",
     kind: "decisionYours",
@@ -32,7 +34,7 @@ test("ring-owner: posts question+kind+context to the POCKET gateway with the cal
 test("ring-owner: pickOption carries options; checkpoint + idempotency-key + requestedBy thread through", async () => {
   const calls = [];
   const base = {
-    sessionId: "s", gatewayUrl: "https://gw", env: {},
+    sessionId: "s", gatewayUrl: "https://gw", env: { SENTI_POCKET_URL: "https://gw" },
     resolveAuthSession: async () => ({ token: "t" }),
     requestMutation: async (url, init) => { calls.push({ url, init }); return { dialId: "need_y", dispatched: true }; },
   };
@@ -67,9 +69,9 @@ test("ring-owner: fail-closed on missing question / session / gateway URL / auth
   await assert.rejects(ringOwner("q", { ...ok, resolveAuthSession: async () => ({}) }), /Not authenticated/);
 });
 
-test("resolvePocketGatewayUrl: env SENTI_POCKET_URL / POCKET_GATEWAY_URL / configUrl; scheme-validated; trailing slash trimmed", () => {
+test("resolvePocketGatewayUrl: env SENTI_POCKET_URL / configUrl; scheme-validated; trailing slash trimmed", () => {
   assert.equal(resolvePocketGatewayUrl({ env: { SENTI_POCKET_URL: "https://a/" } }), "https://a");
-  assert.equal(resolvePocketGatewayUrl({ env: { POCKET_GATEWAY_URL: "https://b" } }), "https://b");
+  assert.equal(resolvePocketGatewayUrl({ env: { POCKET_GATEWAY_URL: "https://b" } }), "", "only SENTI_POCKET_URL names the gateway");
   assert.equal(resolvePocketGatewayUrl({ env: {}, configUrl: "https://c" }), "https://c");
   assert.equal(resolvePocketGatewayUrl({ env: {} }), "", "absent -> empty (caller errors)");
   assert.throws(() => resolvePocketGatewayUrl({ env: { SENTI_POCKET_URL: "ftp://x" } }), /http\(s\)/);

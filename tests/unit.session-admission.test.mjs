@@ -26,9 +26,12 @@ import {
 } from "../src/session/admission.js";
 import { canonicalPreimage } from "../src/session/admission-preimage.js";
 import { createSessionMutationCsrfToken } from "../src/session/invitations.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 const SID = "e9e8dc5e-8d57-4603-975f-09156e3b4473";
 const TOKEN = "unit-test-human-bearer";
+// The fake API is the configured API: the user's credential is only sent to that origin.
+process.env.SENTINELAYER_API_URL = "https://api.test";
 
 // reportsIdentityReadiness=false is a server that issues the claim challenge on
 // approval and never reports identity readiness (the shape sentinelayer-api served
@@ -93,9 +96,10 @@ function fakeApi({ onPoll, reportsIdentityReadiness = true } = {}) {
     }
     throw new Error(`unexpected mutation ${url}`);
   };
-  const requestRead = async (url, { headers }) => {
+  const requestRead = async (url, { credential }) => {
     calls.push({ method: "GET", url });
-    assert.equal(headers.Authorization, `Bearer ${TOKEN}`);
+    assert.equal(await bearerOf(credential), TOKEN);
+    assert.equal(credential.origin, "https://api.test");
     const id = decodeURIComponent(url.split("/").pop());
     const adm = admissions.get(id);
     onPoll?.(adm);

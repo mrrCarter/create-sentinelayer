@@ -11,8 +11,8 @@ import {
   resolveAidenIdCredentials,
   normalizeAidenIdApiUrl,
 } from "../../../ai/aidenid.js";
-import { readStoredSession } from "../../../auth/session-store.js";
 import { fetchAidenIdCredentials } from "../../../auth/service.js";
+import { isAuthenticated } from "../../../auth/credential-destinations.js";
 
 /**
  * AIdenID email tool definition for agent dispatch.
@@ -57,16 +57,14 @@ export const AIDENID_EMAIL_TOOL = {
 export async function executeAidenIdEmailTool(input, ctx = {}) {
   const operation = String(input.operation || "").trim();
 
-  let session = null;
-  try {
-    session = await readStoredSession();
-  } catch {
-    // no session
-  }
+  const { resolveActiveAuthSession } = await import("../../../auth/service.js");
+  const session = await resolveActiveAuthSession({ cwd: process.cwd(), env: process.env, autoRotate: false }).catch(
+    () => null,
+  );
 
   const makeFetcher = () => {
-    if (!session || !session.token) return null;
-    return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, token: session.token });
+    if (!isAuthenticated(session)) return null;
+    return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, auth: session });
   };
 
   const credentials = await resolveAidenIdCredentials({

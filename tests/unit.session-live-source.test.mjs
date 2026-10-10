@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 
 import { mergeLiveSources, watchRemoteStream } from "../src/session/live-source.js";
 import { readSessionEventSequence } from "../src/session/event-identity.js";
+import { userCredential } from "../src/auth/credential-destinations.js";
 
 /**
  * Build an async iterable from a list of items so we can drive the
@@ -206,7 +207,7 @@ test("watchRemoteStream: resumes from the last delivered sequence after a reconn
   for await (const item of watchRemoteStream({
     apiBaseUrl: "https://api.test",
     sessionId: "s1",
-    token: "tok",
+    credential: await userCredential("tok", { env: { SENTINELAYER_API_URL: "https://api.test" } }),
     signal: controller.signal,
     _sseFetch,
     reconnectBackoffMs: 1,
@@ -241,7 +242,7 @@ test("watchRemoteStream: a reconnect before any event still attaches live", asyn
   for await (const item of watchRemoteStream({
     apiBaseUrl: "https://api.test",
     sessionId: "s1",
-    token: "tok",
+    credential: await userCredential("tok", { env: { SENTINELAYER_API_URL: "https://api.test" } }),
     signal: controller.signal,
     _sseFetch,
     reconnectBackoffMs: 1,

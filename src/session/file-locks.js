@@ -9,6 +9,7 @@ import {
   requestJson,
   requestJsonMutation,
 } from "../auth/http.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveSessionPaths } from "./paths.js";
 
@@ -477,14 +478,14 @@ async function resolveLeaseApi({
     env: process.env,
     autoRotate: false,
   });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error(
       "Authoritative session file leases require Sentinelayer auth. Run `sl auth login` first.",
     );
   }
   return {
     apiUrl: normalizeApiUrl(auth.apiUrl),
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential: await credentialFor(auth),
   };
 }
 
@@ -505,10 +506,10 @@ async function listRemoteLeases(
   } = {},
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
-  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
   const response = await request(leaseCollectionUrl(apiUrl, normalizedSessionId), {
     method: "GET",
-    headers,
+    credential,
   });
   if (response?.authoritative !== true || !Array.isArray(response?.leases)) {
     throw new Error("File-lease authority returned an invalid list response; refusing local fallback.");
@@ -529,13 +530,13 @@ async function guardRemoteClaims(
 ) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   const normalizedHolderId = normalizeAgentId(holderId);
-  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
-  const response = await requestMutation(
+  const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const response = await checkedTransport(requestMutation)(
     `${leaseCollectionUrl(apiUrl, normalizedSessionId)}/guard`,
     {
       method: "POST",
       operationName: "session-file-lease-guard",
-      headers,
+      credential,
       body: {
         holderId: normalizedHolderId,
         claims: paths.map((file, index) => ({
@@ -712,15 +713,15 @@ export async function lockFile(
   }
 
   const leaseToken = exactClaim?.leaseToken || newCapabilityToken();
-  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
   let response;
   try {
-    response = await requestMutation(
+    response = await checkedTransport(requestMutation)(
       leaseCollectionUrl(apiUrl, normalizedSessionId),
       {
         method: "POST",
         operationName: "session-file-lease-acquire",
-        headers,
+        credential,
         body: {
           path: normalizedFilePath,
           holderId: normalizedAgentId,
@@ -792,12 +793,12 @@ export async function lockFile(
   } catch (cacheError) {
     let compensated = false;
     try {
-      const release = await requestMutation(
+      const release = await checkedTransport(requestMutation)(
         leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "release"),
         {
           method: "POST",
           operationName: "session-file-lease-acquire-compensation",
-          headers,
+          credential,
           body: {
             holderId: normalizedAgentId,
             leaseToken,
@@ -845,15 +846,15 @@ async function releaseCapabilityClaim(
     requestMutation,
   },
 ) {
-  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
   let response;
   try {
-    response = await requestMutation(
+    response = await checkedTransport(requestMutation)(
       leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "release"),
       {
         method: "POST",
         operationName: "session-file-lease-release",
-        headers,
+        credential,
         body: {
           holderId: agentId,
           leaseToken: claim.leaseToken,
@@ -1007,13 +1008,13 @@ export async function renewFileLease(
     };
   }
 
-  const { apiUrl, headers } = await resolveLeaseApi({ targetPath, resolveAuthSession });
-  const response = await requestMutation(
+  const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
+  const response = await checkedTransport(requestMutation)(
     leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "renew"),
     {
       method: "POST",
       operationName: "session-file-lease-renew",
-      headers,
+      credential,
       body: {
         holderId: normalizedAgentId,
         leaseToken: claim.leaseToken,

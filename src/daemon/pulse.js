@@ -226,7 +226,8 @@ export function buildHealthSummary(agentStates) {
 
 /**
  * Send an alert to configured Slack/Telegram webhooks.
- * Reads config from env or .sentinelayer.yml.
+ * Channels come from the caller or the environment (SENTINELAYER_SLACK_WEBHOOK_URL,
+ * SENTINELAYER_TELEGRAM_BOT_TOKEN, SENTINELAYER_TELEGRAM_CHAT_ID), never a workspace file.
  * Fails silently — alert delivery must never block agent work.
  *
  * @param {object} alert - { headline, body, severity } from buildAlertPayload

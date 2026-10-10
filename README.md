@@ -759,7 +759,7 @@ Use `init-aidenid-adapter` to scaffold a deterministic AIdenID provisioning API 
 Use `token mint` to request a short-lived hosted MCP bearer token from the Sentinelayer API. Text output hides the bearer value; `--json` is the explicit operator path that includes `accessToken`. The command is blocked from the generated CLI MCP bridge.
 Use `smoke` to verify the hosted MCP resource without printing the bearer. The canonical remote MCP paste URL is `https://api.sentinelayer.com/mcp`; the token audience/resource value is `https://mcp.sentinelayer.com` and is handled by the OAuth/MCP flow. `sl mcp smoke` works today through the CLI direct-mint path; third-party browser connectors such as Claude.ai still require the OAuth browser-flow and connector-registration work to complete before users can authenticate from that product.
 Use `init-session` plus `server run` for the local stdio Senti MCP server. It exposes session inbox, durable posts, actions/replies/reactions, API-authoritative file leases, and attention requests to local MCP clients. File-lease lifecycle operations never write session events; install edit preflights with `sl session guard-install` and remove them with `sl session guard-uninstall` before any CLI rollback. Hosted Claude-web/ChatGPT connectors need a separate HTTPS/OAuth service and are not shipped by the local stdio server. See [docs/mcp.md](docs/mcp.md) and [docs/file-leases.md](docs/file-leases.md).
-Use `init-cli` to generate a bridge registry for every `sl` leaf command from Commander metadata. This exposes the full CLI surface as `sl.<command.path>` tool schemas, but execution still requires a bridge-capable MCP host with OAuth/session-seat policy and human approval enforcement. The hosted connector target contract is documented in [docs/mcp-hosted-connector.md](docs/mcp-hosted-connector.md).
+Use `init-cli` to generate a bridge registry for every `sl` leaf command from Commander metadata. This exposes the full CLI surface as `sl.<command.path>` tool schemas, but execution still requires a bridge-capable MCP host with OAuth/session-seat policy and human approval enforcement. The MCP bridge now enforces the human-approval requirement on CLI tools; they are unavailable over MCP until approval is supported. Senti session tools are unaffected. The local stdio server does not list the `sl.*` tools, and a call to one returns a JSON-RPC error (code `-32001`, `data.reason` `human_approval_required`) that says to run the `sl` command in a terminal. A file or directory input to a bridged command must stay inside the workspace (no absolute path, no `..` or symlink out of it). The hosted connector target contract is documented in [docs/mcp-hosted-connector.md](docs/mcp-hosted-connector.md).
 
 MCP operator verification:
 
@@ -770,7 +770,7 @@ MCP operator verification:
    `sl mcp smoke --session <senti-session-id> --json`. The smoke mints the
    short-lived bearer in memory, calls `/mcp`, and prints only redacted proof.
 3. Kill switch: set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1` and restart the
-   MCP host if a CLI bridge or bearer credential is exposed.
+   MCP host if a CLI bridge or bearer credential is exposed. In this version the MCP server already refuses every `sl.*` call for human approval, so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.
 
 Architecture references: local stdio runtime and incident response live in
 [docs/mcp.md](docs/mcp.md); hosted OAuth/session-seat requirements live in
@@ -817,7 +817,7 @@ Architecture decisions:
 If a hosted MCP bearer or bridge command output is exposed:
 
 1. Set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`.
-2. Restart the MCP host process so the generated CLI bridge cannot execute.
+2. Restart the MCP host process. In this version the MCP server already refuses every `sl.*` call for human approval, so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.
 3. Run `sentinelayer-cli auth revoke` or revoke the requesting session from the
    dashboard, then re-authenticate with `sentinelayer-cli auth login`.
 4. Remove the exposed value from local logs/transcripts where possible.
@@ -911,6 +911,10 @@ gh secret list --repo <owner/repo>
 - `SENTINELAYER_WEB_URL` (default: `https://sentinelayer.com`)
 - `SENTINELAYER_DISABLE_KEYRING=1` (force file-based credential storage)
 - `AIDENID_API_KEY`, `AIDENID_ORG_ID`, `AIDENID_PROJECT_ID` (used by `sl ai provision-email --execute`)
+
+When the CLI sends your SentinelLayer token over HTTP, it sends it only to the API named by `SENTINELAYER_API_URL` (else by `apiUrl` in `~/.sentinelayer/config.yml`, else the default API), or to the pocket gateway named by `SENTI_POCKET_URL`. `POCKET_GATEWAY_URL` is no longer read. The CLI decides this once, when it starts. Custom API origins must be configured: an `--api-url` or `--gateway-url` that names another origin is refused for any request that would carry the token. A project `.sentinelayer.yml` chooses neither the API nor the token: its `apiUrl` and `sentinelayerToken` are not used, nor are its provider keys (`openaiApiKey`, `anthropicApiKey`, `googleApiKey`), which come from the environment or the global config. Watchdog alert channels (`alerts.channels`) also come from the global config only; a channel's `${NAME}` placeholders are filled only from `SLACK_WEBHOOK_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` or `SENTINELAYER_ALERT_*` (any other name, or an unset one, refuses the channel), and Slack alerts go only to `https://hooks.slack.com/`. When a project config sets any of these, the CLI prints one notice saying what to set instead. Requests that carry the token do not follow redirects.
+
+The token leaves the CLI in other ways only through operator commands, none of which is available through the MCP bridge: `sl scan setup-secrets` writes it to a GitHub Actions secret with the `gh` CLI (or to the file named by `SENTINELAYER_SECRET_SINK_FILE`, used in tests), and `sl mcp token mint --json` prints a short-lived hosted MCP bearer minted from it. The project token that `sl init` receives for a new scaffold (not your login token) is written to the project's `.env`, its `.sentinelayer/config.json` lockfile and, only when you pass `--inject-secret` (or set `injectSecret` in the interview), a GitHub Actions secret on this directory's own git remote, after `gh` confirms you can write to it. `OPENAI_API_KEY` from your environment is set there only with `--inject-openai-key`. Neither is available through the MCP bridge. Other services' keys (model providers, AIdenID, a memory or embedding service) are sent to their own endpoints.
 
 ## Layered config (PR 0.2)
 

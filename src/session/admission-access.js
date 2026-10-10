@@ -8,6 +8,7 @@
 
 import process from "node:process";
 
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { hasStoredAdmissionCredentials } from "./admission.js";
@@ -74,11 +75,11 @@ async function authContext(targetPath, resolveAuthSession) {
     env: process.env,
     autoRotate: false,
   });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
   return {
-    token: auth.token,
+    credential: await credentialFor(auth),
     apiUrl: normalizeString(auth.apiUrl).replace(/\/+$/, ""),
   };
 }
@@ -109,12 +110,13 @@ async function mutateAdmission(
 ) {
   const key = boundedIdempotencyKey(idempotencyKey, operationName);
   const auth = await authContext(targetPath, resolveAuthSession);
-  const result = await requestMutation(admissionsUrl(auth.apiUrl, sessionId, suffix), {
+  const result = await checkedTransport(requestMutation)(admissionsUrl(auth.apiUrl, sessionId, suffix), {
     method: "POST",
     operationName,
     idempotencyKey: key,
+    credential: auth.credential,
     headers: createSessionMutationHeaders({
-      bearerToken: auth.token,
+      credential: auth.credential,
       sessionId,
       routeId,
       idempotencyKey: key,
@@ -143,9 +145,9 @@ export async function listSessionAdmissions(
   }
   const auth = await authContext(targetPath, resolveAuthSession);
   const query = normalizedStatus ? `?status=${encodeURIComponent(normalizedStatus)}` : "";
-  return requestRead(`${admissionsUrl(auth.apiUrl, sid)}${query}`, {
+  return checkedTransport(requestRead)(`${admissionsUrl(auth.apiUrl, sid)}${query}`, {
     method: "GET",
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential: auth.credential,
   });
 }
 
@@ -161,9 +163,9 @@ export async function getSessionAdmission(
   const sid = required(sessionId, "session id");
   const aid = required(admissionId, "admission id");
   const auth = await authContext(targetPath, resolveAuthSession);
-  return requestRead(admissionsUrl(auth.apiUrl, sid, `/${encodeURIComponent(aid)}`), {
+  return checkedTransport(requestRead)(admissionsUrl(auth.apiUrl, sid, `/${encodeURIComponent(aid)}`), {
     method: "GET",
-    headers: { Authorization: `Bearer ${auth.token}` },
+    credential: auth.credential,
   });
 }
 
@@ -264,14 +266,15 @@ export async function setSessionAdmissionMode(
   await assertOwnerAccessContext();
   const key = boundedIdempotencyKey(idempotencyKey, "session.admission_mode");
   const auth = await authContext(targetPath, resolveAuthSession);
-  const result = await requestMutation(
+  const result = await checkedTransport(requestMutation)(
     `${auth.apiUrl}/api/v1/sessions/${encodeURIComponent(sid)}/admission-mode`,
     {
       method: "POST",
       operationName: "session.admission_mode",
       idempotencyKey: key,
+      credential: auth.credential,
       headers: createSessionMutationHeaders({
-        bearerToken: auth.token,
+        credential: auth.credential,
         sessionId: sid,
         routeId: ROUTES.mode,
         idempotencyKey: key,

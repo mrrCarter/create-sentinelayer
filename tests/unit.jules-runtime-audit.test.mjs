@@ -91,8 +91,9 @@ describe("runtimeAudit", () => {
   it("scanner API calls use explicit timeout wrapper", () => {
     const source = fs.readFileSync(new URL("../src/agents/jules/tools/runtime-audit.js", import.meta.url), "utf-8");
     assert.ok(source.includes("async function fetchWithTimeout(url, options, timeoutMs)"));
-    assert.ok(source.includes("fetchWithTimeout(scanEndpoint, {"));
-    assert.ok(source.includes("fetchWithTimeout(pollUrl, {"));
+    // both scanner calls are credentialed requests whose transport is the timeout wrapper
+    assert.ok(source.includes("fetchImpl: (target, init) => fetchWithTimeout(target, init, 15000)"));
+    assert.ok(source.includes("fetchImpl: (target, init) => fetchWithTimeout(target, init, 10000)"));
   });
 
   it("RuntimeAudit is registered in dispatch", async () => {
