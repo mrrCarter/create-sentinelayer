@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.44.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.43.0...v0.44.0) (2026-10-10)
+
+
+### Features
+
+* **session:** add unlike/undislike to `sl session react` ([0f1ee83](https://github.com/mrrCarter/create-sentinelayer/commit/0f1ee835996c4575f48c6196cd1b406441f2d37e))
+* **session:** add unlike/undislike to sl session react (needs API [#914](https://github.com/mrrCarter/create-sentinelayer/issues/914)) ([6003be1](https://github.com/mrrCarter/create-sentinelayer/commit/6003be1271bd6e459981ced36a9d6867d9949f0d))
+
+
+### Bug Fixes
+
+* **mcp:** keep session access administration off the CLI bridge ([22531b0](https://github.com/mrrCarter/create-sentinelayer/commit/22531b0fae55358069bb9c19d08d713375239456))
+* **mcp:** route every actor-bearing local MCP tool through agent admission ([921d257](https://github.com/mrrCarter/create-sentinelayer/commit/921d257d4d80af6a883374f26dacdd7267ee7337))
+* **session:** admission refusals don't trip the outbound breaker ([e16533e](https://github.com/mrrCarter/create-sentinelayer/commit/e16533eee76093823b7e05794a1aae027004ff27))
+* **session:** claim compatibility with servers that don't report identity readiness ([558bd17](https://github.com/mrrCarter/create-sentinelayer/commit/558bd1704481216b991b427647de42e154de6933))
+* **session:** harden session access commands when an agent context is active ([87a8db3](https://github.com/mrrCarter/create-sentinelayer/commit/87a8db39a784c7b0cca0da0b43784ba126db4f59))
+* **session:** match the pre-[#914](https://github.com/mrrCarter/create-sentinelayer/issues/914) "undo unsupported" 422 exactly ([5846673](https://github.com/mrrCarter/create-sentinelayer/commit/5846673a695bbb2a1fc129afbdb233461545ec59))
+* **session:** one reaction path for the native CLI and local MCP ([8500cc8](https://github.com/mrrCarter/create-sentinelayer/commit/8500cc80fc5ac1fab10cfaf05b815509df6ff4ec))
+* **session:** treat a stopped admission as final while waiting ([5a3128f](https://github.com/mrrCarter/create-sentinelayer/commit/5a3128f083f8f4e48b792b087288ce8765de8f74))
+
 ## [0.43.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.42.0...v0.43.0) (2026-10-10)
 
 
