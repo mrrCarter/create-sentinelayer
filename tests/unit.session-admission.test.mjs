@@ -304,6 +304,20 @@ test("a server that does not report identity readiness and sends no claim challe
   assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
 });
 
+test("a stopped admission ends the wait at once and attempts no claim", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ onPoll: (adm) => { adm.status = "stopped"; } });
+  let clock = 0;
+  const result = await runAdmissionJoin(
+    SID,
+    base(api, dirs, { waitTimeoutMs: 60_000, now: () => clock, sleep: async (ms) => { clock += ms; } }),
+  );
+  assert.equal(result.status, "stopped");
+  assert.equal(result.timedOut, undefined, "a final status, not a timeout");
+  assert.equal(api.calls.filter((call) => call.method === "GET").length, 1);
+  assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
+});
+
 test("--no-wait returns pending with the approve URL immediately", async () => {
   const dirs = await scratch();
   const api = fakeApi();

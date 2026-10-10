@@ -63,7 +63,8 @@ const ROUTE = {
   claim: "POST /api/v1/sessions/{session_id}/admissions/{admission_id}/claim",
   cancel: "POST /api/v1/sessions/{session_id}/admissions/{admission_id}/cancel",
 };
-const TERMINAL = new Set(["denied", "cancelled", "expired", "revoked"]);
+// Final admission statuses: polling stops, nothing is claimed, local request state is cleared.
+const TERMINAL = new Set(["denied", "cancelled", "expired", "revoked", "stopped"]);
 const TTL_MIN_SECONDS = 300;
 const TTL_MAX_SECONDS = 86_400;
 
