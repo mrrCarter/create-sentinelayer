@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { resolveAgentIdPath } from "../agents/agent-id-path.js";
 import { userCredential } from "../auth/credential-destinations.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { createAgentEvent } from "../events/schema.js";
@@ -396,6 +397,11 @@ export async function runAuditOrchestrator({
   const startedAt = Date.now();
   const runDirectory = path.join(outputRoot, "audits", runId);
   const agentsDirectory = path.join(runDirectory, "agents");
+  // Each agent's file is resolved before anything is written: an id that is not one file
+  // directly under the agents directory stops the run here.
+  const agentPaths = new Map(
+    agents.map((agent) => [agent, resolveAgentIdPath(agentsDirectory, agent.id, ".json")])
+  );
   await fsp.mkdir(agentsDirectory, { recursive: true });
   const blackboard = createBlackboard({
     runId,
@@ -754,7 +760,7 @@ export async function runAuditOrchestrator({
       note: `${agent.id} persona finding`,
       confidence,
     });
-    const agentPath = path.join(agentsDirectory, `${agent.id}.json`);
+    const agentPath = agentPaths.get(agent);
     await fsp.writeFile(agentPath, `${JSON.stringify(result, null, 2)}\n`, "utf-8");
     emitAuditLifecycleEvent(
       onEvent,

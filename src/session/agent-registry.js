@@ -3,6 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
+import { resolveAgentIdPath } from "../agents/agent-id-path.js";
 import { STUCK_THRESHOLDS } from "../agents/jules/pulse.js";
 import { inferSessionAgentIdentity } from "./agent-identity.js";
 import { resolveSessionPaths } from "./paths.js";
@@ -175,12 +176,10 @@ async function writeAgentSnapshot(snapshotPath, snapshot) {
   }
 }
 
+// <session>/agents/<agentId>.json, refused before any read or write unless the id names one
+// file directly under the agents directory.
 function buildAgentSnapshotPath(paths, agentId) {
-  const normalizedAgentId = normalizeString(agentId);
-  if (!normalizedAgentId) {
-    throw new Error("agentId is required.");
-  }
-  return path.join(paths.agentsDir, `${normalizedAgentId}.json`);
+  return resolveAgentIdPath(paths.agentsDir, normalizeString(agentId), ".json");
 }
 
 export function generateAgentId(modelName) {
