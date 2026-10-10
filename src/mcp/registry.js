@@ -896,13 +896,14 @@ export function buildSentinelayerSessionRegistryTemplate({ generatedAt = new Dat
         name: "session_locks",
         title: "List Senti File Locks",
         description:
-          "List active authoritative file leases for a session.",
+          "List active authoritative file leases for a session. In an agent context it runs on the agent's admission (agentId, else SENTINELAYER_AGENT_ID).",
         input_schema: {
           type: "object",
           additionalProperties: false,
           required: ["sessionId"],
           properties: {
             sessionId: { type: "string" },
+            agentId: { type: "string" },
           },
         },
         transport: {

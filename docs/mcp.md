@@ -37,12 +37,14 @@ The session MCP server exposes:
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-Every tool that acts as an agent runs on that agent's admission, the same way `sl session` actor commands do. These are `poll_inbox`, `read_history` (when an agent id is given or `SENTINELAYER_AGENT_ID` is set), `send_message`, `attention_request`, `session_action`, `session_react`, `session_reply`, `session_lock`, and `session_unlock`:
+Every session tool follows one credential policy, including any tool added later. Only the `memory.*` tools are exempt, because they read and write the local ENGRAM store and never send a session API request.
 
-- When this machine stores a live admission for the agent, it is the only credential the tool's requests carry.
-- An expired, unreadable, or mis-bound stored admission is refused before any request.
-- A credential the API refuses is final.
-- With no stored admission, the tool behaves as before.
+- **No agent signal.** When `SENTINELAYER_AGENT_ID` is unset and no agent admission credentials are stored on this machine, tools behave as before.
+- **Agent context.** When `SENTINELAYER_AGENT_ID` is set or any agent admission credential is stored, a tool runs only on a live admission for the agent named by its `agentId`, or else by `SENTINELAYER_AGENT_ID`. That admission is the only credential its requests carry.
+- **Refusals.** A tool is refused before any request if it names no agent, if the agent holds no admission for the session, or if that admission is expired, unreadable, or bound elsewhere.
+- **API refusals.** A credential the API refuses is final.
+
+`session_locks` follows the same policy.
 
 Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
 

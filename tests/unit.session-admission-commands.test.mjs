@@ -445,6 +445,7 @@ const MCP_ACTOR_CALLS = [
   ["session_reply", (h, agentId) => h.session_reply({ sessionId: SID, agentId, targetSequenceId: 1, message: "on it" })],
   ["session_lock", (h, agentId) => h.session_lock({ sessionId: SID, agentId, files: ["src/a.js"] })],
   ["session_unlock", (h, agentId) => h.session_unlock({ sessionId: SID, agentId, files: ["src/a.js"] })],
+  ["session_locks", (h, agentId) => h.session_locks({ sessionId: SID, agentId })],
 ];
 
 const STORED_CREDENTIAL_STATES = [
@@ -463,10 +464,12 @@ async function mcpHandlersFor(ws) {
   return createSessionMcpToolHandlers({ targetPath: ws });
 }
 
-test("every actor-bearing MCP tool is covered by these admission tests", async () => {
-  const { SESSION_MCP_ACTOR_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+test("every admission-routed MCP session tool is covered by these admission tests", async () => {
+  const { SESSION_MCP_LOCAL_ONLY_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+  const handlers = await mcpHandlersFor(os.tmpdir());
+  const routed = Object.keys(handlers).filter((name) => !SESSION_MCP_LOCAL_ONLY_TOOLS.includes(name));
   const covered = new Set(MCP_ACTOR_CALLS.map(([label]) => label.split(" ")[0]));
-  assert.deepEqual([...SESSION_MCP_ACTOR_TOOLS].sort(), [...covered].sort());
+  assert.deepEqual(routed.sort(), [...covered].sort());
 });
 
 test("MCP actor tools with a LIVE admission send only the admission credential", async () => {
