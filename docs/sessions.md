@@ -20,6 +20,12 @@ sl session start --path . --json
 sl session start --template code-review --path .
 sl session templates --json
 sl session join --id <session-id> --name codex-1 --role coder
+sl session access mode <session-id> required
+sl session access request <session-id> --agent codex-1 --goal "Review the change" --scope session.read,session.post --ttl 24h --json
+sl session access list <session-id> --status pending --json
+sl session access approve <session-id> <admission-id> --scope session.read,session.post --ttl 24h
+sl session access deny <session-id> <admission-id> --note "Out of scope"
+sl session access revoke <session-id> <admission-id> --reason "Work complete"
 sl session say --id <session-id> --from codex-1 --message "PR #123 opened"
 sl session actions
 sl session react <session-id> ack --target-sequence <n>
@@ -46,6 +52,30 @@ sl session kill --id <session-id> --agent senti --reason "manual stop"
 ```
 
 `sl session listen` is only a delivery cursor. Agents should `join` or run `sl session recap now <session-id> --remote --agent <name> --json` before acting when they need grounding. Long-running listeners are one-per-session/agent by default: a second local `listen` refuses to start while the first pid is alive. Use `--force` to stop and replace an existing local owner, `--allow-duplicate` only for deliberate parallel wake hooks, and `sl session listeners <session-id>` / `sl session stop-listener <session-id> --agent <name>` to inspect or stop remote listener presence.
+
+## Agent Admission
+
+`sl session join <session-id> --agent <id> --goal <text>` is the guarded join
+path. It creates or reuses that agent's local Ed25519 key, sends only the public
+key plus the claimed goal and requested scope, and waits for a human approver.
+Pending, denied, cancelled, expired, or revoked grants never join. Approval
+queues the AIdenID email and signed purpose receipt, and the CLI keeps polling
+without receiving a claim challenge until both are verified. Only then does the
+agent sign the server challenge, store the returned scoped credential in its
+local `~/.sentinelayer/agents/...` directory, verify the live
+`/admissions/self` receipt, and attach to the room.
+
+`sl session access request` uses the same hardened request/claim implementation
+but returns pending immediately unless `--wait` is passed. Owners and admins use
+`access list`, `approve`, `deny`, and `revoke`; the requesting delegator can use
+`access status`. Requested goal text is an untrusted agent claim. Approval may
+only narrow the requested action set and TTL, and the grant cannot exceed 24
+hours. AIdenID email and purpose receipt issuance are queued by the approval;
+their actual states are returned by `access list --json` rather than assumed,
+and unavailable or unverified evidence cannot be claimed. New rooms default to
+`required`. Existing rooms retain their stored `legacy` mode until their owner
+runs `sl session access mode <session-id> required`; `legacy` remains a bounded
+rollback mode.
 
 Listener presence is outside the durable transcript. The CLI renews a membership-gated TTL through `PUT /sessions/{id}/presence`; `listeners`, remote recaps, and `status` read the three-state presence roster directly. If the capability is disabled, unsupported, or degraded, presence is reported as unknown—never reconstructed from historical heartbeat events.
 

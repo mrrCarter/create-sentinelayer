@@ -471,12 +471,33 @@ export async function runAdmissionJoin(
       headers: { Authorization: `Bearer ${auth.token}` },
     });
     state.status = polled.status;
-    if (polled.status === "approved" || TERMINAL.has(polled.status) || polled.status === "active") break;
-    onPending({ admissionId: state.admissionId, approveUrl: polled.approveUrl || state.approveUrl });
+    const claimReady =
+      polled.status === "approved" &&
+      polled.identityReady === true &&
+      polled?.claim?.domain === CLAIM_DOMAIN &&
+      polled?.claim?.preimage;
+    if (polled.status === "approved" && polled.identityReady === true && !claimReady) {
+      throw new Error("Identity-ready admission did not include a valid claim challenge.");
+    }
+    if (polled.status === "approved" && polled.identityReady !== true && polled?.claim) {
+      throw new Error("Admission exposed a claim challenge before AIdenID identity evidence was ready.");
+    }
+    if (claimReady || TERMINAL.has(polled.status) || polled.status === "active") break;
+    const phase = polled.status === "approved" ? "identity" : "approval";
+    onPending({
+      admissionId: state.admissionId,
+      approveUrl: polled.approveUrl || state.approveUrl,
+      phase,
+      identityReady: polled.identityReady === true,
+      identity: polled.identity || null,
+    });
     if (now() >= deadline) {
       await fsp.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
       return {
-        status: "pending",
+        status: polled.status === "approved" ? "approved" : "pending",
+        phase,
+        identityReady: polled.identityReady === true,
+        identity: polled.identity || null,
         admissionId: state.admissionId,
         approveUrl: polled.approveUrl || state.approveUrl,
         waited: true,

@@ -347,3 +347,14 @@
   into a nominally pure directory can miss a runtime dependency one edge later;
   walk the complete module closure and prove the test rejects a synthetic
   transitive escape.
+
+# 2026-10-09 - Human OAuth is not agent admission
+
+- Pattern: a human-authenticated `session join --agent <label>` was treated as if
+  it established an agent-owned identity. It did not prove agent-held key
+  possession, declare purpose, wait for human consent, or bind scope and expiry
+  to a signed session receipt.
+- Rule: the guarded join is goal/scope request -> human approve/deny -> agent
+  proof-of-possession claim -> AIdenID email/purpose job -> live session-bound
+  receipt. Owner controls must remain on the human credential; admitted agent
+  work must remain on the scoped credential and never fall back to the human.

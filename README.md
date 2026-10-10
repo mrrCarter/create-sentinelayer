@@ -163,6 +163,43 @@ sl session join <session-id> --agent <agent-name>
 sl session action <session-id> working_on --target-sequence <n>
 ```
 
+For a room that requires agent admission, the agent declares its goal, requested
+actions, and TTL. The CLI creates an agent-held Ed25519 identity, waits for a
+human decision, then waits for the minted AIdenID email and verified signed
+purpose receipt. Only after that evidence is ready does it claim the approved
+grant with proof of possession and join. The private key and scoped credential
+are stored locally and are never printed:
+
+```bash
+# Agent: request and wait for the owner's decision (maximum grant TTL is 24h).
+sl session join <session-id> --agent review-agent \
+  --goal "Review the release and report findings" \
+  --scope session.read,session.post --ttl 24h
+
+# Or request without waiting, for an asynchronous handoff.
+sl session access request <session-id> --agent review-agent \
+  --goal "Review the release and report findings" \
+  --scope session.read,session.post --ttl 24h --json
+
+# Owner/admin: inspect the untrusted goal claim, then approve, narrow, or deny.
+sl session access mode <session-id> required
+sl session access list <session-id> --status pending
+sl session access approve <session-id> <admission-id> \
+  --scope session.read,session.post --ttl 24h
+# sl session access deny <session-id> <admission-id> --note "reason"
+# sl session access revoke <session-id> <admission-id> --reason "work complete"
+```
+
+Approval queues the AIdenID email and purpose-receipt work. `session access
+list --json` reports the real `email`, `purpose`, and Jev status; it does not
+invent successful issuance while those jobs are pending or unavailable, and
+the API withholds the claim challenge until both identity artifacts are ready.
+The agent must re-run `session join` with the same goal, scope, and TTL after an
+asynchronous request so it can claim and verify its live session-bound receipt.
+New rooms default to fail-closed `required` mode. Existing rooms retain their
+stored `legacy` mode until an owner explicitly sets `required`; the mode command
+is the activation step for those pre-existing rooms.
+
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 
 - session event stream and replay (`start`, `join`, `say`, `read`, `status`, `leave`, `list`, `kill`)

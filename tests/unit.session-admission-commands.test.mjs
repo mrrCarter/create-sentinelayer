@@ -62,7 +62,13 @@ const ADMISSION_ALLOWED = [
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
-function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = null, inviteResult = null } = {}) {
+function fakeApi({
+  decision = "approved",
+  grantActions = null,
+  receiptAgentId = null,
+  inviteResult = null,
+  approveUrl = null,
+} = {}) {
   const state = {
     requests: [],
     admissions: new Map(),
@@ -108,7 +114,12 @@ function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = 
       const body = JSON.parse(init.body);
       const id = randomUUID();
       state.admissions.set(id, { id, body, status: "pending", actions: grantActions || body.requestedScope.actions });
-      return json({ admissionId: id, status: "pending", approveUrl: `https://web.fixture.invalid/?admission=${id}`, pollAfterSeconds: 2 });
+      return json({
+        admissionId: id,
+        status: "pending",
+        approveUrl: approveUrl || `https://web.fixture.invalid/?admission=${id}`,
+        pollAfterSeconds: 2,
+      });
     }
     const one = p.match(/\/admissions\/([^/]+)$/);
     if (method === "GET" && one) {
@@ -116,6 +127,11 @@ function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = 
       adm.status = adm.status === "pending" ? decision : adm.status;
       const view = { admissionId: adm.id, status: adm.status, pollAfterSeconds: 2 };
       if (adm.status === "approved") {
+        view.identityReady = true;
+        view.identity = {
+          email: { status: "provisioned", address: `${adm.body.agentId}@agents.test` },
+          purpose: { status: "declared", verification: "verified", receiptId: "receipt-1" },
+        };
         adm.nonce = randomBytes(16).toString("base64url");
         view.claim = {
           domain: "sentinelayer.admission.claim.v1",
@@ -133,7 +149,7 @@ function fakeApi({ decision = "approved", grantActions = null, receiptAgentId = 
       return json({
         admissionId: adm.id,
         status: "active",
-        identity: { subject: `sl-agent:u/${adm.body.agentId}`, passportId: "pid", passportStatus: "issued", keyThumbprint: "t".repeat(64), popAssurance: "agent_held_key", email: { status: "unavailable", address: null }, passport: {} },
+        identity: { subject: `sl-agent:u/${adm.body.agentId}`, passportId: "pid", passportStatus: "issued", keyThumbprint: "t".repeat(64), popAssurance: "agent_held_key", email: { status: "provisioned", address: `${adm.body.agentId}@agents.test` }, passport: {} },
         grant: { grantId: "g", sessionId: SID, actions: adm.actions, expiresAt: Math.floor(Date.now() / 1000) + 3600, goalDigest: "d", document: {} },
         correlation: { actorRef: `adm:${adm.id}` },
         jev: { verificationStatus: "not_evaluated" },
@@ -407,6 +423,26 @@ test("a PENDING `--no-wait` join prints the approval URL as JSON and exits 3", a
   assert.equal(joined.json.admission.status, "pending");
   assert.match(joined.json.admission.approveUrl, /admission=/);
   assert.equal(joined.exitCode, 3);
+});
+
+test("a PENDING human join neutralizes terminal controls in the remote approval URL", async () => {
+  const ws = await workspace();
+  fakeApi({
+    approveUrl: "https://web.fixture.invalid/approve\u001b]8;;https://evil.example\u0007link\u001b]8;;\u0007\u202Etxt.exe",
+  });
+  const joined = await sl([
+    "session", "join", SID,
+    "--agent", "waiting-human-agent",
+    "--goal", "Later",
+    "--no-wait",
+    "--path", ws,
+  ]);
+  assert.equal(joined.error, null, String(joined.error?.stack || joined.error));
+  assert.equal(joined.exitCode, 3);
+  assert.equal(joined.text.includes("\u001b"), false);
+  assert.equal(joined.text.includes("\u0007"), false);
+  assert.equal(joined.text.includes("\u202E"), false);
+  assert.match(joined.text, /Admission pending/);
 });
 
 test("an invitation is accepted BEFORE admission is requested", async () => {

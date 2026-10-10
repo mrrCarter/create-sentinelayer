@@ -4026,3 +4026,43 @@ Review evidence:
 - Final-source live Omar run `omargate-1791083414742-25804589` passed `P0/P1/P2/P3=0/0/0/0`, with all three dispatched personas successful (cost `$0.137406`). Invocation used explicit `--provider anthropic --model claude-sonnet-4-6` because the default GPT model was incompatible with the locally resolved Anthropic route; no gate policy was changed.
 - Required `/audit --path . --json` passed 789 files, `P1=0`, with two unchanged nonblocking baseline P2s in the old eval marker and scan generator; final report `audit-20261004-031053.md`.
 - Clean `npm ci --ignore-scripts` exposed baseline dependency advisories: 9 high / 1 moderate. No dependency upgrades, allowlists, release mutations, or security-gate changes were mixed into this feature lane.
+
+# 2026-10-09 - Owner CLI for AIdenID-gated session admission
+
+## Plan
+
+- [x] Confirm canonical CLI source (`a16334a`, v0.42.0), installed behavior, and the existing hardened agent request/claim path.
+- [x] Confirm the exact API routes and decision literals (`approve` / `deny`) from current `sentinelayer-api` main.
+- [x] Add one `sl session access` command group for mode, request, list, status, approve, deny, and revoke without duplicating admission cryptography.
+- [x] Make room activation explicit with `access mode <session> required|legacy`; never silently change an existing room.
+- [x] Keep `access request` a thin alias over the established `session join --goal` implementation so pending/denied requests never join.
+- [x] Add focused contract tests for request delegation, owner reads/mutations, validation, idempotency/CSRF headers, JSON output, and secret-safe output.
+- [x] Run focused tests, static checks, the proportional session-admission suite, and inspect the exact diff for elegance and blast radius.
+- [x] Freeze and commit locally; do not publish or deploy until independent review.
+
+## Review
+
+- Added the human control plane without changing the existing agent key, poll,
+  proof-of-possession, credential-storage, live-receipt, or no-human-fallback
+  implementation. `access request` calls `runAdmissionJoin`; owner operations use
+  the server's existing exact REST routes and `approve` / `deny` literals.
+- Owner mutations carry the established session-mutation CSRF envelope and a
+  reusable idempotency key. Reads use bearer auth. Goal text is labelled
+  untrusted, stripped of control characters, and bounded in human output.
+- JSON exposes real AIdenID `email`, purpose, and Jev states but never the agent
+  private key or admission credential. The asynchronous request path returns
+  pending successfully and does not claim that the agent joined.
+- Verification passed: focused unit `9/9`; real-subprocess E2E `1/1`; existing
+  admission flow `20/20`; existing admission command/auth boundary `57/57`;
+  cross-language preimage vectors `11/11`; static check `394 files`; docs build
+  `5 files / 6 llms headings`; `git diff --check` clean aside from expected
+  Windows line-ending notices.
+- Activation remains an explicit owner action: `required` enforces admission;
+  `legacy` is the explicit rollback. The CLI does not change room modes while
+  requesting, approving, or joining.
+- Independent release review found and closed one remaining terminal boundary:
+  the waiting `session access request` path no longer wraps its remote approval
+  URL in ANSI color controls. A hostile ANSI/OSC/bidi regression now covers it.
+- Post-fix verification passes: focused admission/access suite `95/95`, static
+  check `394 files`, and `git diff --check` has no content errors (only expected
+  Windows line-ending notices). PR/release state is recorded by the release gate.
