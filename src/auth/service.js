@@ -22,6 +22,7 @@ import {
   writeStoredSession,
 } from "./session-store.js";
 import { authLoginHint } from "../ui/command-hints.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 /** Default maximum wall-clock wait for browser-based CLI auth approval (ms). */
 export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
@@ -414,7 +415,7 @@ async function revokeApiToken({ apiUrl, credential, tokenId }) {
   if (!normalizedTokenId) {
     return false;
   }
-  await requestJsonMutation(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${encodeURIComponent(normalizedTokenId)}`), {
+  await requestJsonMutation(buildApiPath(apiUrl, `/api/v1/auth/api-tokens/${urlPathSegment(normalizedTokenId, { label: "tokenId" })}`), {
     method: "DELETE",
     operationName: "revoke-token",
     credential,
@@ -1055,7 +1056,7 @@ export async function listRuntimeRunEvents({
     ? `?after_event_id=${encodeURIComponent(String(afterEventId))}`
     : "";
   return requestJson(
-    buildApiPath(apiUrl, `/api/v1/runtime/runs/${encodeURIComponent(String(runId || ""))}/events/list${query}`),
+    buildApiPath(apiUrl, `/api/v1/runtime/runs/${urlPathSegment(runId, { label: "runId" })}/events/list${query}`),
     {
       method: "GET",
       credential,
@@ -1099,7 +1100,7 @@ export async function getRuntimeRunStatus({
   runId,
 } = {}) {
   return requestJson(
-    buildApiPath(apiUrl, `/api/v1/runtime/runs/${encodeURIComponent(String(runId || ""))}/status`),
+    buildApiPath(apiUrl, `/api/v1/runtime/runs/${urlPathSegment(runId, { label: "runId" })}/status`),
     {
       method: "GET",
       credential,

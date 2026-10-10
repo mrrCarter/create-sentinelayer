@@ -18,6 +18,7 @@ import {
   createSessionMutationHeaders,
   createSessionMutationIdempotencyKey,
 } from "./invitations.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 /**
  * Approve, deny, revoke and mode changes are the room owner's decisions, made with the
@@ -85,7 +86,7 @@ async function authContext(targetPath, resolveAuthSession) {
 }
 
 function admissionsUrl(apiUrl, sessionId, suffix = "") {
-  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/admissions${suffix}`;
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/admissions${suffix}`;
 }
 
 function boundedIdempotencyKey(value, operation) {
@@ -163,7 +164,7 @@ export async function getSessionAdmission(
   const sid = required(sessionId, "session id");
   const aid = required(admissionId, "admission id");
   const auth = await authContext(targetPath, resolveAuthSession);
-  return checkedTransport(requestRead)(admissionsUrl(auth.apiUrl, sid, `/${encodeURIComponent(aid)}`), {
+  return checkedTransport(requestRead)(admissionsUrl(auth.apiUrl, sid, `/${urlPathSegment(aid, { label: "admissionId" })}`), {
     method: "GET",
     credential: auth.credential,
   });
@@ -201,7 +202,7 @@ export async function decideSessionAdmission(
   await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
-    `/${encodeURIComponent(aid)}/decision`,
+    `/${urlPathSegment(aid, { label: "admissionId" })}/decision`,
     ROUTES.decision,
     body,
     {
@@ -233,7 +234,7 @@ export async function revokeSessionAdmission(
   await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
-    `/${encodeURIComponent(aid)}/revoke`,
+    `/${urlPathSegment(aid, { label: "admissionId" })}/revoke`,
     ROUTES.revoke,
     normalizedReason ? { reason: normalizedReason } : {},
     {
@@ -267,7 +268,7 @@ export async function setSessionAdmissionMode(
   const key = boundedIdempotencyKey(idempotencyKey, "session.admission_mode");
   const auth = await authContext(targetPath, resolveAuthSession);
   const result = await checkedTransport(requestMutation)(
-    `${auth.apiUrl}/api/v1/sessions/${encodeURIComponent(sid)}/admission-mode`,
+    `${auth.apiUrl}/api/v1/sessions/${urlPathSegment(sid, { label: "sessionId" })}/admission-mode`,
     {
       method: "POST",
       operationName: "session.admission_mode",

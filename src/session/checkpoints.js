@@ -5,6 +5,7 @@ import { checkedTransport, credentialFor, isAuthenticated } from "../auth/creden
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { pollSessionEventsBefore } from "./sync.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
 const DEFAULT_CHECKPOINT_LIMIT = 100;
@@ -442,7 +443,7 @@ export async function listSessionCheckpoints(sessionId, {
   const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
   const params = new URLSearchParams({ limit: String(normalizeLimit(limit)) });
   const response = await request(
-    `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints?${params.toString()}`,
+    `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/checkpoints?${params.toString()}`,
     { method: "GET", credential },
   );
   const checkpoints = Array.isArray(response?.checkpoints) ? response.checkpoints : [];
@@ -522,7 +523,7 @@ export async function createSessionCheckpoint(sessionId, options = {}) {
   const { body, idempotencyKey } = buildManualCheckpointPayload(normalizedSessionId, options);
   const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
   const response = await checkedTransport(requestMutation)(
-    `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints`,
+    `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/checkpoints`,
     {
       operationName: "session-checkpoint-create",
       credential,
@@ -549,7 +550,7 @@ export async function generateSessionCheckpoint(sessionId, options = {}) {
   const { body, idempotencyKey } = buildGenerateCheckpointPayload(normalizedSessionId, options);
   const { apiUrl, credential } = await resolveCheckpointApi({ targetPath, resolveAuthSession });
   const response = await checkedTransport(requestMutation)(
-    `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/checkpoints/generate`,
+    `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/checkpoints/generate`,
     {
       operationName: "session-checkpoint-generate",
       credential,

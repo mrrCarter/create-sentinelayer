@@ -38,6 +38,7 @@ import {
   stableTimestampForFile,
   writeArtifact,
 } from "./shared.js";
+import { urlPathSegment } from "../../net/url-path.js";
 
 function maskEmailForDisplay(value) {
   const email = String(value || "").trim();
@@ -471,7 +472,7 @@ identity
         credentialsMissing: resolvedCredentials.missing,
         trackedIdentity,
         curlPreview: [
-          `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(identityId)}/revoke \\`,
+          `curl -X POST ${apiUrl}/v1/identities/${urlPathSegment(identityId, { label: "identityId" })}/revoke \\`,
           `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
           `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
           `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,
@@ -638,7 +639,7 @@ identity
         credentialsMissing: resolvedCredentials.missing,
         parentIdentityTracked: Boolean(parentIdentity),
         curlPreview: [
-          `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(parentIdentityId)}/children \\`,
+          `curl -X POST ${apiUrl}/v1/identities/${urlPathSegment(parentIdentityId, { label: "identityId" })}/children \\`,
           `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
           `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
           `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,
@@ -884,7 +885,7 @@ identity
         credentialsMissing: resolvedCredentials.missing,
         parentIdentityTracked: Boolean(trackedIdentity),
         curlPreview: [
-          `curl -X POST ${apiUrl}/v1/identities/${encodeURIComponent(identityId)}/revoke-children \\`,
+          `curl -X POST ${apiUrl}/v1/identities/${urlPathSegment(identityId, { label: "identityId" })}/revoke-children \\`,
           `  -H \"Authorization: Bearer $AIDENID_API_KEY\" \\`,
           `  -H \"X-Org-Id: $AIDENID_ORG_ID\" \\`,
           `  -H \"X-Project-Id: $AIDENID_PROJECT_ID\" \\`,

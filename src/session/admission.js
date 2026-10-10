@@ -41,6 +41,7 @@ import {
   createSessionMutationIdempotencyKey,
 } from "./invitations.js";
 import { resolveSessionPaths } from "./paths.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 export const ADMISSION_ACTIONS = Object.freeze([
   "session.read",
@@ -374,7 +375,7 @@ async function authContext({ targetPath, resolveAuthSession }) {
 }
 
 function admissionUrl(apiUrl, sessionId, suffix = "") {
-  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/admissions${suffix}`;
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/admissions${suffix}`;
 }
 
 async function mutate(auth, sessionId, routeId, url, body, { requestMutation, operationName, origin }) {
@@ -530,7 +531,7 @@ export async function runAdmissionJoin(
   const deadline = now() + Math.max(0, waitTimeoutMs);
   let polled;
   for (;;) {
-    polled = await checkedTransport(requestRead)(admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}`), {
+    polled = await checkedTransport(requestRead)(admissionUrl(auth.apiUrl, sid, `/${urlPathSegment(state.admissionId, { label: "admissionId" })}`), {
       method: "GET",
       credential: auth.credential,
     });
@@ -599,7 +600,7 @@ export async function runAdmissionJoin(
     auth,
     sid,
     ROUTE.claim,
-    admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}/claim`),
+    admissionUrl(auth.apiUrl, sid, `/${urlPathSegment(state.admissionId, { label: "admissionId" })}/claim`),
     { nonce: fields.nonce, signature: signature.toString("base64url") },
     { ...deps, operationName: "session.admission_claim" }
   );
@@ -702,7 +703,7 @@ export async function cancelAdmission(
     auth,
     sid,
     ROUTE.cancel,
-    admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}/cancel`),
+    admissionUrl(auth.apiUrl, sid, `/${urlPathSegment(state.admissionId, { label: "admissionId" })}/cancel`),
     undefined,
     { requestMutation, origin, operationName: "session.admission_cancel" }
   );

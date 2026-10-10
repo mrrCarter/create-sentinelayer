@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { requestJson } from "../auth/http.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 export const DD_REPORT_EMAIL_TIMEOUT_MS = 10_000;
 
@@ -108,9 +109,7 @@ export async function sendDdReportEmail({
   }
 
   const apiUrl = normalizeString(session.apiUrl) || "https://api.sentinelayer.com";
-  const endpoint = `${apiUrl.replace(/\/+$/, "")}/api/v1/runs/${encodeURIComponent(
-    normalizedRunId,
-  )}/send-report-email`;
+  const endpoint = `${apiUrl.replace(/\/+$/, "")}/api/v1/runs/${urlPathSegment(normalizedRunId, { label: "runId" })}/send-report-email`;
   const idempotencyKey = buildReportEmailIdempotencyKey({
     runId: normalizedRunId,
     to: normalizedTo,

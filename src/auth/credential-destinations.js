@@ -20,9 +20,11 @@
 // (src/auth/admission-scope.js) and is never re-bound to the pocket gateway.
 //
 // credentialedRequest(credential, url, init, { fetchImpl }) is the one way to send a credential.
-// It refuses a URL on any other origin, sets the Authorization header itself, and never follows
-// a redirect. An injected transport (fetchImpl) is what it calls once those checks pass. A bare
-// token from an injected auth resolver (tests) is bound to the configured API by credentialFor.
+// It refuses a URL on any other origin, or one whose path has a "." or ".." segment, sets the
+// Authorization header itself, and
+// never follows a redirect. An injected transport (fetchImpl) is what it calls once those checks
+// pass. A bare token from an injected auth resolver (tests) is bound to the configured API by
+// credentialFor.
 // tests/unit.credential-census.test.mjs fails on any other place in src/ that builds an
 // Authorization header, reads a raw token, or writes a trust-source variable into process.env.
 
@@ -51,6 +53,33 @@ export class CredentialDestinationRefused extends Error {
     this.code = "CREDENTIAL_DESTINATION_REFUSED";
     this.origin = origin;
   }
+}
+
+/** A URL on the credential's own origin whose path has a "." or ".." segment. Nothing is sent. */
+export class CredentialPathRefused extends CredentialDestinationRefused {
+  constructor(origin) {
+    super(origin);
+    this.message =
+      "Refusing to send your SentinelLayer credential to a URL whose path has a '.' or '..' segment: " +
+      "each identifier in a URL path must be one segment.";
+    this.name = "CredentialPathRefused";
+    this.code = "CREDENTIAL_PATH_REFUSED";
+  }
+}
+
+// One path segment that URL parsing treats as "." or "..": any mix of "." and "%2e" (any case).
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/i;
+
+/**
+ * Whether the raw URL string has a dot segment in its path, read the way the URL parser reads an
+ * http(s) URL, before it removes them: tabs and newlines dropped, leading and trailing C0 controls
+ * and spaces trimmed, the path after the scheme and authority up to "?" or "#", and "\" a
+ * separator like "/".
+ */
+function hasDotSegment(target) {
+  const text = String(target).replace(/[\t\n\r]/g, "").replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const afterAuthority = text.replace(/^[a-z][a-z0-9+.-]*:[/\\]*[^/\\?#]*/i, "");
+  return afterAuthority.split(/[?#]/, 1)[0].split(/[/\\]/).some((segment) => DOT_SEGMENT.test(segment));
 }
 
 function originOf(value) {
@@ -161,11 +190,16 @@ export async function assertTrustedApiUrl(url, { context, env, homeDir } = {}) {
   if (origin !== trust.apiOrigin) throw new CredentialDestinationRefused(origin, [trust.apiOrigin]);
 }
 
-/** Refuse sending `credential` anywhere but its own origin. `target` is the exact URL string sent. */
+/**
+ * Refuse sending `credential` anywhere but its own origin, or to a path with a "." or ".."
+ * segment, read from the raw string before URL parsing removes it. `target` is the exact URL
+ * string sent.
+ */
 export function assertCredentialDestination(credential, target) {
   if (!isCredential(credential)) throw new TypeError("A credential from src/auth/credential-destinations.js is required.");
   const origin = originOf(target);
   if (origin !== credential.origin) throw new CredentialDestinationRefused(origin || String(target), [credential.origin]);
+  if (hasDotSegment(target)) throw new CredentialPathRefused(origin);
 }
 
 /**
