@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.45.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.44.0...v0.45.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **mcp:** The MCP bridge now enforces the human-approval requirement on CLI tools; they are unavailable over MCP until approval is supported. Senti session tools are unaffected.
+
+### Bug Fixes
+
+* **audit:** run the local Lighthouse fallback without a shell ([6c64f55](https://github.com/mrrCarter/create-sentinelayer/commit/6c64f55a14dfbbdc43247e4abc78ac6db1f793eb))
+* **auth:** credentialed requests do not follow redirects ([6787152](https://github.com/mrrCarter/create-sentinelayer/commit/6787152c5b45ce910cb04e31e221a74f71ef2524))
+* **auth:** credentials are opaque and the trust context is fixed at start ([5de4870](https://github.com/mrrCarter/create-sentinelayer/commit/5de487050ae04132b5ed39669b908d11ee04336f))
+* **auth:** recognise every source of the user's token before first use ([c40578c](https://github.com/mrrCarter/create-sentinelayer/commit/c40578caa4991089055eb537d5ee945092d1e57e))
+* **auth:** restrict outbound credential destinations ([54e3d43](https://github.com/mrrCarter/create-sentinelayer/commit/54e3d43ca1ddbb0c238c06a4df146149c1c622a8))
+* **auth:** send user credentials only through credentialedRequest ([b3a0356](https://github.com/mrrCarter/create-sentinelayer/commit/b3a0356b964cda034053c2ce24937ddcbaa81056))
+* **config:** provider keys come from the user's own config, with a notice ([ed64b5c](https://github.com/mrrCarter/create-sentinelayer/commit/ed64b5ce79db6ffc076ca66d4a24d9193cadf8d7))
+* **mcp, init:** enforce bridge approval, scope bridge paths, and gate init's GitHub secrets ([8059d67](https://github.com/mrrCarter/create-sentinelayer/commit/8059d67dceb8e53dcbce0206bff18597d93bf090))
+* **mcp:** bridge exposes only allowlisted inputs ([660ec52](https://github.com/mrrCarter/create-sentinelayer/commit/660ec52915833504f8e7d1cf69961bfced961b3d))
+* **mcp:** bridge withholds inputs that choose what runs ([2e4a6ed](https://github.com/mrrCarter/create-sentinelayer/commit/2e4a6ed24d3b2b5f58951a27665eeffa584fb1ef))
+* **mcp:** classify session tools and bind them to their session's admission ([c84bdd6](https://github.com/mrrCarter/create-sentinelayer/commit/c84bdd69fb77bf79e640c755222a7148d2cc2b80))
+* **mcp:** local session tools run only on the agent's admission in an agent context ([1bc701a](https://github.com/mrrCarter/create-sentinelayer/commit/1bc701ada701b7ef24eb8119b5c74a895eb53cd0))
+* **mcp:** refuse CLI tools with a specific error, and stop advertising them ([5d6f379](https://github.com/mrrCarter/create-sentinelayer/commit/5d6f379381bb93a3e142243057c9814081ad2f32))
+* **session:** bridged session commands follow the same route classes ([f07436f](https://github.com/mrrCarter/create-sentinelayer/commit/f07436f8d5e63ecfec70c4ff5fddde50533086bf))
+* **session:** credential refusals don't trip any request breaker ([5d3e1eb](https://github.com/mrrCarter/create-sentinelayer/commit/5d3e1eb5711be2a6d8a6b37ca4317ee7bf8baf3a))
+* **session:** decide bridged session routes on parsed command values ([4e2bae4](https://github.com/mrrCarter/create-sentinelayer/commit/4e2bae4ba49e02ff2848bb2e7eb6454bf7ff460e))
+* **session:** one route classification for agent-context session tools and bridged commands ([2fd859c](https://github.com/mrrCarter/create-sentinelayer/commit/2fd859ce7024855c8958f7aa6f0a3c0d97ed965a))
+* **watchdog:** alert channels come from the user's own config ([8cdc976](https://github.com/mrrCarter/create-sentinelayer/commit/8cdc9763e4acf3fb336284f1b71bc1ddac739a56))
+
 ## [0.44.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.43.0...v0.44.0) (2026-10-10)
 
 
