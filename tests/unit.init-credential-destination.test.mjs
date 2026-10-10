@@ -25,15 +25,17 @@ import { spawnDetachedSentiDaemon } from "../src/session/daemon-spawn.js";
 
 const USER_TOKEN = "init-user-token-0000";
 
-async function startServer() {
+// A loopback API; `routes` maps "METHOD /path" to [status, body].
+async function startServer(routes = {}) {
   const requests = [];
   const server = createServer(async (req, res) => {
     for await (const _chunk of req) {
       // drain
     }
     requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization || "" });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true }));
+    const [status, body] = routes[`${req.method} ${req.url}`] || [200, { ok: true }];
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -63,8 +65,8 @@ const interview = {
 
 // The configured API in the global config, a stored login, and a workspace whose own
 // .sentinelayer.yml names another API (and a token of its own).
-async function fixture() {
-  const trusted = await startServer();
+async function fixture(routes = {}) {
+  const trusted = await startServer(routes);
   const other = await startServer();
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-init-destination-"));
   const ws = path.join(home, "workspace");
@@ -175,6 +177,31 @@ test("init leaves the process environment alone, so the daemon it starts inherit
     assert.deepEqual(inherited, { api: before.api ?? null, token: before.token ?? null });
   } finally {
     process.chdir(cwd);
+    await fx.close();
+  }
+});
+
+test("sl init with SentinelLayer auth talks to the API in the global config, never the workspace's", async () => {
+  const fx = await fixture({
+    "POST /api/v1/auth/cli/sessions/start": [200, { session_id: "s-1", authorize_url: "http://127.0.0.1/authorize", poll_interval_seconds: 1 }],
+    "POST /api/v1/auth/cli/sessions/poll": [200, { status: "approved", auth_token: "init-approval-0000" }],
+    "POST /api/v1/builder/generate": [400, { error: { code: "FIXTURE_STOP", message: "stop here" } }],
+  });
+  try {
+    const env = {
+      ...fx.env,
+      SENTINELAYER_MCP_BRIDGE: "",
+      SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify({ ...interview, authMode: "sentinelayer" }),
+    };
+    await executeCliCommand(["init", "demo-app", "--non-interactive"], { targetPath: fx.ws, timeoutMs: 120_000, env });
+    assert.ok(
+      fx.trusted.requests.some((r) => r.method === "POST" && r.path === "/api/v1/auth/cli/sessions/start"),
+      "the login for the scaffold went to the configured API",
+    );
+    const generate = fx.trusted.requests.find((r) => r.path === "/api/v1/builder/generate");
+    assert.equal(generate?.authorization, "Bearer init-approval-0000", "and its approval token was sent there");
+    assert.deepEqual(fx.other.requests, [], "the workspace's API received nothing");
+  } finally {
     await fx.close();
   }
 });
