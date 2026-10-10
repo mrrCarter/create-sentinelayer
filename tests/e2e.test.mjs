@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { leaseWorkItem, listAssignments } from "../src/daemon/assignment-ledger.js";
 import { appendAdminErrorEvent, listErrorQueue, runErrorDaemonWorker } from "../src/daemon/error-worker.js";
 import { createGhSpy } from "./gh-spy.mjs";
+import { SESSION_MCP_TOOLS } from "../src/mcp/session-stdio-server.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
@@ -4602,78 +4603,121 @@ test("CLI mcp schema and registry commands scaffold and validate AIdenID templat
   }
 });
 
-test("CLI mcp server run excludes sensitive commands and honors CLI bridge kill-switch", async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-stdio-"));
-  try {
-    const child = spawn(
-      process.execPath,
-      [CLI_PATH, "mcp", "server", "run", "--path", tempRoot, "--framing", "newline"],
-      {
-        cwd: tempRoot,
-        env: {
-          ...process.env,
-          NODE_ENV: "test",
-          SENTINELAYER_CLI_TEST_MODE: "1",
-          SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
-          SENTINELAYER_CLI_SKIP_AUTH: "1",
-          SENTINELAYER_MCP_CLI_BRIDGE_DISABLED: "1",
-          SENTINELAYER_TOKEN: "api_token_e2e_test_session",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
+// Runs `sl mcp server run`, sends tools/list then each call, and returns the responses by id and
+// every Node.js process started under it (a preload records each one's arguments: a CLI bridge
+// handler that ran would start the CLI for its command).
+async function runMcpStdioExchange(tempRoot, extraEnv, calls) {
+  const marker = path.join(tempRoot, `processes-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+  const preload = path.join(tempRoot, "process-marker.cjs");
+  await writeFile(preload, "require('fs').appendFileSync(process.env.SL_PROCESS_MARKER, JSON.stringify(process.argv.slice(2)) + '\\n');\n");
+  const child = spawn(
+    process.execPath,
+    [CLI_PATH, "mcp", "server", "run", "--path", tempRoot, "--framing", "newline"],
+    {
+      cwd: tempRoot,
+      env: {
+        ...process.env,
+        NODE_ENV: "test",
+        SENTINELAYER_CLI_TEST_MODE: "1",
+        SENTINELAYER_CLI_TEST_BYPASS_NONCE: "e2e-bypass-nonce",
+        SENTINELAYER_CLI_SKIP_AUTH: "1",
+        SENTINELAYER_TOKEN: "api_token_e2e_test_session",
+        NODE_OPTIONS: `--require="${preload.split(path.sep).join("/")}"`,
+        SL_PROCESS_MARKER: marker,
+        ...extraEnv,
       },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += String(chunk);
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+  const closed = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("mcp stdio server timed out"));
+    }, 10_000);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
     });
-    child.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve(Number(code || 0));
     });
-
-    const closed = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        reject(new Error("mcp stdio server timed out"));
-      }, 10_000);
-      child.on("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.on("close", (code) => {
-        clearTimeout(timer);
-        resolve(Number(code || 0));
-      });
-    });
-
-    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+  });
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
+  calls.forEach((name, index) => {
     child.stdin.write(
-      `${JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "sl.session.list", arguments: {} },
-      })}\n`,
+      `${JSON.stringify({ jsonrpc: "2.0", id: 2 + index, method: "tools/call", params: { name, arguments: {} } })}\n`,
     );
-    child.stdin.end();
-    const code = await closed;
-
-    assert.equal(code, 0, stderr || stdout);
-    const responses = stdout
+  });
+  child.stdin.end();
+  const code = await closed;
+  assert.equal(code, 0, stderr || stdout);
+  const responses = new Map(
+    stdout
       .trim()
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line) => JSON.parse(line));
-    const listed = responses.find((response) => response.id === 1);
-    const called = responses.find((response) => response.id === 2);
-    const sessionListTool = listed.result.tools.find((tool) => tool.name === "sl.session.list");
-    const logoutTool = listed.result.tools.find((tool) => tool.name === "sl.auth.logout");
+      .map((line) => JSON.parse(line))
+      .map((response) => [response.id, response]),
+  );
+  return {
+    listedNames: responses.get(1).result.tools.map((tool) => tool.name),
+    calls: calls.map((name, index) => responses.get(2 + index)),
+    processes: (await readFile(marker, "utf8").catch(() => ""))
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line)),
+  };
+}
 
-    assert.ok(sessionListTool, "expected non-sensitive session.list bridge tool to remain available");
-    assert.equal(sessionListTool.security.requires_human_approval, true);
-    assert.equal(logoutTool, undefined);
-    assert.equal(called.result.structuredContent.ok, false);
-    assert.equal(called.result.structuredContent.reason, "mcp_cli_bridge_disabled");
+test("CLI mcp server run excludes sensitive commands and refuses CLI tools for approval, with the CLI bridge kill-switch off or on", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-stdio-"));
+  try {
+    const calls = ["sl.session.list", "sl.auth.logout"];
+    const switchOff = await runMcpStdioExchange(tempRoot, { SENTINELAYER_MCP_CLI_BRIDGE_DISABLED: "" }, calls);
+    const switchOn = await runMcpStdioExchange(tempRoot, { SENTINELAYER_MCP_CLI_BRIDGE_DISABLED: "1" }, calls);
+
+    // In this version the kill switch has no observable effect over MCP: the dispatcher refuses
+    // every sl.* call for human approval before the CLI bridge handler, the only place that reads
+    // SENTINELAYER_MCP_CLI_BRIDGE_DISABLED, is reached. Both runs therefore look the same here. The
+    // switch is defence in depth for that handler and for approved execution in a future version;
+    // it is asserted where it acts, on the real generated handler, in
+    // tests/unit.mcp-bridge-kill-switch.test.mjs.
+    const nativeTools = SESSION_MCP_TOOLS.map((tool) => tool.name).sort();
+    assert.equal(nativeTools.length, 13);
+    for (const run of [switchOff, switchOn]) {
+      // exactly the 13 native session tools are listed, and no CLI tool
+      assert.deepEqual([...run.listedNames].sort(), nativeTools);
+      assert.equal(run.listedNames.some((name) => name.startsWith("sl.")), false, "no CLI tool is advertised");
+      // no handler ran: the only Node.js process started is the server itself, and a CLI bridge
+      // handler that ran would have started the CLI for sl.session.list
+      assert.deepEqual(
+        run.processes.filter((argv) => argv.slice(0, 3).join(" ") !== "mcp server run"),
+        [],
+        "no command was run for the refused call",
+      );
+      assert.equal(run.processes.length, 1, JSON.stringify(run.processes));
+
+      const [sessionList, logout] = run.calls;
+      assert.equal(sessionList.result, undefined, "a refused call is an error, never a result");
+      assert.deepEqual(sessionList.error, {
+        code: -32001,
+        message:
+          "Human approval is required for sl.session.list. It is not available over the MCP bridge in this version; run `sl session list` in a terminal instead.",
+        data: { reason: "human_approval_required", tool: "sl.session.list" },
+      });
+      // a sensitive command is not in the registry at all
+      assert.deepEqual(logout.result.structuredContent, { ok: false, reason: "unknown_tool", tool: "sl.auth.logout" });
+    }
+    assert.deepEqual(switchOn.calls[0], { ...switchOff.calls[0], id: switchOn.calls[0].id }, "the same refusal with the switch on");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -12,7 +12,7 @@ import {
   executeCliCommand,
 } from "../src/mcp/cli-command-tools.js";
 import { buildCliProgram } from "../src/cli.js";
-import { createSessionMcpRuntime } from "../src/mcp/session-stdio-server.js";
+import { createSessionMcpRuntime, handleMcpJsonRpcMessage } from "../src/mcp/session-stdio-server.js";
 
 function buildFakeProgram() {
   const program = new Command();
@@ -580,4 +580,17 @@ test("Unit MCP session runtime: combines session tools with generated CLI bridge
   assert.equal(typeof runtime.handlers.poll_inbox, "function");
   assert.equal(typeof runtime.handlers["sl.session.say"], "function");
   assert.equal(runtime.commandToolCount, 1);
+
+  // The runtime holds the CLI tool so the dispatcher can refuse it; MCP clients never see or run it.
+  const listed = await handleMcpJsonRpcMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" }, runtime);
+  const listedNames = listed.result.tools.map((tool) => tool.name);
+  assert.equal(listedNames.includes("poll_inbox"), true);
+  assert.equal(listedNames.includes("sl.session.say"), false);
+  const called = await handleMcpJsonRpcMessage(
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "sl.session.say", arguments: {} } },
+    runtime,
+  );
+  assert.equal(called.result, undefined);
+  assert.equal(called.error.code, -32001);
+  assert.equal(called.error.data.reason, "human_approval_required");
 });

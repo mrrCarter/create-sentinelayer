@@ -173,6 +173,13 @@ test("the README says where the token goes, that POCKET_GATEWAY_URL is not read,
     ),
     "the README states the bridge change",
   );
+  assert.ok(
+    readme.includes(
+      "so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.",
+    ),
+    "the README does not present the kill switch as changing MCP behaviour today",
+  );
+  assert.equal(readme.includes("so the generated CLI bridge cannot execute"), false);
   assert.match(readme, /Watchdog alert channels \(`alerts\.channels`\) also come from the global config only/);
   assert.match(readme, /`sl scan setup-secrets` writes it to a GitHub Actions secret with the `gh` CLI/);
 });

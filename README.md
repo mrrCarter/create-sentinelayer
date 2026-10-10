@@ -770,7 +770,7 @@ MCP operator verification:
    `sl mcp smoke --session <senti-session-id> --json`. The smoke mints the
    short-lived bearer in memory, calls `/mcp`, and prints only redacted proof.
 3. Kill switch: set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1` and restart the
-   MCP host if a CLI bridge or bearer credential is exposed.
+   MCP host if a CLI bridge or bearer credential is exposed. In this version the MCP server already refuses every `sl.*` call for human approval, so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.
 
 Architecture references: local stdio runtime and incident response live in
 [docs/mcp.md](docs/mcp.md); hosted OAuth/session-seat requirements live in
@@ -817,7 +817,7 @@ Architecture decisions:
 If a hosted MCP bearer or bridge command output is exposed:
 
 1. Set `SENTINELAYER_MCP_CLI_BRIDGE_DISABLED=1`.
-2. Restart the MCP host process so the generated CLI bridge cannot execute.
+2. Restart the MCP host process. In this version the MCP server already refuses every `sl.*` call for human approval, so the switch does not change MCP responses; it is defence in depth for the CLI bridge handler and for approved execution in a future version.
 3. Run `sentinelayer-cli auth revoke` or revoke the requesting session from the
    dashboard, then re-authenticate with `sentinelayer-cli auth login`.
 4. Remove the exposed value from local logs/transcripts where possible.
