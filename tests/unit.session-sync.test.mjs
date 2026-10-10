@@ -1334,6 +1334,70 @@ test("Unit session sync: createSessionMessageAction does not wait on stalled err
   assert.ok(Date.now() - startedAt < 500, "non-OK response bodies must not delay status handling");
 });
 
+test("Unit session sync: one agent's 401/403s never block another agent on either breaker; 5xx still does", async () => {
+  // Agent A's credential is refused; agent B's is fine. Six refusals for A must leave
+  // B's next call going out, on every inbound reader and every outbound writer.
+  const tokenFor = { a: "tok_agent_a", b: "tok_agent_b" };
+  const nowMs = () => 1_700_000_490_000;
+  const calls = {
+    pollHumanMessages: (auth, fetchImpl) => pollHumanMessages("sess-ab", { resolveAuthSession: auth, fetchImpl, nowMs }),
+    pollSessionEvents: (auth, fetchImpl) => pollSessionEvents("sess-ab", { resolveAuthSession: auth, fetchImpl, nowMs }),
+    fetchSessionPresence: (auth, fetchImpl) =>
+      fetchSessionPresence("sess-ab", { resolveAuthSession: auth, fetchImpl, nowMs }),
+    pollSessionEventsBefore: (auth, fetchImpl) =>
+      pollSessionEventsBefore("sess-ab", { beforeSequence: 50, resolveAuthSession: auth, fetchImpl, nowMs }),
+    listSessionMessageActions: (auth, fetchImpl) =>
+      listSessionMessageActions("sess-ab", { resolveAuthSession: auth, fetchImpl, nowMs }),
+    fetchSessionUsageLedger: (auth, fetchImpl) =>
+      fetchSessionUsageLedger("sess-ab", { resolveAuthSession: auth, fetchImpl, nowMs }),
+    searchSessionEvents: (auth, fetchImpl) =>
+      searchSessionEvents("sess-ab", { query: "checkpoint", resolveAuthSession: auth, fetchImpl, nowMs }),
+    syncSessionEventToApi: (auth, fetchImpl) =>
+      syncSessionEventToApi(
+        "sess-ab",
+        { event: "session_message", sessionId: "sess-ab", payload: { message: "hello" } },
+        { resolveAuthSession: auth, fetchImpl, nowMs },
+      ),
+    createSessionMessageAction: (auth, fetchImpl) =>
+      createSessionMessageAction("sess-ab", {
+        actionType: "ack",
+        targetSequenceId: 42,
+        idempotencyKey: "ack-42",
+        resolveAuthSession: auth,
+        fetchImpl,
+        nowMs,
+      }),
+    updateSessionReadCursor: (auth, fetchImpl) =>
+      updateSessionReadCursor("sess-ab", { targetSequenceId: 42, agentId: "a", resolveAuthSession: auth, fetchImpl, nowMs }),
+  };
+  for (const [name, call] of Object.entries(calls)) {
+    for (const failingStatus of [401, 403, 503]) {
+      resetSessionSyncStateForTests();
+      const seen = { a: 0, b: 0 };
+      const fetchImpl = async (_url, options = {}) => {
+        const bearer = String(options.headers?.Authorization || "");
+        if (bearer.endsWith(tokenFor.a)) {
+          seen.a += 1;
+          return { ok: false, status: failingStatus, json: async () => ({ error: { code: "REFUSED" } }) };
+        }
+        seen.b += 1;
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      };
+      const auth = (agent) => async () => ({ token: tokenFor[agent], apiUrl: "https://api.sentinelayer.com/" });
+      for (let attempt = 0; attempt < 6; attempt += 1) await call(auth("a"), fetchImpl);
+      const result = await call(auth("b"), fetchImpl);
+      if (failingStatus === 503) {
+        assert.equal(seen.b, 0, `${name}: server failures still open the breaker`);
+      } else {
+        assert.equal(seen.a, 6, `${name}: every ${failingStatus} for agent A was sent`);
+        assert.equal(seen.b, 1, `${name}: agent B's call goes out after A's ${failingStatus}s`);
+        assert.notEqual(result?.reason, "circuit_breaker_open", name);
+      }
+    }
+  }
+  resetSessionSyncStateForTests();
+});
+
 test("Unit session sync: 401/403 credential refusals never open the outbound breaker; 5xx still does", async () => {
   const auth = async () => ({ token: "tok_refusals", apiUrl: "https://api.sentinelayer.com/" });
   const writers = {

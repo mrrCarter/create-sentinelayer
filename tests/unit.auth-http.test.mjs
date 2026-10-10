@@ -293,49 +293,38 @@ test("Unit auth http: does not retry non-retryable API status codes", async () =
   }
 });
 
-test("Unit auth http: opens circuit breaker after consecutive 401 auth failures", async () => {
-  __resetRequestCircuitForTests();
+test("Unit auth http: one credential's 401/403s never open the per-origin breaker for another", async () => {
   const previousFetch = globalThis.fetch;
-  let callCount = 0;
-  globalThis.fetch = async () => {
-    callCount += 1;
-    return createResponse(401, {
-      error: { code: "UNAUTHORIZED", message: "Unauthorized" },
-    });
-  };
-
   try {
-    for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD; i += 1) {
-      await assert.rejects(
-        () =>
-          requestJson("https://api.example.com/test", {
-            maxRetries: 0,
-            retryDelayMs: 1,
-          }),
-        (error) => {
-          assert.equal(error instanceof SentinelayerApiError, true);
-          assert.equal(error.code, "UNAUTHORIZED");
-          assert.equal(error.status, 401);
-          return true;
+    for (const refusal of [401, 403]) {
+      __resetRequestCircuitForTests();
+      const seen = { a: 0, b: 0 };
+      globalThis.fetch = async (_url, init = {}) => {
+        const bearer = String(new Headers(init.headers || {}).get("authorization") || "");
+        if (bearer === "Bearer token-agent-a") {
+          seen.a += 1;
+          return createResponse(refusal, { error: { code: "REFUSED", message: "Refused" } });
         }
-      );
-    }
-
-    const beforeCircuitCalls = callCount;
-    await assert.rejects(
-      () =>
+        seen.b += 1;
+        return createResponse(200, { ok: true });
+      };
+      const call = (token) =>
         requestJson("https://api.example.com/test", {
+          headers: { Authorization: `Bearer ${token}` },
           maxRetries: 0,
           retryDelayMs: 1,
-        }),
-      (error) => {
-        assert.equal(error instanceof SentinelayerApiError, true);
-        assert.equal(error.code, "CIRCUIT_OPEN");
-        assert.equal(error.status, 503);
-        return true;
+        });
+      for (let i = 0; i < CIRCUIT_BREAKER_THRESHOLD + 1; i += 1) {
+        await assert.rejects(call("token-agent-a"), (error) => {
+          assert.equal(error.status, refusal);
+          assert.notEqual(error.code, "CIRCUIT_OPEN");
+          return true;
+        });
       }
-    );
-    assert.equal(callCount, beforeCircuitCalls);
+      assert.equal(seen.a, CIRCUIT_BREAKER_THRESHOLD + 1, `every ${refusal} was sent`);
+      assert.deepEqual(await call("token-agent-b"), { ok: true });
+      assert.equal(seen.b, 1, `another credential still reaches the origin after ${refusal}s`);
+    }
   } finally {
     globalThis.fetch = previousFetch;
     __resetRequestCircuitForTests();
