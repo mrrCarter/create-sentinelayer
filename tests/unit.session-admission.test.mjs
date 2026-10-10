@@ -30,7 +30,10 @@ import { createSessionMutationCsrfToken } from "../src/session/invitations.js";
 const SID = "e9e8dc5e-8d57-4603-975f-09156e3b4473";
 const TOKEN = "unit-test-human-bearer";
 
-function fakeApi({ onPoll } = {}) {
+// reportsIdentityReadiness=false is a server that issues the claim challenge on
+// approval and never reports identity readiness (the shape sentinelayer-api served
+// before identity-gated claims).
+function fakeApi({ onPoll, reportsIdentityReadiness = true } = {}) {
   const admissions = new Map();
   const calls = [];
   const expectCsrf = (headers, routeId, idempotencyKey) => {
@@ -97,6 +100,25 @@ function fakeApi({ onPoll } = {}) {
     const adm = admissions.get(id);
     onPoll?.(adm);
     const view = { admissionId: id, status: adm.status, agentId: adm.body.agentId, pollAfterSeconds: 5 };
+    if (!reportsIdentityReadiness) {
+      if (adm.status === "approved") {
+        adm.nonce = randomBytes(32).toString("base64url");
+        view.grantedActions = adm.body.requestedScope.actions;
+        view.claim = {
+          domain: CLAIM_DOMAIN,
+          fields: [...CLAIM_FIELDS],
+          preimage: {
+            admissionId: id,
+            sessionId: SID,
+            agentId: adm.body.agentId,
+            publicKey: adm.body.publicKey,
+            keyThumbprint: "t".repeat(64),
+            nonce: adm.nonce,
+          },
+        };
+      }
+      return view;
+    }
     if (adm.status === "approved") {
       view.identityReady = adm.identityReady === true;
       view.identity = {
@@ -249,6 +271,35 @@ test("claim challenge exposed before identity readiness fails closed", async () 
   await assert.rejects(
     runAdmissionJoin(SID, base(api, dirs, { requestRead })),
     /claim challenge before AIdenID identity evidence was ready/,
+  );
+  assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
+});
+
+test("a server that does not report identity readiness: the approved admission is claimed at once", async () => {
+  const dirs = await scratch();
+  let polls = 0;
+  const api = fakeApi({
+    reportsIdentityReadiness: false,
+    onPoll: (adm) => { if (++polls === 2) adm.status = "approved"; },
+  });
+  const pending = [];
+  const result = await runAdmissionJoin(SID, base(api, dirs, { onPending: (value) => pending.push(value) }));
+  assert.equal(result.status, "active");
+  assert.equal(api.calls.filter((call) => call.url.endsWith("/claim")).length, 1);
+  assert.deepEqual(pending.map((value) => value.phase), ["approval"], "no identity wait without the capability");
+});
+
+test("a server that does not report identity readiness and sends no claim challenge still fails closed", async () => {
+  const dirs = await scratch();
+  const api = fakeApi({ reportsIdentityReadiness: false, onPoll: (adm) => { adm.status = "approved"; } });
+  const requestRead = async (...args) => {
+    const view = await api.requestRead(...args);
+    delete view.claim;
+    return view;
+  };
+  await assert.rejects(
+    runAdmissionJoin(SID, base(api, dirs, { requestRead })),
+    /Approved admission did not include a valid claim challenge/,
   );
   assert.equal(api.calls.some((call) => call.url.endsWith("/claim")), false);
 });

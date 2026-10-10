@@ -499,18 +499,24 @@ export async function runAdmissionJoin(
       headers: { Authorization: `Bearer ${auth.token}` },
     });
     state.status = polled.status;
-    const claimReady =
-      polled.status === "approved" &&
-      polled.identityReady === true &&
-      polled?.claim?.domain === CLAIM_DOMAIN &&
-      polled?.claim?.preimage;
-    if (polled.status === "approved" && polled.identityReady === true && !claimReady) {
-      throw new Error("Identity-ready admission did not include a valid claim challenge.");
+    // Identity readiness is a server capability: a server that gates the claim on
+    // AIdenID identity evidence reports `identityReady` (true or false) on every
+    // approved poll. A server that does not report it issues the claim challenge on
+    // approval, so the claim proceeds as soon as the admission is approved.
+    const reportsIdentityReadiness =
+      polled.status === "approved" && Object.prototype.hasOwnProperty.call(polled, "identityReady");
+    const claimable =
+      polled.status === "approved" && (!reportsIdentityReadiness || polled.identityReady === true);
+    if (reportsIdentityReadiness) {
+      const claimReady = claimable && polled?.claim?.domain === CLAIM_DOMAIN && polled?.claim?.preimage;
+      if (polled.identityReady === true && !claimReady) {
+        throw new Error("Identity-ready admission did not include a valid claim challenge.");
+      }
+      if (polled.identityReady !== true && polled?.claim) {
+        throw new Error("Admission exposed a claim challenge before AIdenID identity evidence was ready.");
+      }
     }
-    if (polled.status === "approved" && polled.identityReady !== true && polled?.claim) {
-      throw new Error("Admission exposed a claim challenge before AIdenID identity evidence was ready.");
-    }
-    if (claimReady || TERMINAL.has(polled.status) || polled.status === "active") break;
+    if (claimable || TERMINAL.has(polled.status) || polled.status === "active") break;
     const phase = polled.status === "approved" ? "identity" : "approval";
     onPending({
       admissionId: state.admissionId,
