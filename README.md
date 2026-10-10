@@ -1080,7 +1080,8 @@ Ledger contract:
 
 ## Requirements
 
-- Node `>=20.0`
+- Node.js `^20.0.0 || ^22.0.0` (the package `engines`)
+- on Windows, Node.js 22 (libuv 1.48.0 or later): the CLI looks up the programs it runs (git, gh, python, npm and others) on `PATH` only, and an older runtime cannot do that, so on Windows the CLI exits with an error before running anything under Node.js 20
 - network access to Sentinelayer API/web
 - optional: GitHub CLI (`gh`) authenticated for secret injection
 

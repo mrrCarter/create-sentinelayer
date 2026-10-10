@@ -352,7 +352,7 @@ jobs:
   windows-investor-dd-lifecycle:
     name: Windows Investor DD Lifecycle
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 15
     needs: [eval-gate-terminal, lint]
     permissions:
       contents: read
@@ -381,6 +381,49 @@ jobs:
 
       - name: Verify investor DD resource cleanup
         run: node --import ./tests/setup-env.mjs --test tests/unit.investor-dd-orchestrator.test.mjs
+
+      # These assert Windows program lookup and child-process isolation; they skip on other
+      # platforms, so here a skipped test fails the step.
+      - name: Verify program lookup and repository child environment on Windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs | tee windows-child-process.tap
+          grep -qx '# skipped 0' windows-child-process.tap
+
+      # The Windows floor, pinned: Node.js 22.0.0 is the first runtime with libuv 1.48.0, which
+      # honours the lookup setting, so the CLI must run there with the lookup off.
+      - name: Setup Node 22.0.0 (Windows minimum runtime)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.0.0"
+
+      - name: Verify program lookup on Node 22.0.0 (libuv 1.48.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$(node -p '`${process.version} ${process.versions.uv}`')"
+          echo "Node.js and libuv: $runtime"
+          test "$runtime" = "v22.0.0 1.48.0"
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs | tee windows-node-22.0.0.tap
+          grep -qx '# skipped 0' windows-node-22.0.0.tap
+
+      # Below the floor, pinned: Node.js 20.19.0 ships libuv 1.46.0, which ignores the setting, so
+      # the CLI must refuse to run there on Windows.
+      - name: Setup Node 20.19.0 (below the Windows floor)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20.19.0"
+
+      - name: Verify the Windows refusal on Node 20.19.0 (libuv 1.46.0)
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime="$(node -p '`${process.version} ${process.versions.uv}`')"
+          echo "Node.js and libuv: $runtime"
+          test "$runtime" = "v20.19.0 1.46.0"
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-runtime-floor.test.mjs | tee windows-node-20.19.0.tap
+          grep -qx '# skipped 0' windows-node-20.19.0.tap
 
   playwright-e2e:
     name: Test (e2e-playwright)

@@ -2,6 +2,7 @@ import process from "node:process";
 import { Command } from "commander";
 
 import { CLI_VERSION, runLegacyCliWithErrorHandling } from "./legacy-cli.js";
+import { restrictProgramLookupToPath } from "./program-lookup.js";
 
 const COMMAND_REGISTRARS = {
   init: {
@@ -242,6 +243,15 @@ export async function buildCliProgram({
 }
 
 export async function runCli(rawArgs = process.argv.slice(2)) {
+  // Programs named without a path come from PATH only, never from the working directory, before
+  // anything is spawned. On a Windows runtime that cannot guarantee that, nothing runs.
+  const programLookup = restrictProgramLookupToPath();
+  if (!programLookup.ok) {
+    console.error(programLookup.message);
+    process.exitCode = 1;
+    return;
+  }
+
   // Where the user's credentials may go is decided once, here, from the real environment and the
   // global config, and frozen: nothing that changes process.env later can move it.
   const { freezeProcessTrustContext } = await import("./auth/credential-destinations.js");
