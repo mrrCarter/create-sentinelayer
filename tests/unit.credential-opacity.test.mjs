@@ -162,11 +162,12 @@ test("without a credential the API client attaches no token, and refuses one bui
   }
 });
 
-test("the README says where the token goes, that POCKET_GATEWAY_URL is not read, and where init writes its project token", async () => {
+test("the README says where the token goes, that POCKET_GATEWAY_URL is not read, where init writes its project token, and where alerts go", async () => {
   const readme = await fsp.readFile(new URL("../README.md", import.meta.url), "utf8");
   assert.match(readme, /`POCKET_GATEWAY_URL` is no longer read\./);
   assert.match(readme, /A project `\.sentinelayer\.yml` chooses neither the API nor the token/);
-  assert.match(readme, /written to the project's `\.env`, its `\.sentinelayer\/config\.json` lockfile and, when you choose to, a GitHub Actions secret/);
+  assert.match(readme, /written to the project's `\.env`, its `\.sentinelayer\/config\.json` lockfile and, when a GitHub repository is known \(from the interview or the project's git remote\), a GitHub Actions secret on that repository, set with `gh` together with `OPENAI_API_KEY`/);
+  assert.match(readme, /Watchdog alert channels \(`alerts\.channels`\) also come from the global config only/);
   assert.match(readme, /`sl scan setup-secrets` writes it to a GitHub Actions secret with the `gh` CLI/);
 });
 
