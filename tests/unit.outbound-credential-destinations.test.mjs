@@ -81,7 +81,6 @@ async function fixture({ envToken = USER_TOKEN, storedToken = "" } = {}) {
   };
   delete env.SENTINELAYER_TOKEN;
   delete env.SENTINELAYER_API_TOKEN;
-  delete env.POCKET_GATEWAY_URL;
   if (envToken) env.SENTINELAYER_TOKEN = envToken;
   if (storedToken) {
     const tokenExpiresAt = new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString();
@@ -320,6 +319,34 @@ test("the transport sends the user's token only to the configured origins, howev
   }
 });
 
+test("a request carrying the user's token never follows a redirect, whatever the caller asks", async () => {
+  const other = await startServer();
+  const redirecting = createServer((req, res) => {
+    res.writeHead(302, { Location: `${other.url}/landing` });
+    res.end();
+  });
+  redirecting.listen(0, "127.0.0.1");
+  await once(redirecting, "listening");
+  const configuredUrl = `http://127.0.0.1:${redirecting.address().port}`;
+  try {
+    await withEnv({ SENTINELAYER_TOKEN: USER_TOKEN, SENTINELAYER_API_URL: configuredUrl }, async () => {
+      const headers = { Authorization: `Bearer ${USER_TOKEN}`, "X-Session-Token": USER_TOKEN };
+      for (const init of [{ headers }, { headers, redirect: "follow" }, { headers: { "X-Session-Token": USER_TOKEN } }]) {
+        await assert.rejects(fetch(`${configuredUrl}/start`, init), TypeError);
+      }
+      assert.deepEqual(other.requests, [], "the redirect target received nothing");
+      // a request without the token follows redirects as before
+      const plain = await fetch(`${configuredUrl}/start`);
+      assert.equal(plain.status, 200);
+      assert.equal(other.requests.length, 1);
+      assert.equal(other.requests[0].headers.authorization, undefined);
+    });
+  } finally {
+    await new Promise((resolve) => redirecting.close(resolve));
+    await other.close();
+  }
+});
+
 test("a token read from the stored session is recognised wherever it is carried", async () => {
   const configured = await startServer();
   const other = await startServer();
@@ -436,10 +463,15 @@ test("the trusted origins come from the environment and the global config only",
     assert.deepEqual(await trustedCredentialOrigins({ env: {}, homeDir: home }), ["https://api.global.example"]);
     assert.deepEqual(
       await trustedCredentialOrigins({
-        env: { SENTINELAYER_API_URL: "https://api.env.example/v1", SENTI_POCKET_URL: "https://pocket.example/base" },
+        env: {
+          SENTINELAYER_API_URL: "https://api.env.example/v1",
+          SENTI_POCKET_URL: "https://pocket.example/base",
+          POCKET_GATEWAY_URL: "https://other-gateway.example",
+        },
         homeDir: home,
       }),
       ["https://api.env.example", "https://pocket.example"],
+      "the pocket gateway comes from SENTI_POCKET_URL only",
     );
   } finally {
     await fsp.rm(home, { recursive: true, force: true });

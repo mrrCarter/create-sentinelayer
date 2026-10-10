@@ -6,12 +6,13 @@
 //
 //   - the configured API: SENTINELAYER_API_URL, else `apiUrl` in ~/.sentinelayer/config.yml,
 //     else the default API
-//   - the pocket gateway: SENTI_POCKET_URL or POCKET_GATEWAY_URL, when set
+//   - the pocket gateway: SENTI_POCKET_URL, when set
 //
 // Nothing a command is given (an option, an argument, an MCP tool input, a workspace's
 // .sentinelayer.yml) can add to that set. An option that names another origin may still be
 // used for requests that carry no token; a request that carries the token to any other origin
-// is refused before it is sent.
+// is refused before it is sent. A request that carries the token never follows a redirect
+// (redirect: "error"), so it cannot be forwarded to an origin that was never checked.
 //
 // The check sits on the transport: this module wraps globalThis.fetch, through which every
 // request in src/ is made (auth/http.js and the direct fetch call sites alike), so a new call
@@ -27,7 +28,7 @@ export const DEFAULT_API_URL = "https://api.sentinelayer.com";
 
 const GUARD_MARKER = Symbol.for("sentinelayer.credentialDestinationGuard");
 const TOKEN_ENV_VARS = ["SENTINELAYER_TOKEN", "SENTINELAYER_API_TOKEN"];
-const GATEWAY_ENV_VARS = ["SENTI_POCKET_URL", "POCKET_GATEWAY_URL"];
+const GATEWAY_ENV_VARS = ["SENTI_POCKET_URL"];
 const MIN_TOKEN_LENGTH = 16; // shorter strings are not credentials worth matching
 const noted = new Set();
 
@@ -88,15 +89,21 @@ function carriesUserCredential(request, env) {
   return carried.some((text) => [...tokens].some((token) => String(text).includes(token)));
 }
 
-/**
- * Refuse a request that carries the user's token to an origin outside the trusted set.
- * Exported for tests and for transports that do not go through globalThis.fetch.
- */
-export async function assertCredentialDestination(request, { env = process.env, homeDir } = {}) {
-  if (!carriesUserCredential(request, env)) return;
-  const origin = new URL(request.url).origin;
+/** Refuse a URL outside the trusted set, before anything carrying the user's token is sent there. */
+export async function assertTrustedCredentialOrigin(url, { env = process.env, homeDir } = {}) {
+  const origin = new URL(String(url)).origin;
   const trusted = await trustedCredentialOrigins({ env, homeDir });
   if (!trusted.includes(origin)) throw new CredentialDestinationRefused(origin, trusted);
+}
+
+/**
+ * Whether a request carries the user's token, refusing it if it is bound for an origin outside
+ * the trusted set. Exported for tests and for transports that do not go through globalThis.fetch.
+ */
+export async function assertCredentialDestination(request, { env = process.env, homeDir } = {}) {
+  if (!carriesUserCredential(request, env)) return false;
+  await assertTrustedCredentialOrigin(request.url, { env, homeDir });
+  return true;
 }
 
 /** Wrap globalThis.fetch with the destination check. Idempotent. */
@@ -108,8 +115,10 @@ export function installCredentialDestinationGuard() {
   const guarded = async function credentialDestinationFetch(input, init) {
     // One conversion, checked and dispatched: the Request that is checked is the one sent.
     const request = new NativeRequest(input, init);
-    await assertCredentialDestination(request);
-    return innerFetch.call(this, request);
+    const credentialed = await assertCredentialDestination(request);
+    // Whatever the caller asked for, a credentialed request does not follow redirects: a
+    // redirect would send it on to an origin this check never saw.
+    return innerFetch.call(this, credentialed ? new NativeRequest(request, { redirect: "error" }) : request);
   };
   // Keep the markers of what it wraps (such as the test egress guard's), so each guard still
   // sees itself installed and none is stacked twice.

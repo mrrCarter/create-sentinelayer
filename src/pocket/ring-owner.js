@@ -16,14 +16,12 @@ function normalizeString(value) {
 
 /**
  * Resolve the pocket-gateway base URL — DISTINCT from the senti apiUrl (do NOT reuse resolveApiUrl; that is the API host).
- * Precedence: env SENTI_POCKET_URL -> env POCKET_GATEWAY_URL -> a config value if the caller passed one. Absent -> "".
+ * Precedence: env SENTI_POCKET_URL -> a config value if the caller passed one. Absent -> "". The user's token is only
+ * sent to the SENTI_POCKET_URL origin (src/auth/credential-destinations.js).
  * A present value MUST be an http(s) URL (fail-closed on a bogus scheme). Trailing slashes trimmed.
  */
 export function resolvePocketGatewayUrl({ env = process.env, configUrl = "" } = {}) {
-  const raw =
-    normalizeString(env.SENTI_POCKET_URL) ||
-    normalizeString(env.POCKET_GATEWAY_URL) ||
-    normalizeString(configUrl);
+  const raw = normalizeString(env.SENTI_POCKET_URL) || normalizeString(configUrl);
   if (!raw) return "";
   if (!/^https?:\/\//i.test(raw)) throw new Error("pocket gateway URL must be an http(s) URL");
   return raw.replace(/\/+$/, "");

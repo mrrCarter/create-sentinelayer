@@ -67,9 +67,9 @@ test("ring-owner: fail-closed on missing question / session / gateway URL / auth
   await assert.rejects(ringOwner("q", { ...ok, resolveAuthSession: async () => ({}) }), /Not authenticated/);
 });
 
-test("resolvePocketGatewayUrl: env SENTI_POCKET_URL / POCKET_GATEWAY_URL / configUrl; scheme-validated; trailing slash trimmed", () => {
+test("resolvePocketGatewayUrl: env SENTI_POCKET_URL / configUrl; scheme-validated; trailing slash trimmed", () => {
   assert.equal(resolvePocketGatewayUrl({ env: { SENTI_POCKET_URL: "https://a/" } }), "https://a");
-  assert.equal(resolvePocketGatewayUrl({ env: { POCKET_GATEWAY_URL: "https://b" } }), "https://b");
+  assert.equal(resolvePocketGatewayUrl({ env: { POCKET_GATEWAY_URL: "https://b" } }), "", "only SENTI_POCKET_URL names the gateway");
   assert.equal(resolvePocketGatewayUrl({ env: {}, configUrl: "https://c" }), "https://c");
   assert.equal(resolvePocketGatewayUrl({ env: {} }), "", "absent -> empty (caller errors)");
   assert.throws(() => resolvePocketGatewayUrl({ env: { SENTI_POCKET_URL: "ftp://x" } }), /http\(s\)/);
