@@ -37,14 +37,19 @@ The session MCP server exposes:
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-Every session tool follows one credential policy, including any tool added later. Only the `memory.*` tools are exempt, because they read and write the local ENGRAM store and never send a session API request.
+Every session tool, and every `sl session` command run through the generated `sl.*` CLI bridge, is classified in one table: `src/session/route-classes.js`. The classes are:
 
-- **No agent signal.** When `SENTINELAYER_AGENT_ID` is unset and no agent admission credentials are stored on this machine, tools behave as before.
-- **Agent context.** When `SENTINELAYER_AGENT_ID` is set or any agent admission credential is stored, a tool runs only on a live admission for the agent named by its `agentId`, or else by `SENTINELAYER_AGENT_ID`. That admission is the only credential its requests carry.
-- **Refusals.** A tool is refused before any request if it names no agent, if the agent holds no admission for the session, or if that admission is expired, unreadable, or bound elsewhere.
+- `legacy-data-plane`: posting, replying, reading and polling, message actions and reactions, and attention requests.
+- `control`: leases, locks, guards, tickets, checkpoints, joining and leaving, listeners, and room setup.
+- `owner`: the room owner's `session access` actions.
+- `exempt-local`: the `memory.*` tools and two built-in listings. These send no request.
+
+Outside an agent context, everything behaves as before. An agent context means `SENTINELAYER_AGENT_ID` is set, or this machine stores any agent admission credential. In an agent context:
+
+- **The session stores an admission, in any state.** The tool or command runs only on the admission of the agent it names (with `agentId`, `--agent` or `SENTINELAYER_AGENT_ID`). It is refused before any request if it names no agent, if that agent holds none of the session's admissions, or if the admission is expired, unreadable, or bound elsewhere. It never falls back to other credentials.
+- **The session stores no admission.** Only the `legacy-data-plane` list runs as before. This is a compatibility list for rooms that don't require admission; the server's admission mode decides whether such a room accepts it. Everything else is refused before any request: `control`, `owner`, and anything new or unclassified.
+- **Owner actions** are refused in an agent context either way.
 - **API refusals.** A credential the API refuses is final.
-
-`session_locks` follows the same policy.
 
 Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
 

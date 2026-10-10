@@ -272,6 +272,39 @@ export async function hasStoredAdmissionCredentials({ homeDir } = {}) {
 }
 
 /**
+ * The agents for which this machine stores an admission credential file for this
+ * session, usable or not (`<home>/.sentinelayer/agents/<agent>/admissions/<session>.json`).
+ * An unreadable agents directory is reported as a stored entry, never as absence.
+ */
+export async function storedAdmissionAgentsForSession(sessionId, { homeDir } = {}) {
+  let sessionFile;
+  try {
+    sessionFile = `${safeSegment(sessionId, "sessionId")}.json`;
+  } catch {
+    return []; // not a storable session id, so nothing can be stored for it
+  }
+  const agentsDir = path.join(sentinelayerHome(homeDir), "agents");
+  let agents;
+  try {
+    agents = await fsp.readdir(agentsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return [];
+    return ["(unreadable)"];
+  }
+  const found = [];
+  for (const agent of agents) {
+    if (!agent.isDirectory()) continue;
+    try {
+      await fsp.access(path.join(agentsDir, agent.name, "admissions", sessionFile));
+      found.push(agent.name.replace(/%3a/g, ":"));
+    } catch (error) {
+      if (!(error && error.code === "ENOENT")) found.push(agent.name.replace(/%3a/g, ":"));
+    }
+  }
+  return found;
+}
+
+/**
  * What this machine holds for (session, agent):
  *   { state: "none" }                        -- never admitted here: the legacy path applies
  *   { state: "live", credential }            -- use it, and only it

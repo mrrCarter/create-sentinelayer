@@ -465,9 +465,9 @@ async function mcpHandlersFor(ws) {
 }
 
 test("every admission-routed MCP session tool is covered by these admission tests", async () => {
-  const { SESSION_MCP_LOCAL_ONLY_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+  const { sessionRouteClass } = await import("../src/session/route-classes.js");
   const handlers = await mcpHandlersFor(os.tmpdir());
-  const routed = Object.keys(handlers).filter((name) => !SESSION_MCP_LOCAL_ONLY_TOOLS.includes(name));
+  const routed = Object.keys(handlers).filter((name) => sessionRouteClass(`mcp:${name}`) !== "exempt-local");
   const covered = new Set(MCP_ACTOR_CALLS.map(([label]) => label.split(" ")[0]));
   assert.deepEqual(routed.sort(), [...covered].sort());
 });
