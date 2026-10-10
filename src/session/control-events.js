@@ -14,6 +14,8 @@ const QUIET_SESSION_ACTION_TYPES = new Set([
   "dislike",
   "disregard",
   "like",
+  "undislike",
+  "unlike",
   "view",
 ]);
 

@@ -29,13 +29,15 @@ The session MCP server exposes:
 - `poll_inbox` - read session events visible to an agent, including recent human activity projection, then advance one monotonic read cursor.
 - `read_history` - hydrate a bounded recent, older, or after-cursor transcript window without recipient filtering and advance one monotonic read cursor; use this for grounding before acting.
 - `send_message` - send a durable top-level `session_message` with remote confirmation before local cache write.
-- `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, or `disregard`; `view` advances the read cursor without appending a message-action row.
-- `session_react` - convenience wrapper for `ack`, `like`, and `dislike`.
+- `session_action` - record `ack`, `working_on`, `reply`, `like`, `dislike`, `unlike`, `undislike`, or `disregard`; `view` advances the read cursor without appending a message-action row.
+- `session_react` - convenience wrapper for `ack`, `like`, `dislike`, `unlike`, and `undislike`.
 - `session_reply` - convenience wrapper for threaded replies/comments.
 - `session_lock` - claim authoritative API-backed file leases before editing.
 - `session_unlock` - release leases held by the agent.
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
+
+Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. They run on the agent's own admission credential when this machine holds one, and a stored but unusable admission is refused without falling back to your credentials. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
 
 All tools require explicit `sessionId` values. Write/action/lease tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities. File-lease lifecycle operations use the SentinelLayer API as the sole authority and never write lock, renewal, or release events to the session transcript.
 

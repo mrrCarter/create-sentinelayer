@@ -9,6 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createReactionLedger } from "./fixtures/reaction-ledger.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
 const ACTION_TEST_TOKEN = ["api", "token", "unit", "session", "action"].join("_");
@@ -29,7 +31,13 @@ async function readJsonBody(req) {
   return raw.trim() ? JSON.parse(raw) : {};
 }
 
-async function startActionMockApi({ actions = [], hangActionResponseBody = false } = {}) {
+async function startActionMockApi({
+  actions = [],
+  hangActionResponseBody = false,
+  actionRefusal = null,
+  ledger = null,
+  loseResponse = null,
+} = {}) {
   const sessionEvents = [
     {
       stream: "sl_event",
@@ -59,6 +67,7 @@ async function startActionMockApi({ actions = [], hangActionResponseBody = false
     actionPayload: null,
     actionPayloads: [],
     actionAuthHeader: "",
+    actionRequests: [],
     readCursorPayload: null,
     readCursorPayloads: [],
     readCursorAuthHeader: "",
@@ -100,6 +109,26 @@ async function startActionMockApi({ actions = [], hangActionResponseBody = false
         state.actionAuthHeader = String(req.headers.authorization || "");
         state.actionPayload = await readJsonBody(req);
         state.actionPayloads.push(state.actionPayload);
+        state.actionRequests.push({
+          method: req.method,
+          url: req.url,
+          headers: { ...req.headers },
+          body: state.actionPayload,
+        });
+        const refusal = actionRefusal ? actionRefusal(state.actionPayload) : null;
+        if (refusal) {
+          return jsonResponse(res, refusal.status, refusal.body);
+        }
+        if (ledger) {
+          // The stateful #914 model decides; `loseResponse` commits the write and
+          // then drops the connection, so the client never learns the outcome.
+          const answer = ledger.apply("sess-actions", state.actionPayload);
+          if (loseResponse && loseResponse(state.actionPayload)) {
+            req.socket.destroy();
+            return;
+          }
+          return jsonResponse(res, answer.status, answer.body);
+        }
         if (hangActionResponseBody) {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.write('{"ok":true,');
@@ -219,6 +248,11 @@ test("Unit session actions command: lists action vocabulary and examples", async
     assert.equal(payload.command, "session actions");
     assert.equal(payload.actions.some((action) => action.type === "view"), false);
     assert.equal(payload.actions.some((action) => action.alias === "comment"), true);
+    for (const undo of ["unlike", "undislike"]) {
+      const entry = payload.actions.find((action) => action.type === undo);
+      assert.ok(entry, `${undo} must be listed`);
+      assert.equal(entry.command, `sl session react <id> ${undo} --target-sequence <n>`);
+    }
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
@@ -704,4 +738,339 @@ test("Unit session comment command: aliases threaded replies", async () => {
     await mock.close();
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+// --- reaction undo (sentinelayer-api#914: unlike / undislike) ---
+
+const REPLY_ACTION_ID = "6f6238a9-f035-4a8f-b05b-ac33507f772a";
+
+// What a server without #914 answers, byte for byte: API main's action-type validator
+// under its pinned fastapi 0.136.1 / pydantic 2.10.6 (reproduced with that stack).
+function unsupportedActionEntry(actionType) {
+  return {
+    ctx: { error: {} },
+    input: actionType,
+    loc: ["body", "actionType"],
+    msg: "Value error, unsupported message action type",
+    type: "value_error",
+  };
+}
+
+function preUndoServer422(actionType) {
+  return { detail: [unsupportedActionEntry(actionType)] };
+}
+
+// `body` is an object, or a function of the action type the CLI sent.
+function refuseUndoWith(status, body) {
+  return (payload) =>
+    ["unlike", "undislike"].includes(payload.actionType)
+      ? { status, body: typeof body === "function" ? body(payload.actionType) : body }
+      : null;
+}
+
+async function withActionMock(prefix, mockOptions, fn) {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const mock = await startActionMockApi(mockOptions);
+  const react = (reaction, extraArgs = []) =>
+    runCli(
+      ["session", "react", "sess-actions", reaction, "--agent", "codex", "--path", tmp, ...extraArgs],
+      { cwd: tmp, env: { SENTINELAYER_API_URL: mock.apiUrl } },
+    );
+  try {
+    await fn({ tmp, mock, react });
+  } finally {
+    await mock.close();
+    await rm(tmp, { recursive: true, force: true });
+  }
+}
+
+async function readLocalStream(tmp) {
+  const raw = await readFile(
+    path.join(tmp, ".sentinelayer", "sessions", "sess-actions", "stream.ndjson"),
+    "utf8",
+  ).catch(() => "");
+  return raw.trim() ? raw.trim().split(/\r?\n/).map((line) => JSON.parse(line)) : [];
+}
+
+test("Unit session react undo: unlike and undislike are accepted and sent verbatim", async () => {
+  await withActionMock("sl-react-undo-", {}, async ({ tmp, mock, react }) => {
+    const cases = [
+      ["unlike", ["--target-sequence", "42"]],
+      ["undislike", ["--target-action-id", REPLY_ACTION_ID]],
+    ];
+    for (const [reaction, targetArgs] of cases) {
+      const result = await react(reaction, [...targetArgs, "--json"]);
+      assert.equal(result.code, 0, result.stderr);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.command, "session react");
+      assert.equal(payload.actionType, reaction);
+      assert.equal(mock.state.actionPayload.actionType, reaction, "the action value goes on the wire verbatim");
+      assert.equal(payload.event.event, "session_reaction", "an undo is a reaction event, like like/dislike");
+      assert.equal(payload.event.payload.actionType, reaction);
+    }
+    assert.equal(mock.state.actionPayloads[1].targetActionId, REPLY_ACTION_ID);
+    const stream = await readLocalStream(tmp);
+    assert.deepEqual(
+      stream.map((event) => event.payload.actionType),
+      ["unlike", "undislike"],
+    );
+  });
+});
+
+test("Unit session react undo: unknown reactions are still rejected client-side", async () => {
+  await withActionMock("sl-react-unknown-", {}, async ({ mock, react }) => {
+    for (const reaction of ["bogus", "reply", "unpin", "undo"]) {
+      const result = await react(reaction, ["--target-sequence", "42"]);
+      assert.notEqual(result.code, 0, `${reaction} must be refused`);
+      assert.match(result.stderr, /must be one of/);
+    }
+    const reply = await react("reply", ["--target-sequence", "42"]);
+    assert.match(reply.stderr, /reaction must be one of: ack, like, dislike, unlike, undislike\./);
+    assert.equal(mock.state.actionRequests.length, 0, "a refused reaction must never reach the API");
+  });
+});
+
+test("Unit session react undo: a server without undo (422) gets a friendly refusal and exit 1", async () => {
+  await withActionMock(
+    "sl-react-undo-422-",
+    { actionRefusal: refuseUndoWith(422, preUndoServer422) },
+    async ({ tmp, mock, react }) => {
+      const text = await react("unlike", ["--target-sequence", "42"]);
+      assert.equal(text.code, 1, text.stderr);
+      assert.match(text.stderr, /This server doesn't support undo yet \(no 'unlike' action\)\. Nothing was changed\./);
+      assert.doesNotMatch(text.stderr, /^\s+at /m, "no stack trace");
+      assert.doesNotMatch(text.stderr, /Error:/);
+      assert.equal(text.stdout.trim(), "");
+
+      const json = await react("undislike", ["--target-sequence", "42", "--json"]);
+      assert.equal(json.code, 1, json.stderr);
+      const payload = JSON.parse(json.stdout);
+      assert.equal(payload.ok, false);
+      assert.equal(payload.outcome, "unsupported");
+      assert.equal(payload.status, 422);
+      assert.match(payload.operationKey, /^cli:undislike:seq:42:codex:[0-9a-f]{16}$/);
+      assert.equal(payload.actionType, "undislike");
+      assert.doesNotMatch(json.stderr, /^\s+at /m);
+
+      assert.equal(mock.state.actionRequests.length, 2);
+      assert.deepEqual(await readLocalStream(tmp), [], "a refused undo appends nothing locally");
+    },
+  );
+});
+
+test("Unit session react undo: only the exact pre-#914 422 means undo is unsupported", async () => {
+  // Every near miss is an ordinary refusal; none may be relabelled "unsupported".
+  const uuidEntry = {
+    ctx: { error: "invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1" },
+    input: "not-a-uuid",
+    loc: ["body", "targetActionId"],
+    msg: "Input should be a valid UUID, invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1",
+    type: "uuid_parsing",
+  };
+  const nearMisses = {
+    // what API main really returns for `unlike` with a malformed --target-action-id
+    compound: { detail: [unsupportedActionEntry("unlike"), uuidEntry] },
+    otherFieldOnly: { detail: [uuidEntry] },
+    substringMsg: {
+      detail: [{ ...unsupportedActionEntry("unlike"), msg: "Value error, unsupported message action type: unlike" }],
+    },
+    wrongInput: { detail: [unsupportedActionEntry("undislike")] },
+    wrongType: { detail: [{ ...unsupportedActionEntry("unlike"), type: "assertion_error" }] },
+    looseLoc: { detail: [{ ...unsupportedActionEntry("unlike"), loc: ["body", "actionType", 0] }] },
+    notAList: { detail: "unsupported message action type" },
+    errorEnvelope: { error: { code: "VALIDATION_ERROR", message: "unsupported message action type" } },
+  };
+  for (const [name, body] of Object.entries(nearMisses)) {
+    await withActionMock(
+      "sl-react-undo-422-near-",
+      { actionRefusal: refuseUndoWith(422, body) },
+      async ({ react }) => {
+        const result = await react("unlike", ["--target-sequence", "42"]);
+        assert.equal(result.code, 1, name);
+        assert.doesNotMatch(result.stderr, /doesn't support undo/, name);
+        // named by the server's error code when it sent one, else by the status
+        assert.match(
+          result.stderr,
+          /The server refused this unlike \((api_422|VALIDATION_ERROR)\)\. Nothing was recorded\./,
+          name,
+        );
+        assert.doesNotMatch(result.stderr, /^\s+at /m, name);
+      },
+    );
+  }
+});
+
+test("Unit session react undo: 409 REACTION_NOT_ACTIVE says there is nothing to undo", async () => {
+  const notActive = {
+    error: {
+      code: "REACTION_NOT_ACTIVE",
+      message: "no active like by this actor on the target to undo",
+      request_id: "req-unit",
+    },
+  };
+  await withActionMock(
+    "sl-react-undo-409-",
+    { actionRefusal: refuseUndoWith(409, notActive) },
+    async ({ react }) => {
+      const result = await react("unlike", ["--target-sequence", "42"]);
+      assert.equal(result.code, 1, result.stderr);
+      assert.match(result.stderr, /Nothing to undo: codex has no active like on #42\./);
+      assert.doesNotMatch(result.stderr, /^\s+at /m);
+    },
+  );
+});
+
+test("Unit session react undo: unlike authors exactly as like does (agent, auth, headers, path)", async () => {
+  await withActionMock("sl-react-undo-identity-", {}, async ({ mock, react }) => {
+    const like = await react("like", ["--target-sequence", "42", "--json"]);
+    const unlike = await react("unlike", ["--target-sequence", "42", "--json"]);
+    assert.equal(like.code, 0, like.stderr);
+    assert.equal(unlike.code, 0, unlike.stderr);
+
+    const [likeRequest, unlikeRequest] = mock.state.actionRequests;
+    assert.equal(unlikeRequest.method, likeRequest.method);
+    assert.equal(unlikeRequest.url, likeRequest.url);
+    const withoutLength = ({ "content-length": _length, ...headers }) => headers;
+    assert.deepEqual(withoutLength(unlikeRequest.headers), withoutLength(likeRequest.headers));
+    assert.equal(unlikeRequest.headers.authorization, `Bearer ${ACTION_TEST_TOKEN}`);
+
+    const { actionType: likeType, idempotencyKey: likeKey, ...likeBody } = likeRequest.body;
+    const { actionType: unlikeType, idempotencyKey: unlikeKey, ...unlikeBody } = unlikeRequest.body;
+    assert.deepEqual(unlikeBody, likeBody, "only the action value (and its fresh key) may differ");
+    assert.deepEqual(unlikeBody.metadata, { source: "cli", agentId: "codex" });
+    assert.deepEqual([likeType, unlikeType], ["like", "unlike"]);
+    assert.match(likeKey, /^cli:like:seq:42:codex:[0-9a-f]{16}$/);
+    assert.match(unlikeKey, /^cli:unlike:seq:42:codex:[0-9a-f]{16}$/);
+    assert.equal(JSON.parse(unlike.stdout).event.agent.id, JSON.parse(like.stdout).event.agent.id);
+  });
+});
+
+test("Unit session react undo: each reaction gets a fresh key; explicit and non-reaction keys are stable", async () => {
+  await withActionMock("sl-react-undo-keys-", {}, async ({ mock, react }) => {
+    // like -> unlike -> like must be three writes the API can tell apart: a reused
+    // key replays the first like instead of re-activating it.
+    for (const reaction of ["like", "unlike", "like"]) {
+      const result = await react(reaction, ["--target-sequence", "42"]);
+      assert.equal(result.code, 0, result.stderr);
+    }
+    const reactionKeys = mock.state.actionPayloads.map((payload) => payload.idempotencyKey);
+    assert.equal(new Set(reactionKeys).size, 3, `keys must differ: ${reactionKeys.join(", ")}`);
+
+    await react("like", ["--target-sequence", "42", "--idempotency-key", "retry-like-42"]);
+    await react("ack", ["--target-sequence", "42"]);
+    await react("ack", ["--target-sequence", "42"]);
+    const [explicitKey, ackKey1, ackKey2] = mock.state.actionPayloads
+      .slice(3)
+      .map((payload) => payload.idempotencyKey);
+    assert.equal(explicitKey, "retry-like-42");
+    assert.equal(ackKey1, "cli:ack:seq:42:codex:none");
+    assert.equal(ackKey2, ackKey1);
+  });
+});
+
+test("Unit session react undo: a 5xx is an unknown outcome with the key to retry, not a refusal", async () => {
+  await withActionMock(
+    "sl-react-undo-5xx-",
+    { actionRefusal: refuseUndoWith(503, { error: { code: "SESSION_STORAGE_BACKPRESSURE" } }) },
+    async ({ react }) => {
+      const result = await react("unlike", ["--target-sequence", "42", "--json"]);
+      assert.equal(result.code, 1, result.stderr);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.outcome, "unknown", "the write may have committed behind a 5xx");
+      assert.equal(payload.status, 503);
+      assert.match(payload.message, new RegExp(`resend it with idempotency key ${payload.operationKey}`));
+    },
+  );
+});
+
+// --- against a stateful model of the #914 reaction contract ------------------------
+
+const AT_42 = ["--target-sequence", "42", "--json"];
+
+test("Unit session react ledger: like/unlike/dislike/undislike change real state, one fresh intent each", async () => {
+  const ledger = createReactionLedger();
+  await withActionMock("sl-react-ledger-cycle-", { ledger }, async ({ react }) => {
+    const outcomes = [];
+    for (const reaction of ["like", "unlike", "like", "dislike", "undislike", "undislike"]) {
+      const result = await react(reaction, AT_42);
+      outcomes.push([reaction, JSON.parse(result.stdout).outcome, result.code]);
+    }
+    assert.deepEqual(outcomes, [
+      ["like", "applied", 0],
+      ["unlike", "applied", 0],
+      ["like", "applied", 0], // a re-like after an undo is a NEW intent: it must re-activate
+      ["dislike", "applied", 0],
+      ["undislike", "applied", 0],
+      ["undislike", "not_active", 1],
+    ]);
+    assert.equal(ledger.isActive("codex", { targetSequenceId: 42 }, "like"), true);
+    assert.equal(ledger.isActive("codex", { targetSequenceId: 42 }, "dislike"), false);
+  });
+});
+
+test("Unit session react ledger: a lost-response unlike retried with its key never retracts a newer like", async () => {
+  const ledger = createReactionLedger();
+  let lostOnce = false;
+  const loseResponse = (payload) => {
+    if (payload.actionType !== "unlike" || lostOnce) return false;
+    lostOnce = true;
+    return true;
+  };
+  await withActionMock("sl-react-ledger-lost-", { ledger, loseResponse }, async ({ react }) => {
+    assert.equal(JSON.parse((await react("like", AT_42)).stdout).outcome, "applied");
+
+    // The unlike lands on the server, but its response never arrives.
+    const lost = await react("unlike", AT_42);
+    assert.equal(lost.code, 1, lost.stderr);
+    const lostPayload = JSON.parse(lost.stdout);
+    assert.equal(lostPayload.outcome, "unknown", "a lost response is not a failure: it may have landed");
+    assert.match(lostPayload.operationKey, /^cli:unlike:seq:42:codex:[0-9a-f]{16}$/);
+    assert.match(lostPayload.message, /resend it with idempotency key cli:unlike:seq:42:codex:[0-9a-f]{16}/);
+    assert.equal(ledger.isActive("codex", { targetSequenceId: 42 }, "like"), false, "the unlike did land");
+
+    // Meanwhile the same agent likes again from another surface.
+    const elsewhere = ledger.apply("sess-actions", {
+      actionType: "like",
+      targetSequenceId: 42,
+      metadata: { source: "mcp", agentId: "codex" },
+      idempotencyKey: "mcp:like:seq:42:codex:elsewhere",
+    });
+    assert.equal(elsewhere.body.duplicate, false);
+
+    // Retrying the SAME intent replays the lost unlike; the newer like survives.
+    const retried = await react("unlike", [...AT_42, "--idempotency-key", lostPayload.operationKey]);
+    assert.equal(retried.code, 0, retried.stderr);
+    const retriedPayload = JSON.parse(retried.stdout);
+    assert.equal(retriedPayload.outcome, "replayed");
+    assert.equal(retriedPayload.retry, true);
+    assert.equal(retriedPayload.operationKey, lostPayload.operationKey);
+    assert.equal(ledger.isActive("codex", { targetSequenceId: 42 }, "like"), true, "the newer like survives");
+  });
+});
+
+test("Unit session react ledger: a repeat like is a no_op whose retained collapsedActionId is surfaced and mirrored", async () => {
+  const ledger = createReactionLedger();
+  await withActionMock("sl-react-ledger-collapsed-", { ledger }, async ({ tmp, react }) => {
+    const first = JSON.parse((await react("like", AT_42)).stdout);
+    const again = await react("like", AT_42);
+    assert.equal(again.code, 0, again.stderr);
+    const payload = JSON.parse(again.stdout);
+    const evidence = ledger.rows.find((row) => row.collapsedIntoActionId);
+    assert.ok(evidence, "the server retained the repeat as a collapsed row");
+    assert.equal(payload.outcome, "no_op");
+    assert.equal(payload.collapsedActionId, evidence.id);
+    assert.equal(payload.action.id, first.action.id, "the action is the still-active like");
+
+    const mirrored = (await readLocalStream(tmp)).find((event) => event.payload.actionId === evidence.id);
+    assert.ok(mirrored, "the evidence row is mirrored locally");
+    assert.equal(mirrored.payload.collapsedIntoActionId, first.action.id);
+    assert.equal(mirrored.payload.actionType, "like");
+
+    const text = await react("like", ["--target-sequence", "42"]);
+    assert.equal(text.code, 0, text.stderr);
+    assert.match(
+      text.stdout,
+      /No change: codex already has an active like on #42\. This request is retained as evidence [0-9a-f-]{36}\./,
+    );
+  });
 });

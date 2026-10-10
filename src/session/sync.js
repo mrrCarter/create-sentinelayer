@@ -19,6 +19,8 @@ const DEFAULT_API_BASE_URL = "https://api.sentinelayer.com";
 const DEFAULT_SYNC_TIMEOUT_MS = 5_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const CIRCUIT_RESET_MS = 60_000;
+// Message-action statuses whose body the caller needs to explain the refusal.
+const MESSAGE_ACTION_REFUSAL_STATUSES = Object.freeze([409, 422]);
 const SESSION_INGEST_LIMIT_PER_MINUTE = 500;
 const HUMAN_MESSAGE_LIMIT_PER_MINUTE = 10;
 const HUMAN_MESSAGE_MAX_LENGTH = 2_000;
@@ -2990,12 +2992,20 @@ export async function createSessionMessageAction(
       },
       normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS),
       fetchImpl,
+      { errorBodyStatuses: MESSAGE_ACTION_REFUSAL_STATUSES },
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      const status = response ? response.status : null;
+      const refused = MESSAGE_ACTION_REFUSAL_STATUSES.includes(status);
+      // A refusal (409 nothing-to-undo, 422 a server that predates the action) is an
+      // answer about this request, not API health: it must not open the persisted
+      // breaker that guards every other outbound write.
+      if (!refused) recordCircuitFailure(outboundCircuit, normalizedNowMs);
       return {
         ok: false,
-        reason: `api_${response ? response.status : "no_response"}`,
+        reason: `api_${status ?? "no_response"}`,
+        status,
+        error: refused && payload && typeof payload === "object" ? payload : null,
         action: null,
       };
     }
@@ -3004,6 +3014,9 @@ export async function createSessionMessageAction(
       ok: Boolean(payload?.ok ?? true),
       reason: "",
       duplicate: Boolean(payload?.duplicate),
+      // A repeat reaction is a no-op whose key the server retains as a collapsed row
+      // (sentinelayer-api#914): the id of that evidence row.
+      collapsedActionId: normalizeString(payload?.collapsedActionId) || null,
       action: payload?.action && typeof payload.action === "object" ? payload.action : null,
     };
   } catch (error) {

@@ -112,6 +112,11 @@ import {
   withAgentAdmission,
 } from "../session/admission-auth.js";
 import {
+  SESSION_REACTION_TYPES,
+  isSessionReactionType,
+  submitSessionReaction,
+} from "../session/reactions.js";
+import {
   claimTicket,
   listTickets,
   releaseTicketLease,
@@ -564,9 +569,15 @@ const SESSION_MESSAGE_ACTION_TYPES = new Set([
   "reply",
   "like",
   "dislike",
+  "unlike",
+  "undislike",
   "disregard",
   "view",
 ]);
+
+// like/dislike/unlike/undislike all go through src/session/reactions.js, the path the
+// local MCP server shares; `ack` keeps the plain message-action path.
+const SESSION_REACT_COMMAND_TYPES = Object.freeze(["ack", ...SESSION_REACTION_TYPES]);
 
 const SESSION_MESSAGE_ACTION_ALIASES = new Map([
   ["comment", "reply"],
@@ -600,6 +611,16 @@ const SESSION_MESSAGE_ACTION_DESCRIPTIONS = Object.freeze([
     description: "Negative lightweight feedback. Use --target-action-id <uuid> to react to a threaded reply.",
   },
   {
+    type: "unlike",
+    command: "sl session react <id> unlike --target-sequence <n>",
+    description: "Retract your own active like. Refused when you have none; needs a server with reaction undo.",
+  },
+  {
+    type: "undislike",
+    command: "sl session react <id> undislike --target-sequence <n>",
+    description: "Retract your own active dislike. Refused when you have none; needs a server with reaction undo.",
+  },
+  {
     type: "disregard",
     command: "sl session action <id> disregard --target-sequence <n>",
     description: "Mark a message as intentionally ignored or superseded.",
@@ -630,7 +651,7 @@ function shortSha256(value) {
 
 function actionEventType(actionType) {
   if (actionType === "reply") return "session_reply";
-  if (actionType === "like" || actionType === "dislike") return "session_reaction";
+  if (isSessionReactionType(actionType)) return "session_reaction";
   return "session_action";
 }
 
@@ -686,6 +707,7 @@ function buildSessionActionEvent(sessionId, action = {}) {
       }),
     );
   const actorId = actionActorId(action);
+  const collapsedIntoActionId = normalizeString(action.collapsedIntoActionId ?? action.collapsed_into_action_id);
   const event = createAgentEvent({
     event: actionEventType(actionType),
     agent: {
@@ -710,6 +732,8 @@ function buildSessionActionEvent(sessionId, action = {}) {
       metadata: action.metadata && typeof action.metadata === "object" ? action.metadata : undefined,
       message: actionDisplayMessage(action),
       source: "session_action",
+      // A retained no-op reaction key (sentinelayer-api#914): evidence, not a reaction.
+      ...(collapsedIntoActionId ? { collapsedIntoActionId } : {}),
     },
   });
   event.eventId = `session-action-${id}`;
@@ -4282,6 +4306,21 @@ export function registerSessionCommand(program) {
       );
     }
     const agentId = identity.agentId;
+    if (isSessionReactionType(normalizedActionType)) {
+      return runReactionCommand({
+        sessionId: normalizedSessionId,
+        reaction: normalizedActionType,
+        agentId,
+        targetPath,
+        targetSequenceId,
+        targetCursor,
+        targetActionId,
+        note,
+        options,
+        command,
+        commandName,
+      });
+    }
     const idempotencyKey =
       normalizeString(options.idempotencyKey) ||
       defaultActionIdempotencyKey({
@@ -4364,6 +4403,89 @@ export function registerSessionCommand(program) {
     return payload;
   }
 
+  // like/dislike/unlike/undislike: the shared reaction path (src/session/reactions.js)
+  // decides admission, the operation key and the outcome; this only mirrors and prints.
+  // `--idempotency-key` is a RETRY of the intent that minted that key.
+  async function runReactionCommand({
+    sessionId,
+    reaction,
+    agentId,
+    targetPath,
+    targetSequenceId,
+    targetCursor,
+    targetActionId,
+    note,
+    options,
+    command,
+    commandName,
+  }) {
+    const outcome = await submitSessionReaction({
+      surface: "cli",
+      sessionId,
+      agentId,
+      reaction,
+      targetSequenceId,
+      targetCursor,
+      targetActionId,
+      note,
+      idempotencyKey: options.idempotencyKey,
+      targetPath,
+    });
+    let event = null;
+    let localAppend = { appended: false, reason: "not_recorded" };
+    if (outcome.action) {
+      const appended = await appendActionEventIfMissing(
+        sessionId,
+        buildSessionActionEvent(sessionId, outcome.action),
+        { targetPath },
+      );
+      event = appended.event;
+      localAppend = { appended: Boolean(appended.appended), reason: appended.reason || "" };
+    }
+    let evidenceEvent = null;
+    if (outcome.collapsedActionId && outcome.action) {
+      // Mirror the server's retained no-op row: this request's key, collapsed into
+      // the active reaction it repeated.
+      const appended = await appendActionEventIfMissing(
+        sessionId,
+        buildSessionActionEvent(sessionId, {
+          id: outcome.collapsedActionId,
+          actionType: reaction,
+          targetSequenceId: outcome.action.targetSequenceId,
+          targetCursor: outcome.action.targetCursor,
+          targetActionId: outcome.action.targetActionId,
+          actorKind: outcome.action.actorKind,
+          actorId: outcome.action.actorId,
+          actorRole: outcome.action.actorRole,
+          idempotencyKey: outcome.operationKey,
+          collapsedIntoActionId: outcome.action.id,
+        }),
+        { targetPath },
+      );
+      evidenceEvent = appended.event;
+    }
+    const payload = {
+      command: commandName,
+      targetPath,
+      ...outcome,
+      event,
+      evidenceEvent,
+      localAppend,
+    };
+    if (!outcome.ok) process.exitCode = 1;
+    if (shouldEmitJson(options, command)) {
+      console.log(JSON.stringify(payload, null, 2));
+      return payload;
+    }
+    if (!outcome.ok) {
+      console.error(pc.yellow(outcome.message));
+      return payload;
+    }
+    if (event) console.log(formatEventLine(event));
+    if (outcome.outcome !== "applied" || !event) console.log(pc.gray(outcome.message));
+    return payload;
+  }
+
   session
     .command("actions")
     .description("List supported low-noise message actions with examples")
@@ -4390,7 +4512,7 @@ export function registerSessionCommand(program) {
   session
     .command("action <sessionId> <actionType>")
     .description(
-      "Create a message action for a target session event (ack, working_on, reply/comment, like, dislike, disregard, view)",
+      "Create a message action for a target session event (ack, working_on, reply/comment, like, dislike, unlike, undislike, disregard, view)",
     )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
@@ -4406,18 +4528,23 @@ export function registerSessionCommand(program) {
 
   session
     .command("react <sessionId> <reaction>")
-    .description("React to or acknowledge a target session event with ack, like, or dislike")
+    .description(
+      "React to or acknowledge a target session event with ack, like, or dislike; retract your own like/dislike with unlike/undislike",
+    )
     .option("--target-sequence <n>", "Target event sequence id")
     .option("--target-cursor <cursor>", "Target event cursor")
     .option("--target-action-id <uuid>", "Target a threaded reply/action by action UUID")
     .option("--agent <id>", "Agent id authoring the action (defaults to the joined session agent)")
-    .option("--idempotency-key <key>", "Explicit idempotency key")
+    .option(
+      "--idempotency-key <key>",
+      "Retry an earlier reaction as the SAME intent by resending its operationKey (without it, each call is a new intent)",
+    )
     .option("--path <path>", "Workspace path for the session", ".")
     .option("--json", "Emit machine-readable output")
     .action(async (sessionId, reaction, options, command) => {
       const normalizedReaction = normalizeSessionMessageActionType(reaction);
-      if (!["ack", "like", "dislike"].includes(normalizedReaction)) {
-        throw new Error("reaction must be one of: ack, like, dislike.");
+      if (!SESSION_REACT_COMMAND_TYPES.includes(normalizedReaction)) {
+        throw new Error(`reaction must be one of: ${SESSION_REACT_COMMAND_TYPES.join(", ")}.`);
       }
       await runMessageActionCommand({
         sessionId,
