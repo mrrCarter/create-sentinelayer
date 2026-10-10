@@ -37,7 +37,14 @@ The session MCP server exposes:
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. They run on the agent's own admission credential when this machine holds one, and a stored but unusable admission is refused without falling back to your credentials. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
+Every tool that acts as an agent runs on that agent's admission, the same way `sl session` actor commands do. These are `poll_inbox`, `read_history` (when an agent id is given or `SENTINELAYER_AGENT_ID` is set), `send_message`, `attention_request`, `session_action`, `session_react`, `session_reply`, `session_lock`, and `session_unlock`:
+
+- When this machine stores a live admission for the agent, it is the only credential the tool's requests carry.
+- An expired, unreadable, or mis-bound stored admission is refused before any request.
+- A credential the API refuses is final.
+- With no stored admission, the tool behaves as before.
+
+Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
 
 All tools require explicit `sessionId` values. Write/action/lease tools also require a non-human `agentId`; the server rejects `human-*`, `cli-user`, and `unknown` agent identities. File-lease lifecycle operations use the SentinelLayer API as the sole authority and never write lock, renewal, or release events to the session transcript.
 

@@ -1047,6 +1047,11 @@ export async function syncSessionEventToApi(
     if (response && response.status === 403) {
       const body = forbiddenBody;
       if (isIdentityForgeryBody(body)) {
+        if (session.source === "session_admission") {
+          // An admitted agent acts only on its admission: account-level agent grants
+          // are neither created nor used for it.
+          return { synced: false, reason: "api_403" };
+        }
         const agentId = normalizeString(event?.agent?.id);
         if (!agentId || isReservedAgentIdForGrant(agentId)) {
           // Reserved or empty — server enforcement is intentional, no grant
