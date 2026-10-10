@@ -204,10 +204,12 @@ shows it, and an owner changes it with `session access mode <session-id>
 required` (or `legacy`).
 
 The owner actions (`approve`, `deny`, `revoke`, `mode`) run on the owner's own
-session. They are unavailable in an agent context, meaning `SENTINELAYER_AGENT_ID`
-is set or agent admission credentials are stored on the machine; owners use the
-web dashboard from such machines. `session access` commands are not exposed
-through the MCP CLI bridge.
+session. The ones that widen access (`approve` and `mode legacy`) are unavailable
+in an agent context, meaning `SENTINELAYER_AGENT_ID` is set or agent admission
+credentials are stored on the machine; owners use the web dashboard for those
+from such machines. Owner actions that only reduce access (`deny`, `revoke`, and
+`mode required`) remain available everywhere. `session access` commands are not
+callable through the MCP CLI bridge.
 
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:
 

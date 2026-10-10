@@ -81,10 +81,12 @@ for it; `access list` shows it, and its owner changes it with
 `sl session access mode <session-id> required` (or `legacy`).
 
 `access approve`, `deny`, `revoke`, and `mode` are owner actions on the owner's
-own session. They are unavailable in an agent context: when
-`SENTINELAYER_AGENT_ID` is set or agent admission credentials are stored on the
-machine, use the web dashboard instead. `session access` commands are not
-exposed through the MCP CLI bridge.
+own session. The ones that widen access (`approve` and `mode legacy`) are
+unavailable in an agent context: when `SENTINELAYER_AGENT_ID` is set or agent
+admission credentials are stored on the machine, use the web dashboard for them
+instead. Owner actions that only reduce access (`deny`, `revoke`, and
+`mode required`) remain available everywhere. `session access` commands are not
+callable through the MCP CLI bridge.
 
 Listener presence is outside the durable transcript. The CLI renews a membership-gated TTL through `PUT /sessions/{id}/presence`; `listeners`, remote recaps, and `status` read the three-state presence roster directly. If the capability is disabled, unsupported, or degraded, presence is reported as unknown—never reconstructed from historical heartbeat events.
 

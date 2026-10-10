@@ -419,11 +419,16 @@ test("access validation fails before auth or network I/O", async () => {
   assert.equal(authCalls, 0);
 });
 
-const OWNER_ACTIONS = [
+// Owner actions that widen access are refused in an agent context; the ones that only
+// reduce access stay available, so an owner can always shut access down from any machine.
+const WIDENING_ACTIONS = [
   ["approve", ["session", "access", "approve", SID, AID, "--ttl", "24h", "--json"]],
-  ["deny", ["session", "access", "deny", SID, AID, "--json"]],
-  ["revoke", ["session", "access", "revoke", SID, AID, "--json"]],
-  ["mode", ["session", "access", "mode", SID, "legacy", "--json"]],
+  ["mode legacy", ["session", "access", "mode", SID, "legacy", "--json"]],
+];
+const REDUCING_ACTIONS = [
+  ["deny", ["session", "access", "deny", SID, AID, "--json"], `/admissions/${AID}/decision`],
+  ["revoke", ["session", "access", "revoke", SID, AID, "--json"], `/admissions/${AID}/revoke`],
+  ["mode required", ["session", "access", "mode", SID, "required", "--json"], "/admission-mode"],
 ];
 
 async function withEnv(name, value, fn) {
@@ -437,56 +442,52 @@ async function withEnv(name, value, fn) {
   }
 }
 
-test("access owner actions are unavailable while SENTINELAYER_AGENT_ID is set", async () => {
-  await withEnv("SENTINELAYER_AGENT_ID", "review-agent", async () => {
-    for (const [name, args] of OWNER_ACTIONS) {
-      const state = fakeApi();
-      const result = await sl(args);
-      assert.match(
-        String(result.error?.message),
-        /owner actions and are unavailable in an agent context \(SENTINELAYER_AGENT_ID is set\)/,
-        name,
-      );
-      assert.deepEqual(state.requests, [], `${name}: no request at all`);
-    }
-  });
-  // the same commands work again for the owner once the agent context is gone
+async function assertAgentContextSplit(reason) {
+  for (const [name, args] of WIDENING_ACTIONS) {
+    const state = fakeApi();
+    const result = await sl(args);
+    assert.ok(
+      String(result.error?.message).includes(`widen access and are unavailable in an agent context (${reason})`),
+      `${name}: ${result.error?.message}`,
+    );
+    assert.deepEqual(state.requests, [], `${name}: no request at all`);
+  }
+  for (const [name, args, suffix] of REDUCING_ACTIONS) {
+    const state = fakeApi();
+    const result = await sl(args);
+    assert.equal(result.error, null, `${name}: ${result.error?.message}`);
+    assert.ok(mutationCall(state, suffix), `${name}: still sent`);
+  }
+}
+
+test("in an agent context (SENTINELAYER_AGENT_ID set), access-widening owner actions are refused; reducing ones remain", async () => {
+  await withEnv("SENTINELAYER_AGENT_ID", "review-agent", () => assertAgentContextSplit("SENTINELAYER_AGENT_ID is set"));
+  // approve works again for the owner once the agent context is gone
   const state = fakeApi();
-  const approved = await sl(OWNER_ACTIONS[0][1]);
+  const approved = await sl(WIDENING_ACTIONS[0][1]);
   assert.equal(approved.error, null, String(approved.error?.stack || approved.error));
   assert.ok(mutationCall(state, `/admissions/${AID}/decision`));
 });
 
-test("access owner actions are unavailable while this machine stores agent admission credentials", async () => {
+test("in an agent context (stored admission credentials), access-widening owner actions are refused; reducing ones remain", async () => {
   const { admissionCredentialPath } = await import("../src/session/admission.js");
   const stored = admissionCredentialPath(SID, "review-agent", { homeDir });
   await fsp.mkdir(path.dirname(stored), { recursive: true });
   // usable or not: an expired credential is still an agent context
   await fsp.writeFile(stored, JSON.stringify({ token: "sladm_x", expiresAt: 1, sessionId: SID, agentId: "review-agent" }));
   try {
-    for (const [name, args] of OWNER_ACTIONS) {
-      const state = fakeApi();
-      const result = await sl(args);
-      assert.match(
-        String(result.error?.message),
-        /unavailable in an agent context \(agent admission credentials are stored on this machine\)/,
-        name,
-      );
-      assert.deepEqual(state.requests, [], `${name}: no request at all`);
-    }
-    // the library entry points refuse as well, before any auth lookup
+    await assertAgentContextSplit("agent admission credentials are stored on this machine");
+    // the library entry points agree, and refuse before any auth lookup
     let authCalls = 0;
     const resolveAuthSession = async () => {
       authCalls += 1;
       return { token: "unused", apiUrl: API };
     };
-    for (const call of [
-      () => decideSessionAdmission(SID, AID, { decision: "approve", resolveAuthSession }),
-      () => revokeSessionAdmission(SID, AID, { resolveAuthSession }),
-      () => setSessionAdmissionMode(SID, "legacy", { resolveAuthSession }),
-    ]) {
-      await assert.rejects(call(), /unavailable in an agent context/);
-    }
+    await assert.rejects(
+      decideSessionAdmission(SID, AID, { decision: "approve", resolveAuthSession }),
+      /unavailable in an agent context/,
+    );
+    await assert.rejects(setSessionAdmissionMode(SID, "legacy", { resolveAuthSession }), /unavailable in an agent context/);
     assert.equal(authCalls, 0);
   } finally {
     await fsp.rm(path.join(homeDir, ".sentinelayer", "agents"), { recursive: true, force: true });
@@ -503,7 +504,9 @@ test("README and docs/sessions.md describe access behavior that holds on every A
     assert.doesNotMatch(text, /New rooms default to (fail-closed )?`required`/, file);
     // owner actions and the bridge
     assert.match(text, /unavailable in an agent context/, `${file}: owner actions in an agent context`);
-    assert.match(text, /not exposed through the MCP CLI bridge/, `${file}: bridge exposure`);
+    assert.match(text, /only reduce access \(`deny`, `revoke`, and `mode required`\) remain available/, file);
+    assert.match(text, /not callable through the MCP CLI bridge/, `${file}: bridge`);
+    assert.doesNotMatch(text, /not exposed through the MCP CLI bridge/, file);
   }
   const sessions = (await fsp.readFile(path.join(root, "docs/sessions.md"), "utf8")).replace(/\s+/g, " ");
   assert.match(sessions, /revoked, or stopped grants never join/);

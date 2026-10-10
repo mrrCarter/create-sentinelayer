@@ -19,10 +19,12 @@ import {
 } from "./invitations.js";
 
 /**
- * Approve, deny, revoke and mode changes are the room owner's decisions, made with the
- * owner's own session. They are unavailable while this process is an agent context:
- * SENTINELAYER_AGENT_ID is set, an agent admission scope is in force, or this machine
- * stores agent admission credentials. Checked before any credential lookup or request.
+ * The owner actions that WIDEN access (approving an admission, switching a room to
+ * legacy mode) are made with the owner's own session and are unavailable while this
+ * process is an agent context: SENTINELAYER_AGENT_ID is set, an agent admission scope
+ * is in force, or this machine stores agent admission credentials. Checked before any
+ * credential lookup or request. Owner actions that only reduce access (deny, revoke,
+ * mode required) remain available everywhere, so an owner can always shut access down.
  */
 export async function assertOwnerAccessContext({ env = process.env, homeDir } = {}) {
   let why = "";
@@ -35,8 +37,9 @@ export async function assertOwnerAccessContext({ env = process.env, homeDir } = 
   }
   if (why) {
     throw new Error(
-      `Access approve, deny, revoke and mode are owner actions and are unavailable in an agent context (${why}). ` +
-        `Use the room's web dashboard, or run the command from an environment without agent credentials.`,
+      `Approving an admission and switching a room to legacy mode widen access and are unavailable in an agent context (${why}). ` +
+        `Use the room's web dashboard, or run the command from an environment without agent credentials. ` +
+        `Deny, revoke and mode required remain available.`,
     );
   }
 }
@@ -196,7 +199,7 @@ export async function decideSessionAdmission(
   if (ttlSeconds !== undefined) body.ttlSeconds = ttlSeconds;
   const normalizedNote = normalizeString(note);
   if (normalizedNote) body.note = normalizedNote;
-  await assertOwnerAccessContext();
+  if (normalizedDecision === "approve") await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
     `/${encodeURIComponent(aid)}/decision`,
@@ -228,7 +231,6 @@ export async function revokeSessionAdmission(
   const sid = required(sessionId, "session id");
   const aid = required(admissionId, "admission id");
   const normalizedReason = normalizeString(reason);
-  await assertOwnerAccessContext();
   return mutateAdmission(
     sid,
     `/${encodeURIComponent(aid)}/revoke`,
@@ -261,7 +263,7 @@ export async function setSessionAdmissionMode(
   if (!["legacy", "required"].includes(normalizedMode)) {
     throw new Error("mode must be legacy or required.");
   }
-  await assertOwnerAccessContext();
+  if (normalizedMode === "legacy") await assertOwnerAccessContext();
   const key = boundedIdempotencyKey(idempotencyKey, "session.admission_mode");
   const auth = await authContext(targetPath, resolveAuthSession);
   const result = await requestMutation(
