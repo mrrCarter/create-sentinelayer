@@ -269,10 +269,12 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
   // the subcommand (say, post-agent, observe, locks, checkpoints, ...), so no
   // subcommand, present or future, can reach the human token. A tombstoned
   // admission refuses here, before any request.
-  const { assertDispatchMatchesScope, resolveAgentAdmissionTarget, withAgentAdmission } = await import(
-    "./session/admission-auth.js"
-  );
+  const { assertBridgedSessionRoute, assertDispatchMatchesScope, resolveAgentAdmissionTarget, withAgentAdmission } =
+    await import("./session/admission-auth.js");
   const target = await resolveAgentAdmissionTarget(normalizedArgs);
+  // Through the MCP CLI bridge in an agent context: bind to the session's admission, run a
+  // legacy data-plane route as before, or refuse (src/session/route-classes.js).
+  await assertBridgedSessionRoute(normalizedArgs, target);
   // Execution must match authorization: before ANY action runs, re-derive the identity
   // from Commander's resolved options and compare it with the scope in force.
   program.hook("preAction", (_hooked, actionCommand) => assertDispatchMatchesScope(actionCommand));

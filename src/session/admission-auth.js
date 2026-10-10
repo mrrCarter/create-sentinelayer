@@ -25,7 +25,12 @@ import path from "node:path";
 import process from "node:process";
 
 import { admittedAgentScope } from "../auth/admission-scope.js";
-import { readAdmissionCredentialState } from "./admission.js";
+import {
+  hasStoredAdmissionCredentials,
+  readAdmissionCredentialState,
+  storedAdmissionAgentsForSession,
+} from "./admission.js";
+import { sessionCommandRoute, sessionRouteClass } from "./route-classes.js";
 
 export class AdmissionCredentialRefused extends Error {
   constructor(message, { reason, sessionId, agentId } = {}) {
@@ -236,6 +241,55 @@ export async function resolveAgentAdmissionTarget(args = [], { env = process.env
     return { sessionId, agentId };
   }
   return null;
+}
+
+/**
+ * Commands run through the MCP CLI bridge (which marks its child processes with
+ * SENTINELAYER_MCP_BRIDGE=1) in an agent context (SENTINELAYER_AGENT_ID is set, or this
+ * machine stores any agent admission), by the command's class in SESSION_ROUTE_CLASSES:
+ *   - exempt-local: runs as before
+ *   - owner: refused
+ *   - a session the command names stores an admission (in any state): runCli must bind the
+ *     command to it (`target` names that session), or it is refused here before any request
+ *   - no session it names stores one: legacy-data-plane runs as before; control and
+ *     unclassified commands are refused
+ */
+export async function assertBridgedSessionRoute(args = [], target = null, { env = process.env, homeDir } = {}) {
+  if (env.SENTINELAYER_MCP_BRIDGE !== "1") return;
+  if (String(args[0] || "").trim().toLowerCase() !== "session") return;
+  const agentContext =
+    Boolean(String(env.SENTINELAYER_AGENT_ID || "").trim()) || (await hasStoredAdmissionCredentials({ homeDir }));
+  if (!agentContext) return;
+  const { route, depth } = sessionCommandRoute(args);
+  const routeClass = sessionRouteClass(route);
+  const refuse = (why) => {
+    throw new AdmissionCredentialRefused(
+      `\`sl ${route.slice("cli:".length)}\` runs for an agent here and needs an admission it can bind to: ` +
+        `${why}. It will not fall back to other credentials.`,
+      { reason: "bridged_route_refused" },
+    );
+  };
+  if (routeClass === "exempt-local") return;
+  if (routeClass === "owner") refuse("owner actions are not available to agents");
+  const tokens = args.map((a) => String(a ?? "").trim());
+  const terminator = tokens.indexOf("--");
+  const positional = (terminator < 0 ? tokens : tokens.slice(0, terminator))
+    .slice(1 + depth)
+    .filter((a) => a && !a.startsWith("-"));
+  const candidates = [optionValue(args, "--session"), optionValue(args, "--id"), ...positional].filter(Boolean);
+  const admitted = [];
+  for (const sessionId of candidates) {
+    if ((await storedAdmissionAgentsForSession(sessionId, { homeDir })).length > 0) admitted.push(sessionId);
+  }
+  if (admitted.length > 0) {
+    const boundSession = String(target?.sessionId || "").toLowerCase();
+    if (!boundSession || !admitted.some((sid) => String(sid).toLowerCase() === boundSession)) {
+      refuse(`session ${admitted[0]} stores an admission and this command's agent is not bound to it`);
+    }
+    return;
+  }
+  if (routeClass === "legacy-data-plane") return;
+  refuse(routeClass === "control" ? "it is a control operation" : "it is not classified for agents");
 }
 
 /**
