@@ -37,7 +37,7 @@ The session MCP server exposes:
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-Every tool that acts as an agent runs on that agent's admission, the same way `sl session` actor commands do. These are `poll_inbox`, `read_history` (when an agent id is given or `SENTINELAYER_AGENT_ID` is set), `send_message`, `attention_request`, `session_action`, `session_react`, `session_reply`, `session_lock`, and `session_unlock`:
+Every session tool runs on the named agent's admission by default, the same way `sl session` actor commands do. Today that covers `poll_inbox`, `read_history` (when an agent id is given or `SENTINELAYER_AGENT_ID` is set), `send_message`, `attention_request`, `session_action`, `session_react`, `session_reply`, `session_lock`, and `session_unlock`, and any tool added later. Only `session_locks` and the `memory.*` tools are exempt, because they never send a session API request as an agent:
 
 - When this machine stores a live admission for the agent, it is the only credential the tool's requests carry.
 - An expired, unreadable, or mis-bound stored admission is refused before any request.

@@ -463,10 +463,38 @@ async function mcpHandlersFor(ws) {
   return createSessionMcpToolHandlers({ targetPath: ws });
 }
 
-test("every actor-bearing MCP tool is covered by these admission tests", async () => {
-  const { SESSION_MCP_ACTOR_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+test("a newly added MCP tool runs inside the agent's admission unless it is listed as non-agent", async () => {
+  const { routeAgentToolsThroughAdmission, SESSION_MCP_NON_AGENT_TOOLS } = await import(
+    "../src/mcp/session-stdio-server.js"
+  );
+  await tombstoneFor("new-tool-agent", "{not json");
+  const ran = [];
+  const exempt = SESSION_MCP_NON_AGENT_TOOLS[0];
+  const handlers = routeAgentToolsThroughAdmission({
+    brand_new_tool: async () => ran.push("brand_new_tool"),
+    [exempt]: async () => ran.push(exempt),
+  });
+  await assert.rejects(
+    handlers.brand_new_tool({ sessionId: SID, agentId: "new-tool-agent" }),
+    /will not fall back/,
+  );
+  assert.deepEqual(ran, [], "the new tool never ran outside the admission");
+  await handlers[exempt]({ sessionId: SID, agentId: "new-tool-agent" });
+  assert.deepEqual(ran, [exempt], "an exempt tool runs as before");
+});
+
+async function tombstoneFor(agent, content) {
+  const file = admissionCredentialPath(SID, agent, { homeDir });
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await fsp.writeFile(file, content);
+}
+
+test("every agent-acting MCP tool is covered by these admission tests", async () => {
+  const { SESSION_MCP_NON_AGENT_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+  const handlers = await mcpHandlersFor(os.tmpdir());
+  const agentTools = Object.keys(handlers).filter((name) => !SESSION_MCP_NON_AGENT_TOOLS.includes(name));
   const covered = new Set(MCP_ACTOR_CALLS.map(([label]) => label.split(" ")[0]));
-  assert.deepEqual([...SESSION_MCP_ACTOR_TOOLS].sort(), [...covered].sort());
+  assert.deepEqual(agentTools.sort(), [...covered].sort());
 });
 
 test("MCP actor tools with a LIVE admission send only the admission credential", async () => {

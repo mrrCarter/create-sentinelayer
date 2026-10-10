@@ -886,22 +886,18 @@ async function persistSessionEvent({
   };
 }
 
-// Local MCP tools that act AS an agent: post, raise attention, react, reply, act on a
-// message, lease files, or advance that agent's read cursor. Each runs inside the
-// agent's admission scope, the same canonical path native `sl session` actor commands
-// use. A live stored admission is the only credential its requests carry; an expired,
-// malformed or mis-bound one is refused before any request; a credential the API
-// refuses (401/403) is final. With no stored admission a tool behaves as before.
-export const SESSION_MCP_ACTOR_TOOLS = Object.freeze([
-  "poll_inbox",
-  "read_history",
-  "send_message",
-  "attention_request",
-  "session_action",
-  "session_react",
-  "session_reply",
-  "session_lock",
-  "session_unlock",
+// Every local MCP tool runs inside the named agent's admission scope by DEFAULT, the same
+// canonical path native `sl session` actor commands use, so a tool added later is covered
+// without anyone remembering to list it. A live stored admission is the only credential
+// its requests carry; an expired, malformed or mis-bound one is refused before any
+// request; a credential the API refuses (401/403) is final. With no stored admission a
+// tool behaves as before. Only these tools are exempt, each because it never sends a
+// session API request as an agent:
+export const SESSION_MCP_NON_AGENT_TOOLS = Object.freeze([
+  "session_locks", // lists the room's leases; names no agent
+  "memory.write", // local ENGRAM store, no session API request
+  "memory.recall",
+  "memory.summarize",
 ]);
 
 function actorAgentId(toolName, input = {}) {
@@ -914,8 +910,9 @@ function actorAgentId(toolName, input = {}) {
   return canonicalAgentId(raw);
 }
 
-function routeActorToolsThroughAdmission(handlers) {
-  for (const name of SESSION_MCP_ACTOR_TOOLS) {
+export function routeAgentToolsThroughAdmission(handlers) {
+  for (const name of Object.keys(handlers)) {
+    if (SESSION_MCP_NON_AGENT_TOOLS.includes(name)) continue;
     const run = handlers[name];
     handlers[name] = async (input = {}) => {
       const agentId = actorAgentId(name, input);
@@ -1336,7 +1333,7 @@ export function createSessionMcpToolHandlers({
       });
     },
   };
-  return routeActorToolsThroughAdmission(handlers);
+  return routeAgentToolsThroughAdmission(handlers);
 }
 
 export const SESSION_MCP_TOOLS = Object.freeze([
