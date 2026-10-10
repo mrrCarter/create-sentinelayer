@@ -126,11 +126,22 @@ async function startSmokeMockApi({ toolsListError = null, toolNames = HOSTED_TOO
   };
 }
 
+// The user's token is only sent to the configured API, so the mock is configured as that API.
+function configureApi(apiUrl) {
+  const previous = process.env.SENTINELAYER_API_URL;
+  process.env.SENTINELAYER_API_URL = apiUrl;
+  return () => {
+    if (previous === undefined) delete process.env.SENTINELAYER_API_URL;
+    else process.env.SENTINELAYER_API_URL = previous;
+  };
+}
+
 async function withStoredSession(callback, mockOptions = {}) {
   const previousDisableKeyring = process.env.SENTINELAYER_DISABLE_KEYRING;
   process.env.SENTINELAYER_DISABLE_KEYRING = "1";
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-smoke-unit-"));
   const mock = await startSmokeMockApi(mockOptions);
+  const restoreApi = configureApi(mock.apiUrl);
   try {
     await writeStoredSession(
       {
@@ -143,6 +154,7 @@ async function withStoredSession(callback, mockOptions = {}) {
     );
     return await callback({ tempRoot, mock });
   } finally {
+    restoreApi();
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
     if (previousDisableKeyring === undefined) {
@@ -233,6 +245,7 @@ test("Unit MCP smoke: redacts token-like JSON-RPC errors", async () => {
     code: -32001,
     message: `upstream failed Bearer ${mock.state.mcpAccessToken} token=${mock.state.mcpAccessToken} raw=${mock.state.mcpAccessToken}`,
   };
+  const restoreApi = configureApi(mock.apiUrl);
 
   try {
     await writeStoredSession(
@@ -260,6 +273,7 @@ test("Unit MCP smoke: redacts token-like JSON-RPC errors", async () => {
     assert.equal(result.probes[0].detail.includes(mock.state.mcpAccessToken), false);
     assert.equal(JSON.stringify(result).includes(mock.state.mcpAccessToken), false);
   } finally {
+    restoreApi();
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });
     if (previousDisableKeyring === undefined) {

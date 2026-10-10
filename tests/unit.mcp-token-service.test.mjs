@@ -90,6 +90,9 @@ test("Unit MCP token service: requests hosted token with active CLI auth session
   await withKeyringDisabled(async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-mcp-token-unit-"));
     const mock = await startMcpTokenMockApi();
+    // The user's token is only sent to the configured API, so the mock is configured as that API.
+    const previousApiUrl = process.env.SENTINELAYER_API_URL;
+    process.env.SENTINELAYER_API_URL = mock.apiUrl;
 
     try {
       await writeStoredSession(
@@ -131,6 +134,8 @@ test("Unit MCP token service: requests hosted token with active CLI auth session
         ttl_seconds: 120,
       });
     } finally {
+      if (previousApiUrl === undefined) delete process.env.SENTINELAYER_API_URL;
+      else process.env.SENTINELAYER_API_URL = previousApiUrl;
       await mock.close();
       await rm(tempRoot, { recursive: true, force: true });
     }

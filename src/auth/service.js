@@ -6,6 +6,7 @@ import open from "open";
 
 import { loadConfig } from "../config/service.js";
 import { scopedAdmissionAuth } from "./admission-scope.js";
+import { DEFAULT_API_URL, noteUserCredential } from "./credential-destinations.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "./http.js";
 import {
   clearStoredSession,
@@ -15,7 +16,6 @@ import {
 } from "./session-store.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
-const DEFAULT_API_URL = "https://api.sentinelayer.com";
 /** Default maximum wall-clock wait for browser-based CLI auth approval (ms). */
 export const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 /** Default lifetime for issued API tokens used by CLI sessions (days). */
@@ -677,6 +677,7 @@ export async function resolveActiveAuthSession({
 
   const envToken = String(env.SENTINELAYER_TOKEN || "").trim();
   if (envToken) {
+    noteUserCredential(envToken);
     return {
       apiUrl,
       token: envToken,
@@ -695,6 +696,7 @@ export async function resolveActiveAuthSession({
   const config = await loadConfig({ cwd, env, homeDir });
   const configuredToken = String(config.resolved.sentinelayerToken || "").trim();
   if (configuredToken) {
+    noteUserCredential(configuredToken);
     return {
       apiUrl,
       token: configuredToken,
@@ -741,6 +743,7 @@ export async function resolveActiveAuthSession({
     }
   }
 
+  noteUserCredential(active.token);
   return {
     apiUrl,
     token: active.token,

@@ -4,9 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
+import { CredentialDestinationRefused, installCredentialDestinationGuard } from "./credential-destinations.js";
 
 // No-op outside tests; see src/net/test-egress-guard.js.
 installTestEgressGuard();
+// Every request carrying the user's token goes only to a trusted origin; see credential-destinations.js.
+installCredentialDestinationGuard();
 
 /**
  * Default timeout applied to Sentinelayer API requests when no override is provided.
@@ -578,7 +581,8 @@ export async function requestJson(
       await sleep(delayMs);
       continue;
     } catch (error) {
-      if (error instanceof SentinelayerApiError) {
+      // A refused destination is final: nothing was sent, so no retry and no breaker count.
+      if (error instanceof SentinelayerApiError || error instanceof CredentialDestinationRefused) {
         throw error;
       }
 

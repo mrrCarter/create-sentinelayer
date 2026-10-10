@@ -70,6 +70,15 @@ const SENSITIVE_COMMAND_PREFIXES = [
 ];
 const REDACTION_MARKER = "[REDACTED]";
 
+// The bridge exposes no option or argument that names where a request goes (a URL, host,
+// origin, endpoint or gateway): a tool caller never chooses a destination for this machine's
+// credentials. Matched on the input's name, its value placeholder and description, and a
+// URL-shaped default. A withheld option keeps its default; a command that would need one
+// (a destination argument, or a required destination option) is not exposed at all. The
+// transport refuses such a destination independently (src/auth/credential-destinations.js).
+const DESTINATION_WORD_RE = /\b(?:urls?|uris?|hosts?|hostnames?|origins?|endpoints?|gateways?|webhooks?|prox(?:y|ies))\b/i;
+const URL_SHAPED_RE = /^\s*(?:[a-z][a-z0-9+.-]*:\/\/|\/\/)/i;
+
 function normalizeString(value) {
   return String(value == null ? "" : value).trim();
 }
@@ -268,6 +277,57 @@ function dashLeadingValueKey(tool = {}, input = {}) {
   return "";
 }
 
+function words(text) {
+  return String(text ?? "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[^A-Za-z0-9]+/g, " ");
+}
+
+/** Whether a value-taking input names a destination: see DESTINATION_WORD_RE above. */
+export function isDestinationInput({ name = "", flags = "", description = "", defaultValue, takesValue = true } = {}) {
+  if (!takesValue) return false;
+  return (
+    DESTINATION_WORD_RE.test(words(`${name} ${flags} ${description}`)) ||
+    URL_SHAPED_RE.test(String(defaultValue ?? ""))
+  );
+}
+
+// The inputs of a registry tool that name a destination, and whether the command needs one.
+function destinationInputs(schema = {}, positionalSource = [], optionSource = []) {
+  const properties = schema.properties || {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const withheld = new Set();
+  let needsDestination = false;
+  for (const argument of positionalSource) {
+    const property = properties[argument.name] || {};
+    if (isDestinationInput({ name: argument.name, description: property.description, defaultValue: property.default })) {
+      needsDestination = true;
+    }
+  }
+  for (const option of optionSource) {
+    const spec = normalizeOptionSpec(option);
+    const property = properties[spec.name] || {};
+    const destination = isDestinationInput({
+      name: spec.name,
+      flags: option.flags || spec.flag,
+      description: property.description,
+      defaultValue: property.default,
+      takesValue: spec.expectsValue,
+    });
+    if (!destination) continue;
+    withheld.add(spec.name);
+    if (required.has(spec.name)) needsDestination = true;
+  }
+  return { withheld, needsDestination };
+}
+
+function withoutInputs(schema = {}, names = new Set()) {
+  if (names.size === 0) return schema;
+  const properties = Object.fromEntries(Object.entries(schema.properties || {}).filter(([key]) => !names.has(key)));
+  const required = (Array.isArray(schema.required) ? schema.required : []).filter((key) => !names.has(key));
+  return { ...schema, properties, ...(Array.isArray(schema.required) ? { required } : {}) };
+}
+
 function normalizeRegistryTool(tool = {}) {
   const metadata = tool.metadata || {};
   const cliPath = Array.isArray(metadata.cliPath)
@@ -282,9 +342,14 @@ function normalizeRegistryTool(tool = {}) {
       ? metadata.arguments
       : [];
   const optionSource = Array.isArray(metadata.options) ? metadata.options : [];
-  const options = optionSource.map(normalizeOptionSpec).filter((option) => option.flag);
+  const rawSchema = normalizeInputSchema(tool);
+  const { withheld, needsDestination } = destinationInputs(rawSchema, positionalSource, optionSource);
+  const options = optionSource
+    .map(normalizeOptionSpec)
+    .filter((option) => option.flag && !withheld.has(option.name));
   const name = normalizeToolName(tool.name || commandPathKey);
-  const blockedReason = blockedReasonForCommandPath(commandPathKey);
+  const blockedReason =
+    blockedReasonForCommandPath(commandPathKey) || (needsDestination ? "blocked_destination_input" : "");
   const security = {
     ...(tool.security || {}),
     ...(blockedReason ? { runtime_blocked: true, runtime_block_reason: blockedReason } : {}),
@@ -294,7 +359,7 @@ function normalizeRegistryTool(tool = {}) {
     name,
     title: tool.title || `sl ${cliPath.join(" ")}`.trim(),
     description: tool.description || `Run SentinelLayer CLI command sl ${cliPath.join(" ")}.`,
-    inputSchema: normalizeInputSchema(tool),
+    inputSchema: withoutInputs(rawSchema, withheld),
     security,
     annotations: {
       ...(tool.annotations || {}),
@@ -307,6 +372,7 @@ function normalizeRegistryTool(tool = {}) {
       cliPath,
       positional: positionalSource.map(normalizePositionalSpec),
       options,
+      withheldOptions: [...withheld].sort(),
       supportsJson: options.some((option) => option.json),
       blocked: Boolean(metadata.blocked) || Boolean(blockedReason),
       blockedReason: metadata.blockedReason || blockedReason,
