@@ -68,23 +68,33 @@ function normalizeLayerScope(scope, { allowResolved = true } = {}) {
 }
 
 // Values a workspace .sentinelayer.yml may not set for the user: where the user's token goes, the
-// token itself, and provider keys. They come from the environment or the global config only.
+// token itself, provider keys, and where alerts are sent. They come from the environment (where a
+// variable is named) or the global config only.
 const USER_ONLY_KEYS = Object.freeze({
   apiUrl: "SENTINELAYER_API_URL",
   sentinelayerToken: "SENTINELAYER_TOKEN",
   openaiApiKey: "OPENAI_API_KEY",
   anthropicApiKey: "ANTHROPIC_API_KEY",
   googleApiKey: "GOOGLE_API_KEY",
+  "alerts.channels": "",
 });
 const noticedProjectFiles = new Set();
 
+function workspaceSets(projectConfig, key) {
+  const [head, field] = key.split(".");
+  const value = projectConfig?.[head];
+  return field ? value?.[field] !== undefined : value !== undefined;
+}
+
 // One notice per workspace config that sets any of them, so an ignored value is never silent.
 function noticeIgnoredWorkspaceValues(projectPath, projectConfig) {
-  const keys = Object.keys(USER_ONLY_KEYS).filter((key) => projectConfig?.[key] !== undefined);
+  const keys = Object.keys(USER_ONLY_KEYS).filter((key) => workspaceSets(projectConfig, key));
   if (keys.length === 0 || noticedProjectFiles.has(projectPath)) return;
   noticedProjectFiles.add(projectPath);
+  const envs = keys.map((key) => USER_ONLY_KEYS[key]).filter(Boolean);
+  const instead = envs.length > 0 ? `set ${envs.join(", ")} or the global config` : "set them in the global config";
   process.stderr.write(
-    `NOTICE: workspace .sentinelayer.yml ${keys.join(", ")} ignored; set ${keys.map((key) => USER_ONLY_KEYS[key]).join(", ")} or the global config (~/.sentinelayer/config.yml).\n`,
+    `NOTICE: workspace .sentinelayer.yml ${keys.join(", ")} ignored; ${instead} (~/.sentinelayer/config.yml).\n`,
   );
 }
 

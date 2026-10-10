@@ -1,8 +1,7 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
-import { parse as parseYaml } from "yaml";
-
+import { loadConfig } from "../config/service.js";
 import { listAssignments, resolveAssignmentLedgerStorage } from "./assignment-ledger.js";
 import { listBudgetStates } from "./budget-governor.js";
 import { listErrorQueue, resolveErrorDaemonStorage } from "./error-worker.js";
@@ -95,12 +94,48 @@ function normalizeBoolean(value, fallbackValue = false) {
   return fallbackValue;
 }
 
-function resolveEnvTemplate(value, env) {
-  const normalized = normalizeString(value);
-  if (!normalized) {
-    return "";
+// An alert channel may name its own settings by environment variable, and nothing else: a template
+// never reaches the user's token or a provider key, and a channel whose template cannot be filled
+// is refused rather than sent with a blank.
+const ALERT_TEMPLATE_NAMES = new Set(["SLACK_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"]);
+const ALERT_TEMPLATE_PREFIX = /^SENTINELAYER_ALERT_[A-Z0-9_]+$/;
+const SLACK_WEBHOOK_HOST = "hooks.slack.com";
+const TELEGRAM_API_HOST = "api.telegram.org";
+const TELEGRAM_BOT_TOKEN_RE = /^\d+:[A-Za-z0-9_-]+$/;
+const TELEGRAM_CHAT_ID_RE = /^(?:-?\d+|@[A-Za-z0-9_]+)$/;
+
+class AlertChannelRefused extends Error {}
+
+function isAlertTemplateName(name) {
+  return ALERT_TEMPLATE_NAMES.has(name) || ALERT_TEMPLATE_PREFIX.test(name);
+}
+
+function resolveAlertTemplate(value, env) {
+  return normalizeString(value).replace(/\$\{([^}]*)\}/g, (_, name) => {
+    if (!isAlertTemplateName(name)) {
+      throw new AlertChannelRefused(
+        `\${${name}} is not an alert setting; alert channels may use SLACK_WEBHOOK_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID or SENTINELAYER_ALERT_* only.`
+      );
+    }
+    const resolved = normalizeString(env?.[name]);
+    if (!resolved) {
+      throw new AlertChannelRefused(`\${${name}} is not set.`);
+    }
+    return resolved;
+  });
+}
+
+function slackWebhookUrl(value) {
+  let url = null;
+  try {
+    url = new URL(value);
+  } catch {
+    // refused below
   }
-  return normalized.replace(/\$\{([A-Z0-9_]+)\}/g, (_, key) => normalizeString(env[key]));
+  if (!url || url.protocol !== "https:" || url.hostname !== SLACK_WEBHOOK_HOST || url.port || url.username || url.password) {
+    throw new AlertChannelRefused(`Slack alerts are sent only to https://${SLACK_WEBHOOK_HOST}/.`);
+  }
+  return url.href;
 }
 
 function computeSecondsSince(previousIso, nowIso) {
@@ -282,72 +317,71 @@ function buildRunId(nowIso, count) {
   return `watchdog-${token}-${String(count).padStart(4, "0")}`;
 }
 
+// A refused channel stays in the list with its reason, so it is reported and never sent.
 function normalizeChannel(channel = {}, env = process.env) {
   const type = normalizeString(channel.type).toLowerCase();
-  if (type === "slack") {
-    const webhookUrl = resolveEnvTemplate(
-      channel.webhook_url || channel.webhookUrl || channel.url || "",
-      env
-    );
-    return webhookUrl
-      ? {
-          type: "slack",
-          webhookUrl,
-        }
-      : null;
-  }
-  if (type === "telegram") {
-    const botToken = resolveEnvTemplate(channel.bot_token || channel.botToken || "", env);
-    const chatId = resolveEnvTemplate(channel.chat_id || channel.chatId || "", env);
-    return botToken && chatId
-      ? {
-          type: "telegram",
-          botToken,
-          chatId,
-        }
-      : null;
+  try {
+    if (type === "slack") {
+      const webhookUrl = resolveAlertTemplate(
+        channel.webhook_url || channel.webhookUrl || channel.url || "",
+        env
+      );
+      return webhookUrl ? { type: "slack", webhookUrl: slackWebhookUrl(webhookUrl) } : null;
+    }
+    if (type === "telegram") {
+      const botToken = resolveAlertTemplate(channel.bot_token || channel.botToken || "", env);
+      const chatId = resolveAlertTemplate(channel.chat_id || channel.chatId || "", env);
+      if (!botToken || !chatId) {
+        return null;
+      }
+      if (!TELEGRAM_BOT_TOKEN_RE.test(botToken) || !TELEGRAM_CHAT_ID_RE.test(chatId)) {
+        throw new AlertChannelRefused("The Telegram bot token or chat id is not in Telegram's format.");
+      }
+      return { type: "telegram", botToken, chatId };
+    }
+  } catch (error) {
+    if (error instanceof AlertChannelRefused) {
+      return { type, error: error.message };
+    }
+    throw error;
   }
   return null;
 }
 
-async function loadWatchdogConfig({ targetPath = ".", env = process.env } = {}) {
-  const configPath = path.join(path.resolve(String(targetPath || ".")), ".sentinelayer.yml");
-  const fallback = {
-    channels: [],
-    frequency: "smart",
-    events: ["agent_stuck", "budget_warning", "alert_recovered"],
-  };
-  try {
-    const parsed = parseYaml(await fsp.readFile(configPath, "utf-8")) || {};
-    const alerts = parsed && typeof parsed === "object" ? normalizeObject(parsed.alerts) : {};
-    const channels = Array.isArray(alerts.channels)
-      ? alerts.channels.map((channel) => normalizeChannel(channel, env)).filter(Boolean)
-      : [];
-    const events = Array.isArray(alerts.events)
-      ? alerts.events
-          .map((eventType) => normalizeString(eventType))
-          .filter((eventType) => WATCHDOG_EVENT_SET.has(eventType))
-      : fallback.events;
-    const frequency = normalizeString(alerts.frequency).toLowerCase() || fallback.frequency;
-    return {
-      configPath,
-      exists: true,
-      channels,
-      frequency,
-      events: events.length > 0 ? events : fallback.events,
-    };
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "ENOENT") {
-      return {
-        configPath,
-        exists: false,
-        channels: [],
-        frequency: fallback.frequency,
-        events: fallback.events,
-      };
-    }
-    throw error;
+// What a channel is, without its secrets (webhook URLs and bot tokens are credentials).
+function describeChannel(channel) {
+  if (channel.error) {
+    return { type: channel.type, error: channel.error };
   }
+  return {
+    type: channel.type,
+    destination: channel.type === "slack" ? SLACK_WEBHOOK_HOST : TELEGRAM_API_HOST,
+  };
+}
+
+// Where alerts are sent comes from the user's own config (~/.sentinelayer/config.yml) only; a
+// workspace .sentinelayer.yml may choose which events alert, not where they go.
+async function loadWatchdogConfig({ targetPath = ".", env = process.env, homeDir } = {}) {
+  const config = await loadConfig({ cwd: path.resolve(String(targetPath || ".")), env, homeDir });
+  const configPath = config.paths.global;
+  const fallbackEvents = ["agent_stuck", "budget_warning", "alert_recovered"];
+  const userAlerts = normalizeObject(config.layers.global?.alerts);
+  const alerts = normalizeObject(config.resolved.alerts);
+  const channels = Array.isArray(userAlerts.channels)
+    ? userAlerts.channels.map((channel) => normalizeChannel(channel, env)).filter(Boolean)
+    : [];
+  const events = Array.isArray(alerts.events)
+    ? alerts.events
+        .map((eventType) => normalizeString(eventType))
+        .filter((eventType) => WATCHDOG_EVENT_SET.has(eventType))
+    : fallbackEvents;
+  return {
+    configPath,
+    exists: await fsp.access(configPath).then(() => true, () => false),
+    channels,
+    frequency: normalizeString(alerts.frequency).toLowerCase() || "smart",
+    events: events.length > 0 ? events : fallbackEvents,
+  };
 }
 
 function buildDetection({
@@ -581,6 +615,7 @@ function formatAlertMessage(alert = {}) {
 async function sendSlackAlert(channel, message, fetchImpl) {
   const response = await fetchImpl(channel.webhookUrl, {
     method: "POST",
+    redirect: "error",
     headers: {
       "content-type": "application/json",
     },
@@ -594,9 +629,10 @@ async function sendSlackAlert(channel, message, fetchImpl) {
 }
 
 async function sendTelegramAlert(channel, message, fetchImpl) {
-  const endpoint = `https://api.telegram.org/bot${channel.botToken}/sendMessage`;
+  const endpoint = `https://${TELEGRAM_API_HOST}/bot${channel.botToken}/sendMessage`;
   const response = await fetchImpl(endpoint, {
     method: "POST",
+    redirect: "error",
     headers: {
       "content-type": "application/json",
     },
@@ -618,6 +654,17 @@ async function dispatchAlertToChannel({
   fetchImpl = globalThis.fetch,
 }) {
   const message = formatAlertMessage(alert);
+  if (channel.error) {
+    return {
+      channelType: channel.type,
+      alertId: alert.alertId,
+      eventType: alert.eventType,
+      sent: false,
+      dryRun: false,
+      message,
+      error: channel.error,
+    };
+  }
   if (!execute) {
     return {
       channelType: channel.type,
@@ -750,6 +797,7 @@ export async function runWatchdogTick({
   const config = await loadWatchdogConfig({
     targetPath,
     env,
+    homeDir,
   });
 
   const [assignments, queue, budgets, previousState] = await Promise.all([
@@ -916,6 +964,7 @@ export async function getWatchdogStatus({
   const config = await loadWatchdogConfig({
     targetPath,
     env,
+    homeDir,
   });
   const state = await readJsonFile(storage.watchdogStatePath, () =>
     createInitialState(normalizedNow)
@@ -959,7 +1008,7 @@ export async function getWatchdogStatus({
     ...storage,
     configPath: config.configPath,
     configExists: config.exists,
-    config,
+    config: { ...config, channels: config.channels.map(describeChannel) },
     statePath: storage.watchdogStatePath,
     eventsPath: storage.watchdogEventsPath,
     state,

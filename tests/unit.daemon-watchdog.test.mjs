@@ -174,8 +174,11 @@ test("Unit daemon watchdog: repeated file reads and budget warning emit dry-run 
       targetPath: tempRoot,
     });
 
+    // alert channels are the user's own setting (global config)
+    const homeDir = path.join(tempRoot, "home");
+    await mkdir(path.join(homeDir, ".sentinelayer"), { recursive: true });
     await writeFile(
-      path.join(tempRoot, ".sentinelayer.yml"),
+      path.join(homeDir, ".sentinelayer", "config.yml"),
       [
         "alerts:",
         "  channels:",
@@ -268,11 +271,12 @@ test("Unit daemon watchdog: repeated file reads and budget warning emit dry-run 
       budgetWarningThreshold: 0.9,
       turnStallTurns: 5,
       execute: false,
+      homeDir,
       env: {
         ...process.env,
-        SLACK_WEBHOOK_URL: "https://hooks.slack.test/watchdog",
-        TELEGRAM_BOT_TOKEN: "token-123",
-        TELEGRAM_CHAT_ID: "chat-456",
+        SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/T000/B000/watchdog",
+        TELEGRAM_BOT_TOKEN: "123:token",
+        TELEGRAM_CHAT_ID: "-456",
       },
     });
 

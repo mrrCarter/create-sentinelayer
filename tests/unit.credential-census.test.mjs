@@ -4,7 +4,8 @@ import "./setup-env.mjs";
 // (tests/unit.credential-token-sources.test.mjs shows code elsewhere cannot read it). This census
 // is defence in depth around that: every site in src/ that builds an Authorization-style header,
 // puts a token in a URL, reads a stored token, calls one of the module's narrow accessors, or
-// writes a trust-source variable into process.env is listed here with the reason it is allowed.
+// writes a trust-source variable into process.env, or fills a template from the environment, is
+// listed here with the reason it is allowed.
 // A new one fails this test until it is moved behind credentialedRequest or reviewed here.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -32,6 +33,8 @@ const PATTERNS = [
   ["env-replace", /\bprocess\.env\s*=(?!=)|Object\.assign\(\s*process\.env\b/],
   // provider keys come from userConfigValues (environment, global config), never the merged config
   ["workspace-provider-key", /resolveConfiguredApiKey\([^)]*\.resolved\b|\.resolved\.(?:openai|anthropic|google)ApiKey\b/],
+  // an expander that fills $NAME / ${NAME} from the environment must restrict the names it fills
+  ["env-template", /\.replace(?:All)?\(\s*\/\\\$|new RegExp\(\s*["'`]\\\\\$/],
 ];
 
 // Reviewed sites: [file, rule, a fragment of the line, why it is allowed].
@@ -67,6 +70,9 @@ const REVIEWED = [
   // writes it to a GitHub Actions secret through gh (or SENTINELAYER_SECRET_SINK_FILE in tests).
   // It is blocked from the MCP bridge.
   ["src/commands/scan.js", "export-accessor", "exportCredentialToken(session.credential", "the operator setup-secrets export to gh"],
+  // the one environment template: alert channel settings in the user's own config, filled only from
+  // SLACK_WEBHOOK_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID or SENTINELAYER_ALERT_*; anything else is refused
+  ["src/daemon/watchdog.js", "env-template", "replace(/\\$\\{([^}]*)\\}/g, (_, name) =>", "alert channel templates fill only alert settings"],
 ];
 
 function sourceFiles(dir = path.join(ROOT, "src")) {
@@ -109,7 +115,7 @@ test("every site in src/ that could handle a token outside credentialedRequest i
   assert.deepEqual(stale, [], "a reviewed site that no longer exists");
 });
 
-test("the census fails on new sites: headers, URLs, token reads, accessors and trust-source writes", () => {
+test("the census fails on new sites: headers, URLs, token reads, accessors, trust-source writes and env templates", () => {
   const planted = [
     ...srcFiles(),
     {
@@ -126,6 +132,8 @@ test("the census fails on new sites: headers, URLs, token reads, accessors and t
         "process.env.HOME = dir;",
         "Object.assign(process.env, overrides);",
         "const key = resolveConfiguredApiKey(provider, config.resolved);",
+        "const url = value.replace(/\\$\\{([A-Z0-9_]+)\\}/g, (_, key) => env[key]);",
+        'const pattern = new RegExp("\\\\$\\\\{(\\\\w+)\\\\}", "g");',
       ].join("\n"),
     },
   ];
@@ -147,6 +155,8 @@ test("the census fails on new sites: headers, URLs, token reads, accessors and t
       "9 trust-env-write",
       "10 env-replace",
       "11 workspace-provider-key",
+      "12 env-template",
+      "13 env-template",
     ],
   );
 });

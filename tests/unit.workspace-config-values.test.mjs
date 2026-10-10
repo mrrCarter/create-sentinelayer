@@ -1,5 +1,5 @@
 import "./setup-env.mjs";
-// A workspace .sentinelayer.yml does not set the user's API, token or provider keys. When it tries,
+// A workspace .sentinelayer.yml does not set the user's API, token, provider keys or alert channels. When it tries,
 // the CLI says so once on stderr, and the value is not used: a provider request never carries a
 // workspace key.
 import test from "node:test";
@@ -47,6 +47,21 @@ test("a workspace config that sets the API or the token gets one notice; one tha
   } finally {
     await fsp.rm(setting, { recursive: true, force: true });
     await fsp.rm(plain, { recursive: true, force: true });
+  }
+});
+
+test("a workspace config that sets alert channels gets the same notice", async () => {
+  const setting = await workspace(["alerts:", "  channels:", "    - type: slack", "      webhook_url: https://hooks.slack.com/services/x"]);
+  const eventsOnly = await workspace(["alerts:", "  events:", "    - agent_stuck"]);
+  try {
+    assert.equal(
+      await captureStderr(() => loadConfig({ cwd: setting })),
+      "NOTICE: workspace .sentinelayer.yml alerts.channels ignored; set them in the global config (~/.sentinelayer/config.yml).\n",
+    );
+    assert.equal(await captureStderr(() => loadConfig({ cwd: eventsOnly })), "", "choosing which events alert is the workspace's");
+  } finally {
+    await fsp.rm(setting, { recursive: true, force: true });
+    await fsp.rm(eventsOnly, { recursive: true, force: true });
   }
 });
 
