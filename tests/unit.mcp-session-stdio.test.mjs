@@ -730,7 +730,7 @@ test("Unit MCP session stdio: JSON-RPC initialize, list, and call return MCP too
   assert.equal(called.result.content[0].type, "text");
 });
 
-test("Unit MCP session stdio: tools/list preserves bridge security metadata", async () => {
+test("Unit MCP session stdio: tools/list does not advertise a tool that requires approval", async () => {
   const listed = await handleMcpJsonRpcMessage(
     { jsonrpc: "2.0", id: 1, method: "tools/list" },
     {
@@ -752,12 +752,8 @@ test("Unit MCP session stdio: tools/list preserves bridge security metadata", as
       ],
     },
   );
-  const tool = listed.result.tools.find((entry) => entry.name === "sl.auth.logout");
-
-  assert.equal(tool.security.requires_human_approval, true);
-  assert.equal(tool.security.runtime_block_reason, "blocked_sensitive_cli_command");
-  assert.deepEqual(tool.metadata.cliPath, ["auth", "logout"]);
-  assert.equal(tool.annotations.destructiveHint, true);
+  // a tool the dispatcher always refuses is not advertised
+  assert.equal(listed.result.tools.some((entry) => entry.name === "sl.auth.logout"), false);
 });
 
 test("Unit MCP session stdio: framing parser accepts content-length and writer supports newline", () => {

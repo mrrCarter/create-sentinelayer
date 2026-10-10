@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildCliCommandMcpTools, createCliCommandMcpToolHandlers } from "../src/mcp/cli-command-tools.js";
-import { handleMcpJsonRpcMessage } from "../src/mcp/session-stdio-server.js";
+import { MCP_HUMAN_APPROVAL_REQUIRED, handleMcpJsonRpcMessage } from "../src/mcp/session-stdio-server.js";
 import { writeStoredSession } from "../src/auth/session-store.js";
 
 const CLI = fileURLToPath(new URL("../bin/sl.js", import.meta.url));
@@ -115,45 +115,43 @@ async function rpc(fx, messages) {
   return { responses, stdout, stderr };
 }
 
-const resultOf = (response) => {
-  const text = response?.result?.content?.[0]?.text || "{}";
-  return { isError: response?.result?.isError === true, body: JSON.parse(text) };
-};
+// A refused call is a JSON-RPC error, never a result: code -32001, data.reason human_approval_required.
+const refusedForApproval = (response) =>
+  response?.result === undefined &&
+  response?.error?.code === MCP_HUMAN_APPROVAL_REQUIRED.code &&
+  response?.error?.data?.reason === "human_approval_required";
 
-test("census: every tool flagged requires_human_approval is refused through a real tools/call", async () => {
+test("census: every CLI tool in the registry is refused through a real tools/call, and none is advertised", async () => {
   const fx = await fixture();
   try {
-    const listed = await rpc(fx, [
-      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
-      { jsonrpc: "2.0", id: 2, method: "tools/list" },
-    ]);
-    const tools = listed.responses.get(2).result.tools;
-    const flagged = tools.filter((tool) => tool.security?.requires_human_approval === true || tool.name.startsWith("sl."));
-    assert.ok(flagged.length >= 150, `the CLI bridge tools are listed (${flagged.length})`);
-    for (const tool of flagged) {
-      assert.equal(tool.security?.runtime_blocked, true, `${tool.name} is listed as blocked`);
-    }
-
-    const calls = flagged.map((tool, index) => ({
+    const registry = (await buildCliCommandMcpTools()).filter((tool) => tool.security?.requires_human_approval !== false);
+    assert.ok(registry.length >= 150, `the registry holds the CLI tools (${registry.length})`);
+    const calls = registry.map((tool, index) => ({
       jsonrpc: "2.0",
       id: 100 + index,
       method: "tools/call",
       params: { name: tool.name, arguments: {} },
     }));
-    const called = await rpc(fx, calls);
-    const notRefused = [];
-    flagged.forEach((tool, index) => {
-      const { isError, body } = resultOf(called.responses.get(100 + index));
-      const refused = isError && body.ok === false && /^(approval_required|blocked_)/.test(String(body.reason));
-      if (!refused) notRefused.push(`${tool.name}: ${JSON.stringify(body).slice(0, 120)}`);
-    });
-    assert.deepEqual(notRefused, [], "every flagged tool is refused");
+    const run = await rpc(fx, [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+      { jsonrpc: "2.0", id: 2, method: "tools/list" },
+      ...calls,
+    ]);
+    const listed = run.responses.get(2).result.tools.map((tool) => tool.name);
+    assert.deepEqual(listed.filter((name) => name.startsWith("sl.")), [], "no always-refused tool is advertised");
+    for (const name of ["poll_inbox", "send_message", "session_lock", "memory.recall"]) {
+      assert.ok(listed.includes(name), `session tool ${name} is still listed`);
+    }
+    const notRefused = registry
+      .filter((tool, index) => !refusedForApproval(run.responses.get(100 + index)))
+      .map((tool) => tool.name);
+    assert.deepEqual(notRefused, [], "every CLI tool is refused with the approval error");
   } finally {
     await fx.close();
   }
 });
 
-test("session wake codex is refused even as a dry run, and a file outside the workspace is never read or returned", async () => {
+test("a refused call says why, exactly, and session wake codex is refused even as a dry run without reading any file", async () => {
   const fx = await fixture();
   try {
     const base = { sessionId: "6b0f8c1e-3c2a-4d5e-8f90-a1b2c3d4e5f6", codexSession: "codex-1", dryRun: true, json: true };
@@ -164,12 +162,18 @@ test("session wake codex is refused even as a dry run, and a file outside the wo
       { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "sl.session.wake.codex", arguments: { ...base, messageFile: "../canary-outside.txt" } } },
       { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "sl.init", arguments: { projectName: "x", nonInteractive: true, interviewFile: fx.outside } } },
     ]);
-    for (const id of [2, 3, 4, 5]) {
-      const { isError, body } = resultOf(run.responses.get(id));
-      assert.equal(isError, true, `call ${id}`);
-      assert.match(String(body.reason), /^(approval_required|blocked_sensitive_cli_command)$/, `call ${id}`);
-    }
-    assert.equal(resultOf(run.responses.get(2)).body.reason, "blocked_sensitive_cli_command");
+    assert.deepEqual(run.responses.get(2), {
+      jsonrpc: "2.0",
+      id: 2,
+      error: {
+        code: -32001,
+        message:
+          "Human approval is required for sl.session.wake.codex. It is not available over the MCP bridge in this version; run `sl session wake codex` in a terminal instead.",
+        data: { reason: "human_approval_required", tool: "sl.session.wake.codex" },
+      },
+    });
+    for (const id of [3, 4, 5]) assert.ok(refusedForApproval(run.responses.get(id)), `call ${id}`);
+    assert.match(run.responses.get(5).error.message, /run `sl init` in a terminal instead\.$/);
     assert.equal(run.stdout.includes(CANARY), false, "the canary's content never appears");
     assert.deepEqual(fx.opened(), [], "no canary file was opened");
   } finally {
@@ -196,11 +200,12 @@ test("the dispatcher enforces the flag itself: a flagged tool's handler never ru
   ];
   const call = (name) =>
     handleMcpJsonRpcMessage({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } }, { handlers, tools });
-  const flagged = JSON.parse((await call("x.flagged")).result.content[0].text);
-  assert.equal(flagged.reason, "approval_required");
+  assert.ok(refusedForApproval(await call("x.flagged")));
   assert.equal(JSON.parse((await call("x.unpublished")).result.content[0].text).reason, "unknown_tool");
   assert.equal(ran, 0, "neither handler ran");
   assert.equal(JSON.parse((await call("x.plain")).result.content[0].text).ok, true);
+  const listed = await handleMcpJsonRpcMessage({ jsonrpc: "2.0", id: 2, method: "tools/list" }, { handlers, tools });
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["x.plain"], "a refused tool is not advertised");
 });
 
 test("the CLI tool handlers refuse too, without an approval validator, and run nothing", async () => {
