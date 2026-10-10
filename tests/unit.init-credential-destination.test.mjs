@@ -135,7 +135,8 @@ test("sl init in a workspace naming another API sends the token only to the conf
 test("sl.init through the MCP bridge in that workspace sends the token only to the configured API", async () => {
   const fx = await fixture();
   try {
-    const handlers = createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: fx.ws, env: fx.env });
+    // past the approval gate (the MCP dispatcher refuses every CLI tool; unit.mcp-bridge-approval)
+    const handlers = createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: fx.ws, env: fx.env, approve: () => true });
     const result = await handlers["sl.init"]({ projectName: "demo-app", nonInteractive: true, timeoutMs: 120_000 });
     assert.equal(result.ok, true, String(result.stderr));
     assertTrustedOnly(fx);

@@ -193,7 +193,9 @@ test("Unit MCP CLI command tools: blocks sensitive AIdenID commands in the real 
   ]) {
     const tool = byName.get(name);
     assert.ok(tool, `expected real CLI bridge tool ${name}`);
-    assert.equal(tool.security.runtime_blocked, undefined, `${name} should stay bridge-callable`);
+    // not blocked outright; held only by the approval gate, like every CLI tool
+    assert.equal(tool.metadata.blocked, false, `${name} should not be blocked outright`);
+    assert.equal(tool.security.runtime_block_reason, "approval_required", name);
   }
 });
 
@@ -232,8 +234,10 @@ test("Unit MCP CLI command tools: session access administration is not bridge-ca
     assert.equal(result.reason, "blocked_sensitive_cli_command", name);
   }
   assert.equal(executed, 0, "no access command is executed through the bridge");
-  // ordinary session tools stay callable
-  assert.equal(tools.find((tool) => tool.name === "sl.session.say")?.security.runtime_blocked, undefined);
+  // ordinary session tools are not blocked outright; only the approval gate holds them
+  const say = tools.find((tool) => tool.name === "sl.session.say");
+  assert.equal(say?.metadata.blocked, false);
+  assert.equal(say?.security.runtime_block_reason, "approval_required");
 });
 
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {
@@ -282,6 +286,7 @@ test("Unit MCP CLI command tools: handler executes bridge command and parses jso
   });
   const handlers = createCliCommandMcpToolHandlers(tools, {
     targetPath: "workspace",
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async (args, options) => ({
       exitCode: 0,
       signal: null,
@@ -347,6 +352,7 @@ test("Unit MCP CLI command tools: rejects unsupported tool inputs before executi
     buildProgramFn: async () => buildFakeProgram(),
   });
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate, inputs are still checked
     executeCliCommandFn: async () => {
       throw new Error("must not execute");
     },
@@ -465,6 +471,7 @@ test("Unit MCP CLI command tools: redacts secret-like command output", async () 
   });
   const tokenFixture = ["VcheWKR65eHb", "1234567890abcdef"].join("");
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async () => ({
       exitCode: 0,
       signal: null,
@@ -497,6 +504,7 @@ test("Unit MCP CLI command tools: redacts secret-like raw output and command ech
   });
   const tokenFixture = ["VcheWKR65eHb", "1234567890abcdef"].join("");
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true, // past the approval gate
     executeCliCommandFn: async () => ({
       exitCode: 1,
       signal: null,

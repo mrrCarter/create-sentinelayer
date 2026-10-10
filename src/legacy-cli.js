@@ -149,6 +149,8 @@ function parseCliArgs(argv) {
   let interviewFile = "";
   let nonInteractive = boolFromEnv(process.env.SENTINELAYER_CLI_NON_INTERACTIVE);
   let skipBrowserOpen = boolFromEnv(process.env.SENTINELAYER_CLI_SKIP_BROWSER_OPEN);
+  let injectSecret = false;
+  let injectOpenAiKey = false;
   let showHelp = false;
   let showVersion = false;
 
@@ -169,6 +171,14 @@ function parseCliArgs(argv) {
     }
     if (arg === "--skip-browser-open") {
       skipBrowserOpen = true;
+      continue;
+    }
+    if (arg === "--inject-secret") {
+      injectSecret = true;
+      continue;
+    }
+    if (arg === "--inject-openai-key") {
+      injectOpenAiKey = true;
       continue;
     }
     if (arg === "--interview-file") {
@@ -195,6 +205,8 @@ function parseCliArgs(argv) {
     interviewFile,
     nonInteractive,
     skipBrowserOpen,
+    injectSecret,
+    injectOpenAiKey,
     showHelp,
     showVersion,
   };
@@ -296,6 +308,8 @@ function printUsage() {
   console.log("  --json                 Machine-readable JSON output");
   console.log("  --path PATH            Target workspace path");
   console.log("  --non-interactive      Disable prompts (require --interview-file)");
+  console.log("  --inject-secret        init: set the project token as a GitHub Actions secret on this directory's git remote");
+  console.log("  --inject-openai-key    init: also set OPENAI_API_KEY from your environment as a secret there");
   console.log("");
   console.log("Quickstart:");
   console.log("  sl auth login && npx create-sentinelayer my-app && cd my-app");
@@ -2762,6 +2776,35 @@ Continue autonomously unless blocked by missing credentials or permissions.`,
   };
 }
 
+// The repository that receives GitHub Actions secrets is shown, and gh must confirm that the
+// signed-in user can write to it.
+function confirmSecretsRepository(repoSlug) {
+  printInfo(`GitHub Actions secrets target: ${repoSlug} (the git remote of ${process.cwd()})`);
+  if (!isValidRepoSlug(repoSlug)) {
+    return { ok: false, reason: "Invalid repo format. Use owner/repo." };
+  }
+  const ghCommand = getGhCommand();
+  try {
+    ensureGhCliAvailable(ghCommand);
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  const view = spawnSync(ghCommand, ["api", `repos/${repoSlug}`], { encoding: "utf-8" });
+  if (view.status !== 0) {
+    return { ok: false, reason: `gh could not read ${repoSlug}: ${String(view.stderr || view.stdout || "").trim()}` };
+  }
+  let permissions = {};
+  try {
+    permissions = JSON.parse(String(view.stdout || "{}")).permissions || {};
+  } catch {
+    // unreadable output: not confirmed
+  }
+  if (!(permissions.admin || permissions.maintain || permissions.push)) {
+    return { ok: false, reason: `the signed-in gh user cannot write to ${repoSlug}.` };
+  }
+  return { ok: true };
+}
+
 function runGhSecretSet({ repoSlug, secretName, secretValue }) {
   const normalizedRepo = normalizeRepoSlug(repoSlug);
   const ghCommand = getGhCommand();
@@ -3111,8 +3154,10 @@ async function collectInterview({ initialProjectName, detectedRepo, detectedCodi
           {
             type: base.authMode === "sentinelayer" ? "toggle" : null,
             name: "injectSecret",
-            message: "Inject SENTINELAYER_TOKEN into GitHub Actions secrets now?",
-            initial: true,
+            message: `Set the project token as a GitHub Actions secret on this directory's git remote${
+              detectedRepo ? ` (${detectedRepo})` : ""
+            }?`,
+            initial: false,
             active: "yes",
             inactive: "no",
           },
@@ -3260,6 +3305,15 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     );
   }
   validateInterviewInput(interview);
+  const secretsOptIn = {
+    projectToken: Boolean(args.injectSecret || interview.injectSecret),
+    openAiKey: Boolean(args.injectOpenAiKey),
+  };
+  if ((secretsOptIn.projectToken || secretsOptIn.openAiKey) && process.env.SENTINELAYER_MCP_BRIDGE === "1") {
+    throw new Error(
+      "GitHub Actions secrets are not set through the MCP bridge. Run `sl init --inject-secret` in your own terminal."
+    );
+  }
 
   const workspace = await resolveProjectDirectory({
     cwd: process.cwd(),
@@ -3555,24 +3609,30 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
     repoSlug: interview.connectRepo ? interview.repoSlug : "",
   });
 
-  const repoSlugForSecrets = normalizeRepoSlug(interview.repoSlug || detectRepoSlug(projectDir) || "");
-  const openAiApiKey = String(process.env.OPENAI_API_KEY || "").trim();
+  // GitHub Actions secrets are set only on an explicit opt-in (--inject-secret, or injectSecret in
+  // the interview, outside the MCP bridge), only on this directory's own git remote (never a slug
+  // from the interview), and only after gh confirms the signed-in user can write to it.
+  // OPENAI_API_KEY is set only with its own --inject-openai-key.
   const secretTargets = [];
-  if (sentinelayerToken) {
+  if (sentinelayerToken && secretsOptIn.projectToken) {
     secretTargets.push({
       secretName,
       secretValue: sentinelayerToken,
       placeholder: "<sentinelayer-token>",
     });
   }
-  secretTargets.push({
-    secretName: "OPENAI_API_KEY",
-    secretValue: openAiApiKey,
-    placeholder: "<your-openai-api-key>",
-  });
+  if (secretsOptIn.openAiKey) {
+    secretTargets.push({
+      secretName: "OPENAI_API_KEY",
+      secretValue: String(process.env.OPENAI_API_KEY || "").trim(),
+      placeholder: "<your-openai-api-key>",
+    });
+  }
+  const repoSlugForSecrets = secretTargets.length > 0 ? normalizeRepoSlug(detectedRepo || "") : "";
+  const secretsRepoCheck = repoSlugForSecrets ? confirmSecretsRepository(repoSlugForSecrets) : null;
 
   const githubSecretResults = [];
-  if (repoSlugForSecrets) {
+  if (repoSlugForSecrets && secretsRepoCheck.ok) {
     for (const target of secretTargets) {
       const value = String(target.secretValue || "").trim();
       if (!value) {
@@ -3644,14 +3704,14 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       pc.green(`✔ ${codingAgentConfig.agent.name} config scaffolded at ${codingAgentConfig.path}`)
     );
   }
-  if (repoSlugForSecrets) {
+  if (repoSlugForSecrets && secretsRepoCheck.ok) {
     for (const result of githubSecretResults) {
       if (result.ok) {
-        console.log(pc.green(`✔ ${result.secretName} injected into GitHub repo secret (${repoSlugForSecrets})`));
+        console.log(pc.green(`✔ ${result.secretName} set as a GitHub Actions secret on ${repoSlugForSecrets}`));
         continue;
       }
       const stateLabel = result.skipped ? "skipped" : "failed";
-      console.log(pc.yellow(`! GitHub secret injection ${stateLabel} for ${result.secretName}: ${result.reason}`));
+      console.log(pc.yellow(`! GitHub secret ${stateLabel} for ${result.secretName}: ${result.reason}`));
       console.log(
         pc.yellow(
           `  Run manually: gh secret set ${result.secretName} --repo ${repoSlugForSecrets} --body ${result.placeholder}`
@@ -3659,18 +3719,21 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       );
     }
   } else if (secretTargets.length > 0) {
-    console.log(
-      pc.yellow(
-        "! GitHub secret auto-injection skipped: no repo slug detected. Connect a repo or run manual secret commands."
-      )
-    );
+    const reason = repoSlugForSecrets
+      ? secretsRepoCheck.reason
+      : "this directory has no GitHub git remote.";
+    console.log(pc.yellow(`! GitHub Actions secrets not set: ${reason}`));
     for (const target of secretTargets) {
       console.log(
-        pc.yellow(
-          `  Run manually: gh secret set ${target.secretName} --repo <owner/repo> --body ${target.placeholder}`
-        )
+        pc.yellow(`  Run manually: gh secret set ${target.secretName} --repo <owner/repo> --body ${target.placeholder}`)
       );
     }
+  } else if (sentinelayerToken) {
+    console.log(
+      pc.gray(
+        `GitHub Actions secrets were not set. To set ${secretName} on this directory's git remote, rerun with --inject-secret, or run: gh secret set ${secretName} --repo <owner/repo>`
+      )
+    );
   }
 
   console.log("\nNext:");

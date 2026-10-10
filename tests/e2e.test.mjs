@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { leaseWorkItem, listAssignments } from "../src/daemon/assignment-ledger.js";
 import { appendAdminErrorEvent, listErrorQueue, runErrorDaemonWorker } from "../src/daemon/error-worker.js";
+import { createGhSpy } from "./gh-spy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "..", "bin", "create-sentinelayer.js");
@@ -802,19 +803,22 @@ async function seedDaemonWorkItem(targetPath, endpoint, errorCode) {
   return match.workItemId;
 }
 
-test("CLI end-to-end: generates artifacts and injects secret via gh", async () => {
+test("CLI end-to-end: generates artifacts and, when asked, sets the project token as a secret on this directory's own remote", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-e2e-"));
   const mock = await startMockApi({ includeBootstrapInGenerate: true, requiredSecretName: "bad-secret-name" });
-  const secretSinkPath = path.join(tempRoot, "secret-sink.log");
+  // this directory's own remote is acme/own-repo; the interview names acme/demo-repo
+  spawnSync("git", ["init", "-q"], { cwd: tempRoot });
+  spawnSync("git", ["remote", "add", "origin", "https://github.com/acme/own-repo.git"], { cwd: tempRoot });
+  const gh = createGhSpy(path.join(tempRoot, ".gh-spy"));
 
   try {
     const env = {
       ...process.env,
+      ...gh.env,
       SENTINELAYER_API_URL: mock.apiUrl,
       SENTINELAYER_WEB_URL: "http://127.0.0.1",
       SENTINELAYER_CLI_NON_INTERACTIVE: "1",
       SENTINELAYER_CLI_SKIP_BROWSER_OPEN: "1",
-      SENTINELAYER_SECRET_SINK_FILE: secretSinkPath,
       OPENAI_API_KEY: "sk-test-openai-123",
       CURSOR_TRACE_ID: "cursor-trace-test",
       SENTINELAYER_CLI_INTERVIEW_JSON: JSON.stringify(
@@ -843,7 +847,6 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf-8"));
     const workflowText = await readFile(path.join(projectDir, ".github", "workflows", "omar-gate.yml"), "utf-8");
     const lockfile = JSON.parse(await readFile(path.join(projectDir, ".sentinelayer", "config.json"), "utf-8"));
-    const secretSink = await readFile(secretSinkPath, "utf-8");
 
     assert.match(envText, new RegExp(`SENTINELAYER_TOKEN=${BOOTSTRAP_VALUE_FROM_GENERATE}`));
     assert.match(gitignoreText, /(^|\r?\n)\.env(\r?\n|$)/);
@@ -881,11 +884,16 @@ test("CLI end-to-end: generates artifacts and injects secret via gh", async () =
     assert.match(String(packageJson.scripts["sentinel:audit:json"] || ""), /\/audit --path \. --json/);
     assert.match(String(packageJson.scripts["sentinel:persona:builder"] || ""), /--mode builder/);
     assert.match(String(packageJson.scripts["sentinel:apply"] || ""), /\/apply --plan tasks\/todo\.md/);
-    assert.match(
-      secretSink,
-      new RegExp(`acme\\/demo-repo\\|SENTINELAYER_TOKEN\\|${BOOTSTRAP_VALUE_FROM_GENERATE}`)
+    // the interview's injectSecret is the opt-in; OPENAI_API_KEY needs its own --inject-openai-key
+    assert.deepEqual(
+      gh.calls().map((call) => call.args.join(" ")),
+      [
+        "api repos/acme/own-repo",
+        "secret set SENTINELAYER_TOKEN --repo acme/own-repo",
+        "secret list --repo acme/own-repo",
+      ],
     );
-    assert.match(secretSink, /acme\/demo-repo\|OPENAI_API_KEY\|sk-test-openai-123/);
+    assert.equal(gh.calls()[1].input, `${BOOTSTRAP_VALUE_FROM_GENERATE}\n`);
 
     assert.equal(mock.state.sessionStartPayload.ide, "cursor");
     assert.equal(mock.state.generateAuthHeader, "Bearer web_auth_token_abc");
@@ -904,10 +912,16 @@ test("CLI fallback workflow binds dynamically to API-provided secret name", asyn
     includeOmarWorkflowInGenerate: false,
     requiredSecretName: "SENTINELAYER_BETA_TOKEN",
   });
+  // a directory with its own GitHub remote, and no opt-in: no gh call at all
+  spawnSync("git", ["init", "-q"], { cwd: tempRoot });
+  spawnSync("git", ["remote", "add", "origin", "https://github.com/acme/own-repo.git"], { cwd: tempRoot });
+  const gh = createGhSpy(path.join(tempRoot, ".gh-spy"));
 
   try {
     const env = {
       ...process.env,
+      ...gh.env,
+      OPENAI_API_KEY: "sk-test-openai-123",
       SENTINELAYER_API_URL: mock.apiUrl,
       SENTINELAYER_WEB_URL: "http://127.0.0.1",
       SENTINELAYER_CLI_NON_INTERACTIVE: "1",
@@ -928,6 +942,8 @@ test("CLI fallback workflow binds dynamically to API-provided secret name", asyn
     assert.match(workflowText, new RegExp(`sentinelayer_spec_id:\\s*${SPEC_ID_FROM_GENERATE}`));
     assert.equal(lockfile.spec_id, SPEC_ID_FROM_GENERATE);
     assert.equal(lockfile.required_secret_name, "SENTINELAYER_BETA_TOKEN");
+    assert.deepEqual(gh.calls(), [], "no secret without an opt-in");
+    assert.match(result.stdout, /GitHub Actions secrets were not set/);
   } finally {
     await mock.close();
     await rm(tempRoot, { recursive: true, force: true });

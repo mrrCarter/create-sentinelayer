@@ -159,7 +159,6 @@ export const BRIDGE_ALLOWED_INPUTS = Object.freeze({
   "session.ticket.submit": "sessionId ticketId sha evidenceFile agent path json",
   "session.unlock": "sessionId files intent agent path json",
   "session.usage": "sessionId remote recent format out path json",
-  "session.wake.codex": "sessionId session codexSession last message messageFile from sequence cursor priority cwd model codexJson timeoutMs dryRun json",
   "session.wake.codex-notify": "sessionId notificationJson session agent notification path json",
   // host and resumeSession: the local host adapter (claude|codex) and its session to resume
   "session.wake.daemon": "sessionId session agent host resumeSession cwd idleMs maxAttempts once json",
@@ -190,6 +189,10 @@ export const BRIDGE_DENIED_INPUTS = Object.freeze({
   "audit.frontend": {
     url: "a deployed site that this command fetches and audits",
   },
+  "init": {
+    injectSecret: "sets the project token as a GitHub Actions secret on a repository",
+    injectOpenaiKey: "sets OPENAI_API_KEY as a GitHub Actions secret on a repository",
+  },
   "mcp.doctor": {
     apiUrl: "the API that this command probes",
   },
@@ -198,12 +201,6 @@ export const BRIDGE_DENIED_INPUTS = Object.freeze({
   },
   "ring-owner": {
     gatewayUrl: "the gateway that receives the user's token",
-  },
-  "session.wake.codex": {
-    dashboardUrl: "a link placed in the woken agent's prompt",
-    codexBin: "the executable this command runs",
-    dangerouslyBypassApprovalsAndSandbox: "turns off Codex's approvals and sandbox for the resumed run",
-    skipGitRepoCheck: "skips Codex's own check that it runs inside a repository",
   },
   "swarm.create": {
     target: "the site that this plan tests",

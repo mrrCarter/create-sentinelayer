@@ -94,7 +94,9 @@ async function fixture({ envToken = USER_TOKEN, storedToken = "" } = {}) {
   const run = (args) => executeCliCommand(args, { targetPath: ws, timeoutMs: 60_000, env: { ...env, SENTINELAYER_MCP_BRIDGE: "" } });
   let handlers = null;
   const bridge = async (toolName, input) => {
-    handlers ||= createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: ws, env });
+    // the bridge's own behaviour past the approval gate (the MCP dispatcher refuses every CLI tool
+    // until a server-validated approval exists; tests/unit.mcp-bridge-approval.test.mjs)
+    handlers ||= createCliCommandMcpToolHandlers(await buildCliCommandMcpTools(), { targetPath: ws, env, approve: () => true });
     return handlers[toolName]({ ...input, timeoutMs: 60_000 });
   };
   return {
@@ -309,10 +311,10 @@ test("the bridge withholds exactly the denied inputs from the commands it expose
   assert.deepEqual(withheld, [
     "sl.ai.identity.lineage: apiUrl",
     "sl.audit.frontend: url",
+    "sl.init: injectOpenaiKey,injectSecret",
     "sl.mcp.doctor: apiUrl",
     "sl.mcp.smoke: apiUrl",
     "sl.ring-owner: gatewayUrl",
-    "sl.session.wake.codex: codexBin,dangerouslyBypassApprovalsAndSandbox,dashboardUrl,skipGitRepoCheck",
     "sl.swarm.create: target",
     "sl.swarm.run: startUrl",
     "sl.swarm.scenario.init: startUrl",
@@ -389,53 +391,29 @@ test("no input the bridge exposes names a program to run or turns off a safety c
   assert.deepEqual(exposed, [], "an input that chooses what runs, or how freely, reached the bridge");
 });
 
-test("session wake codex never takes an executable or a sandbox bypass through the bridge, and spawns nothing when given one", async () => {
+test("session wake codex is blocked on the bridge outright, even past the approval gate, and spawns nothing", async () => {
   const tools = await buildCliCommandMcpTools();
   const wake = tools.find((tool) => tool.name === "sl.session.wake.codex");
-  assert.equal(wake.metadata.blocked, false, "the command itself still runs");
-  for (const name of ["codexBin", "dangerouslyBypassApprovalsAndSandbox", "skipGitRepoCheck"]) {
-    assert.ok(wake.metadata.withheldOptions.includes(name), `${name} is withheld`);
-    assert.equal(Object.hasOwn(wake.inputSchema.properties, name), false);
-    assert.equal(wake.metadata.options.some((option) => option.name === name), false);
-  }
+  assert.equal(wake.metadata.blocked, true);
+  assert.equal(wake.security.runtime_block_reason, "blocked_sensitive_cli_command");
   const spawned = [];
   const handlers = createCliCommandMcpToolHandlers(tools, {
+    approve: () => true,
     executeCliCommandFn: async (args) => {
       spawned.push(args);
       return { exitCode: 0, signal: null, timedOut: false, stdout: "{}", stderr: "" };
     },
   });
-  const base = { sessionId: SID, codexSession: "codex-session-1", message: "status?", dryRun: true, json: true };
-  for (const [key, value] of [
-    ["codexBin", "C:/tools/other.exe"],
-    ["dangerouslyBypassApprovalsAndSandbox", true],
-    ["skipGitRepoCheck", true],
-  ]) {
-    const result = await handlers["sl.session.wake.codex"]({ ...base, [key]: value });
-    assert.equal(result.ok, false);
-    assert.equal(result.reason, "invalid_cli_tool_input");
-    assert.equal(result.detail, `unsupported_input:${key}`);
-  }
+  const result = await handlers["sl.session.wake.codex"]({
+    sessionId: SID,
+    codexSession: "codex-session-1",
+    message: "status?",
+    dryRun: true,
+    json: true,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "blocked_sensitive_cli_command");
   assert.deepEqual(spawned, [], "nothing was spawned");
-});
-
-test("session wake codex still runs through the bridge, with the default executable and no bypass", async () => {
-  const fx = await fixture();
-  try {
-    const result = await fx.bridge("sl.session.wake.codex", {
-      sessionId: SID,
-      codexSession: "codex-session-1",
-      message: "status?",
-      dryRun: true,
-      json: true,
-    });
-    assert.equal(result.ok, true, String(result.stderr));
-    assert.equal(result.json?.invocation?.command, "codex");
-    assert.equal(result.json.invocation.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
-    assert.equal(result.json.invocation.args.includes("--skip-git-repo-check"), false);
-  } finally {
-    await fx.close();
-  }
 });
 
 test("session wake daemon still runs through the bridge with its local host and session to resume", async () => {

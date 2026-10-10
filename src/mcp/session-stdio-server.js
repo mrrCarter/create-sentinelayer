@@ -1740,6 +1740,24 @@ function jsonRpcError(id, code, message, data = undefined) {
   });
 }
 
+// The dispatcher enforces each tool's published policy before its handler runs. A tool with no
+// published definition, a runtime-blocked tool, and a tool that requires human approval are
+// refused. Approval would have to be server-validated and bound to the call's arguments; no such
+// approval exists yet, so every tool that requires it is refused.
+function dispatchRefusal(tools, toolName) {
+  const tool = (Array.isArray(tools) ? tools : []).find((candidate) => normalizeString(candidate?.name) === toolName);
+  if (!tool) return "unknown_tool";
+  const security = isPlainObject(tool.security) ? tool.security : {};
+  if (security.runtime_blocked === true || tool.metadata?.blocked === true) {
+    return normalizeString(security.runtime_block_reason || tool.metadata?.blockedReason) || "blocked";
+  }
+  if (security.requires_human_approval === true) return "approval_required";
+  if (tool.metadata?.bridge === "cli-command" && security.requires_human_approval !== false) {
+    return "approval_required";
+  }
+  return "";
+}
+
 export async function handleMcpJsonRpcMessage(
   message,
   {
@@ -1798,6 +1816,13 @@ export async function handleMcpJsonRpcMessage(
     const toolName = normalizeString(message.params?.name);
     const args = isPlainObject(message.params?.arguments) ? message.params.arguments : {};
     const handler = handlers[toolName];
+    const refusal = typeof handler === "function" ? dispatchRefusal(tools, toolName) : "";
+    if (refusal) {
+      return jsonRpcSuccess(
+        id,
+        buildToolResult({ ok: false, reason: refusal, tool: toolName }, { isError: true }),
+      );
+    }
     if (typeof handler !== "function") {
       return jsonRpcSuccess(
         id,

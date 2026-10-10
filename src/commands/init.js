@@ -31,6 +31,8 @@ export function registerInitCommand(program, invokeLegacy) {
     .option("--non-interactive", "Disable prompts and require interview payload")
     .option("--interview-file <path>", "Load interview JSON from file")
     .option("--skip-browser-open", "Do not auto-open browser during auth")
+    .option("--inject-secret", "Set the project token as a GitHub Actions secret on this directory's git remote")
+    .option("--inject-openai-key", "Also set OPENAI_API_KEY from your environment as a GitHub Actions secret there")
     .action(async (projectName, options) => {
       const config = await loadConfig();
       applyConfigEnvDefaults(config);
@@ -49,6 +51,12 @@ export function registerInitCommand(program, invokeLegacy) {
       }
       if (options.skipBrowserOpen) {
         legacyArgs.push("--skip-browser-open");
+      }
+      if (options.injectSecret) {
+        legacyArgs.push("--inject-secret");
+      }
+      if (options.injectOpenaiKey) {
+        legacyArgs.push("--inject-openai-key");
       }
 
       await invokeLegacy(legacyArgs);
