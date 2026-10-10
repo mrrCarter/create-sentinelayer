@@ -8,7 +8,9 @@
 //
 // Nothing that names where a request goes (a URL, host, origin, endpoint or gateway) is allowed:
 // a tool caller never chooses a destination for this machine's credentials. Those commands use
-// the configured API and pocket gateway.
+// the configured API and pocket gateway. Nor is anything that names a program to run (an
+// executable, binary, shell, command or script) or turns off a safety check (a sandbox, approval
+// or similar bypass): a tool caller never chooses what this machine executes, or how freely.
 
 /** Command path (dotted, as in the tool name after "sl.") -> its exposed inputs, space-separated. */
 export const BRIDGE_ALLOWED_INPUTS = Object.freeze({
@@ -157,7 +159,7 @@ export const BRIDGE_ALLOWED_INPUTS = Object.freeze({
   "session.ticket.submit": "sessionId ticketId sha evidenceFile agent path json",
   "session.unlock": "sessionId files intent agent path json",
   "session.usage": "sessionId remote recent format out path json",
-  "session.wake.codex": "sessionId session codexSession last message messageFile from sequence cursor priority cwd codexBin model codexJson skipGitRepoCheck dangerouslyBypassApprovalsAndSandbox timeoutMs dryRun json",
+  "session.wake.codex": "sessionId session codexSession last message messageFile from sequence cursor priority cwd model codexJson timeoutMs dryRun json",
   "session.wake.codex-notify": "sessionId notificationJson session agent notification path json",
   // host and resumeSession: the local host adapter (claude|codex) and its session to resume
   "session.wake.daemon": "sessionId session agent host resumeSession cwd idleMs maxAttempts once json",
@@ -199,6 +201,9 @@ export const BRIDGE_DENIED_INPUTS = Object.freeze({
   },
   "session.wake.codex": {
     dashboardUrl: "a link placed in the woken agent's prompt",
+    codexBin: "the executable this command runs",
+    dangerouslyBypassApprovalsAndSandbox: "turns off Codex's approvals and sandbox for the resumed run",
+    skipGitRepoCheck: "skips Codex's own check that it runs inside a repository",
   },
   "swarm.create": {
     target: "the site that this plan tests",

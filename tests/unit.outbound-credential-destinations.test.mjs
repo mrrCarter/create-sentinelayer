@@ -312,7 +312,7 @@ test("the bridge withholds exactly the denied inputs from the commands it expose
     "sl.mcp.doctor: apiUrl",
     "sl.mcp.smoke: apiUrl",
     "sl.ring-owner: gatewayUrl",
-    "sl.session.wake.codex: dashboardUrl",
+    "sl.session.wake.codex: codexBin,dangerouslyBypassApprovalsAndSandbox,dashboardUrl,skipGitRepoCheck",
     "sl.swarm.create: target",
     "sl.swarm.run: startUrl",
     "sl.swarm.scenario.init: startUrl",
@@ -362,6 +362,79 @@ test("the bridge exposes only listed inputs: an unlisted option is withheld, an 
   assert.deepEqual(say.metadata.options.map((o) => o.name), ["agent"]);
   for (const name of ["sl.session.read", "sl.watch.history", "sl.fixture.unlisted"]) {
     assert.equal(byName[name].metadata.blockedReason, "blocked_unlisted_input", name);
+  }
+});
+
+// An independent check of the list: no exposed input names a program to run (an executable,
+// binary, shell, command or script) or turns off a safety check (a sandbox, approval or similar).
+const EXECUTION_WORDS = new Set(["bin", "bins", "executable", "executables", "binary", "binaries", "shell", "cmd", "command", "commands", "script", "scripts", "dangerous", "dangerously", "bypass", "sandbox", "unsafe", "yolo"]);
+const SKIPS_A_CHECK = /\bskip\b.*\b(?:check|checks|approval|approvals|sandbox|guard|guards|verify|verification)\b/;
+
+test("no input the bridge exposes names a program to run or turns off a safety check", async () => {
+  const registry = await buildSentinelayerCliRegistryTemplate({ generatedAt: "1970-01-01T00:00:00.000Z" });
+  const raw = new Map(registry.tools.map((tool) => [tool.name, tool]));
+  const tools = await buildCliCommandMcpTools();
+  const exposed = [];
+  for (const tool of tools) {
+    if (tool.metadata.blocked) continue;
+    const source = raw.get(tool.name);
+    for (const input of [...(source.metadata.arguments || []), ...(source.metadata.options || [])]) {
+      const words = wordsIn(`${input.name} ${input.flags || ""}`);
+      const named = words.some((word) => EXECUTION_WORDS.has(word)) || SKIPS_A_CHECK.test(words.join(" "));
+      if (named && Object.hasOwn(tool.inputSchema.properties || {}, input.name)) {
+        exposed.push(`${tool.name.slice("sl.".length)} ${input.name}`);
+      }
+    }
+  }
+  assert.deepEqual(exposed, [], "an input that chooses what runs, or how freely, reached the bridge");
+});
+
+test("session wake codex never takes an executable or a sandbox bypass through the bridge, and spawns nothing when given one", async () => {
+  const tools = await buildCliCommandMcpTools();
+  const wake = tools.find((tool) => tool.name === "sl.session.wake.codex");
+  assert.equal(wake.metadata.blocked, false, "the command itself still runs");
+  for (const name of ["codexBin", "dangerouslyBypassApprovalsAndSandbox", "skipGitRepoCheck"]) {
+    assert.ok(wake.metadata.withheldOptions.includes(name), `${name} is withheld`);
+    assert.equal(Object.hasOwn(wake.inputSchema.properties, name), false);
+    assert.equal(wake.metadata.options.some((option) => option.name === name), false);
+  }
+  const spawned = [];
+  const handlers = createCliCommandMcpToolHandlers(tools, {
+    executeCliCommandFn: async (args) => {
+      spawned.push(args);
+      return { exitCode: 0, signal: null, timedOut: false, stdout: "{}", stderr: "" };
+    },
+  });
+  const base = { sessionId: SID, codexSession: "codex-session-1", message: "status?", dryRun: true, json: true };
+  for (const [key, value] of [
+    ["codexBin", "C:/tools/other.exe"],
+    ["dangerouslyBypassApprovalsAndSandbox", true],
+    ["skipGitRepoCheck", true],
+  ]) {
+    const result = await handlers["sl.session.wake.codex"]({ ...base, [key]: value });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "invalid_cli_tool_input");
+    assert.equal(result.detail, `unsupported_input:${key}`);
+  }
+  assert.deepEqual(spawned, [], "nothing was spawned");
+});
+
+test("session wake codex still runs through the bridge, with the default executable and no bypass", async () => {
+  const fx = await fixture();
+  try {
+    const result = await fx.bridge("sl.session.wake.codex", {
+      sessionId: SID,
+      codexSession: "codex-session-1",
+      message: "status?",
+      dryRun: true,
+      json: true,
+    });
+    assert.equal(result.ok, true, String(result.stderr));
+    assert.equal(result.json?.invocation?.command, "codex");
+    assert.equal(result.json.invocation.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
+    assert.equal(result.json.invocation.args.includes("--skip-git-repo-check"), false);
+  } finally {
+    await fx.close();
   }
 });
 
