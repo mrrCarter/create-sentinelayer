@@ -25,7 +25,12 @@ import path from "node:path";
 import process from "node:process";
 
 import { admittedAgentScope } from "../auth/admission-scope.js";
-import { readAdmissionCredentialState } from "./admission.js";
+import {
+  hasStoredAdmissionCredentials,
+  readAdmissionCredentialState,
+  storedAdmissionAgentsForSession,
+} from "./admission.js";
+import { sessionRouteClass } from "./route-classes.js";
 
 export class AdmissionCredentialRefused extends Error {
   constructor(message, { reason, sessionId, agentId } = {}) {
@@ -238,26 +243,89 @@ export async function resolveAgentAdmissionTarget(args = [], { env = process.env
   return null;
 }
 
-/**
- * preAction guard: the identity Commander ACTUALLY resolved for this action must be
- * the one whose admission scope (if any) the dispatch was wrapped in. Computed from
- * Commander's own resolved options -- counting only values given on the command line,
- * not defaults such as read's `--agent cli-user` -- so no argv reading of ours can
- * disagree with execution. A mismatch refuses before the action runs.
- */
-export async function assertDispatchMatchesScope(actionCommand, { env = process.env, homeDir } = {}) {
+// What Commander parsed for the action about to run: its `session` command path, its
+// options (and which of them were given on the command line, not defaulted, such as read's
+// `--agent cli-user`), and its operands. The preAction guard reads only these, the same values
+// the action itself uses, so no reading of the raw argv can disagree with execution.
+function parsedSessionAction(actionCommand) {
   const names = [];
   for (let cmd = actionCommand; cmd && cmd.parent; cmd = cmd.parent) names.unshift(cmd.name());
-  if (String(names[0] || "").toLowerCase() !== "session") return;
-  const command = names.slice(1).join(" ").toLowerCase();
-  const principal = SESSION_AGENT_PRINCIPAL[command];
+  if (String(names[0] || "").toLowerCase() !== "session") return null;
   const opts = actionCommand.opts();
   const given = (key) =>
     actionCommand.getOptionValueSource?.(key) === "cli" ? String(opts[key] ?? "").trim() : "";
+  const processed = Array.isArray(actionCommand.processedArgs) ? actionCommand.processedArgs : [];
+  return {
+    route: `cli:${names.join(" ").toLowerCase()}`,
+    command: names.slice(1).join(" ").toLowerCase(),
+    opts,
+    given,
+    first: String(processed[0] ?? "").trim(),
+    operands: processed.flat().map((value) => String(value ?? "").trim()).filter(Boolean),
+  };
+}
+
+// Through the MCP CLI bridge (which marks its child processes with SENTINELAYER_MCP_BRIDGE=1)
+// in an agent context (SENTINELAYER_AGENT_ID is set, or this machine stores any agent
+// admission), by the command's class in SESSION_ROUTE_CLASSES:
+//   - exempt-local: runs as before
+//   - owner: refused
+//   - a session the command will use (its --session or --id value, given or defaulted, or any
+//     operand) stores an admission, in any state: the action must be running in that
+//     session's admission scope, or it is refused before it runs
+//   - no session it uses stores one: legacy-data-plane runs as before; control and
+//     unclassified commands are refused
+async function assertBridgedRoute(action, { env, homeDir }) {
+  if (env.SENTINELAYER_MCP_BRIDGE !== "1") return;
+  const agentContext =
+    Boolean(String(env.SENTINELAYER_AGENT_ID || "").trim()) || (await hasStoredAdmissionCredentials({ homeDir }));
+  if (!agentContext) return;
+  const routeClass = sessionRouteClass(action.route);
+  const refuse = (why) => {
+    throw new AdmissionCredentialRefused(
+      `\`sl ${action.route.slice("cli:".length)}\` runs for an agent here and needs an admission it can bind to: ` +
+        `${why}. It will not fall back to other credentials.`,
+      { reason: "bridged_route_refused" },
+    );
+  };
+  if (routeClass === "exempt-local") return;
+  if (routeClass === "owner") refuse("owner actions are not available to agents");
+  const named = [action.opts.session, action.opts.id, ...action.operands]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  const admitted = [];
+  for (const sessionId of named) {
+    if ((await storedAdmissionAgentsForSession(sessionId, { homeDir })).length > 0) admitted.push(sessionId);
+  }
+  if (admitted.length > 0) {
+    const bound = String(currentAdmittedAgent()?.sessionId || "").toLowerCase();
+    if (!bound || !admitted.some((sid) => sid.toLowerCase() === bound)) {
+      refuse(`session ${admitted[0]} stores an admission and this command's agent is not bound to it`);
+    }
+    return;
+  }
+  if (routeClass === "legacy-data-plane") return;
+  refuse(routeClass === "control" ? "it is a control operation" : "it is not classified for agents");
+}
+
+/**
+ * preAction guard, run before ANY action, on Commander's parsed values only:
+ *   1. a bridged command in an agent context binds to its session's admission, runs as a
+ *      legacy data-plane route, or is refused (assertBridgedRoute above);
+ *   2. the identity Commander resolved for the action must be the one whose admission scope
+ *      (if any) the dispatch was wrapped in.
+ * Either refusal happens before the action runs, so before any request.
+ */
+export async function assertDispatchMatchesScope(actionCommand, { env = process.env, homeDir } = {}) {
+  const action = parsedSessionAction(actionCommand);
+  if (!action) return;
+  await assertBridgedRoute(action, { env, homeDir });
+  const { command, given } = action;
+  const principal = SESSION_AGENT_PRINCIPAL[command];
   let actual = null;
   if (principal === "actor" || (!principal && given("agent"))) {
-    const sessionId = given("session") || given("id") || String(actionCommand.processedArgs?.[0] ?? "").trim();
-    const targetPath = path.resolve(process.cwd(), String(opts.path || "."));
+    const sessionId = given("session") || given("id") || action.first;
+    const targetPath = path.resolve(process.cwd(), String(action.opts.path || "."));
     const agentId =
       given("agent") ||
       String(env.SENTINELAYER_AGENT_ID || "").trim() ||
@@ -279,9 +347,20 @@ export async function assertDispatchMatchesScope(actionCommand, { env = process.
 }
 
 /** Run `fn` with the right credential for (sessionId, agentId). See the module header. */
-export async function withAgentAdmission(sessionId, agentId, fn, { homeDir, now } = {}) {
+export async function withAgentAdmission(sessionId, agentId, fn, { homeDir, now, requireStored = false } = {}) {
   const held = await readAdmissionCredentialState(sessionId, agentId, { homeDir, now });
-  if (held.state === "none") return fn({ admitted: false });
+  if (held.state === "none") {
+    // A caller that already decided this must bind (it saw a stored admission) never runs
+    // without one: a credential file that vanished in between is a refusal, not absence.
+    if (requireStored) {
+      throw new AdmissionCredentialRefused(
+        `Agent "${agentId}"'s stored admission for session ${sessionId} is no longer present. ` +
+          `It will not fall back to your own credentials.`,
+        { reason: "admission_removed", sessionId, agentId },
+      );
+    }
+    return fn({ admitted: false });
+  }
   if (held.state !== "live") {
     const why = REFUSAL_HINT[held.reason] || `its stored admission is unusable (${held.reason})`;
     throw new AdmissionCredentialRefused(

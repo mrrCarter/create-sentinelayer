@@ -37,12 +37,20 @@ The session MCP server exposes:
 - `session_locks` - list active authoritative file leases.
 - `attention_request` - raise a high-signal `help_request`.
 
-Every tool that acts as an agent runs on that agent's admission, the same way `sl session` actor commands do. These are `poll_inbox`, `read_history` (when an agent id is given or `SENTINELAYER_AGENT_ID` is set), `send_message`, `attention_request`, `session_action`, `session_react`, `session_reply`, `session_lock`, and `session_unlock`:
+Every session tool, and every `sl session` command run through the generated `sl.*` CLI bridge, is classified in one table: `src/session/route-classes.js`. The classes are:
 
-- When this machine stores a live admission for the agent, it is the only credential the tool's requests carry.
-- An expired, unreadable, or mis-bound stored admission is refused before any request.
-- A credential the API refuses is final.
-- With no stored admission, the tool behaves as before.
+- `legacy-data-plane`: posting, replying, reading and polling, message actions and reactions, and attention requests.
+- `control`: leases, locks, guards, tickets, checkpoints, joining and leaving, listeners, and room setup.
+- `owner`: the room owner's `session access` actions.
+- `exempt-local`: the `memory.*` tools and two built-in listings. These send no request.
+
+Outside an agent context, everything behaves as before. An agent context means `SENTINELAYER_AGENT_ID` is set, or this machine stores any agent admission credential. In an agent context:
+
+- **The session stores an admission, in any state.** The tool or command runs only on the admission of the agent it names (with `agentId`, `--agent` or `SENTINELAYER_AGENT_ID`). It is refused before any request if it names no agent, if that agent holds none of the session's admissions, or if the admission is expired, unreadable, or bound elsewhere. It never falls back to other credentials.
+- **The session stores no admission.** Only the `legacy-data-plane` list runs as before. This is a compatibility list for rooms that don't require admission; the server's admission mode decides whether such a room accepts it. Everything else is refused before any request: `control`, `owner`, and anything new or unclassified.
+- **Owner actions** are refused in an agent context either way.
+- **Joining, leaving and stopping a listener.** Through the CLI bridge, `sl session join`, `leave` and `stop-listener` are refused in an agent context, whether or not the session stores an admission. They act on an agent rather than as one, so no admission binds them. Run them with the CLI directly.
+- **API refusals.** A credential the API refuses is final.
 
 Reactions (`like`, `dislike`, `unlike`, `undislike`) take the same path as `sl session react`. Each call is a new intent with a fresh operation key. The result names its `outcome` (`applied`, `no_op`, `replayed`, `not_active`, `unsupported`, `refused`, `not_sent` or `unknown`) and returns the key as `operationKey`, plus `collapsedActionId` when the server kept a repeated reaction as evidence. After an `unknown` outcome, resend that key as `idempotencyKey` to retry the same intent.
 
@@ -55,6 +63,8 @@ Read cursors and listener presence are operational projections, not transcript e
 `sl mcp registry init-cli` writes an MCP registry for every SentinelLayer CLI leaf command using Commander metadata. Tool names use the `sl.<command.path>` form, such as `sl.session.say` and `sl.mcp.registry.init-session`.
 
 The generated registry is intended for bridge-capable MCP hosts and hosted connector work. It records each command's positional arguments, options, original argv path, bridge URL, budget defaults, and `cli:execute` scope. Every generated CLI tool requires human approval by default because the surface includes write, scan, audit, auth, and session commands.
+
+The bridge copies each positional and option value into the command line as a value. It refuses a value that starts with `-` before running anything; run the CLI directly for such values.
 
 Secret-bearing commands are blocked from bridge execution even when they appear in the generated registry. `sl mcp token mint` is one of those blocked commands because it returns a fresh bearer token; operators must run it directly:
 

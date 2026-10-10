@@ -423,7 +423,9 @@ const OWNER_ACTIONS = [
   ["approve", ["session", "access", "approve", SID, AID, "--ttl", "24h", "--json"]],
   ["deny", ["session", "access", "deny", SID, AID, "--json"]],
   ["revoke", ["session", "access", "revoke", SID, AID, "--json"]],
-  ["mode", ["session", "access", "mode", SID, "legacy", "--json"]],
+  ["mode legacy", ["session", "access", "mode", SID, "legacy", "--json"]],
+  // reducing another principal's access still needs the owner's authority
+  ["mode required", ["session", "access", "mode", SID, "required", "--json"]],
 ];
 
 async function withEnv(name, value, fn) {
@@ -503,7 +505,8 @@ test("README and docs/sessions.md describe access behavior that holds on every A
     assert.doesNotMatch(text, /New rooms default to (fail-closed )?`required`/, file);
     // owner actions and the bridge
     assert.match(text, /unavailable in an agent context/, `${file}: owner actions in an agent context`);
-    assert.match(text, /not exposed through the MCP CLI bridge/, `${file}: bridge exposure`);
+    assert.match(text, /not callable through the MCP CLI bridge/, `${file}: bridge`);
+    assert.doesNotMatch(text, /not exposed through the MCP CLI bridge/, file);
   }
   const sessions = (await fsp.readFile(path.join(root, "docs/sessions.md"), "utf8")).replace(/\s+/g, " ");
   assert.match(sessions, /revoked, or stopped grants never join/);

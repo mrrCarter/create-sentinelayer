@@ -378,7 +378,8 @@ function recordCircuitFailure(circuit, nowMs) {
 
 // 401 and 403 refuse one credential (an expired, revoked or narrower agent admission, or
 // an identity the account has not granted). They say nothing about API health, so they
-// never count toward the machine-wide outbound breaker; every other failure does.
+// never count toward either machine-wide breaker (inbound or outbound): one agent's
+// refusals must not pause another agent's traffic. Network errors, timeouts and 5xx do.
 function isCredentialRefusal(response) {
   return Boolean(response) && (response.status === 401 || response.status === 403);
 }
@@ -386,6 +387,11 @@ function isCredentialRefusal(response) {
 function recordOutboundFailure(response, nowMs) {
   if (isCredentialRefusal(response)) return;
   recordCircuitFailure(outboundCircuit, nowMs);
+}
+
+function recordInboundFailure(response, nowMs) {
+  if (isCredentialRefusal(response)) return;
+  recordCircuitFailure(inboundCircuit, nowMs);
 }
 
 function recordCircuitSuccess(circuit) {
@@ -1351,7 +1357,7 @@ export async function pollHumanMessages(
       fetchImpl,
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -1536,7 +1542,7 @@ export async function pollSessionEvents(
           cursor: normalizedSince || null,
         };
       }
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -1698,7 +1704,7 @@ export async function fetchSessionPresence(
           present: [],
         };
       }
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -2460,7 +2466,7 @@ export async function pollSessionEventsBefore(
           beforeSequence: Number.isFinite(normalizedBeforeSequence) ? normalizedBeforeSequence : null,
         };
       }
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -2569,7 +2575,7 @@ export async function listSessionMessageActions(
       fetchImpl,
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -2666,7 +2672,7 @@ export async function fetchSessionUsageLedger(
       fetchImpl,
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -3140,7 +3146,7 @@ export async function searchSessionEvents(
       fetchImpl,
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(inboundCircuit, normalizedNowMs);
+      recordInboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,

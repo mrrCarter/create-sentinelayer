@@ -20,7 +20,10 @@ export const CIRCUIT_BREAKER_THRESHOLD = 5;
 export const CIRCUIT_BREAKER_COOLDOWN_MS = 30_000;
 
 const RETRYABLE_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
-const CIRCUIT_TRACK_STATUS_CODES = new Set([401, 403, 408, 425, 429, 500, 502, 503, 504]);
+// 401 and 403 are not tracked: they refuse one credential (for example an expired or
+// revoked agent admission) and say nothing about the origin's health, so they must not
+// open the per-origin breaker for every other credential on this machine.
+const CIRCUIT_TRACK_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const circuitStateByScope = new Map();
 
 // File-backed cache. Lets cooldown + failure counts survive across CLI

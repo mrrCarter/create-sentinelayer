@@ -13,7 +13,14 @@ import { eventMatchesAgent } from "../session/listener.js";
 import { isSessionControlEvent } from "../session/control-events.js";
 import { buildObservations } from "../session/recall/observations.js";
 import { createMemoryService } from "../engram/index.js";
-import { assertCanonicalAgentId, canonicalAgentId, withAgentAdmission } from "../session/admission-auth.js";
+import {
+  AdmissionCredentialRefused,
+  assertCanonicalAgentId,
+  canonicalAgentId,
+  withAgentAdmission,
+} from "../session/admission-auth.js";
+import { hasStoredAdmissionCredentials, storedAdmissionAgentsForSession } from "../session/admission.js";
+import { sessionRouteClass } from "../session/route-classes.js";
 import {
   SESSION_REACTION_TYPES,
   isSessionReactionType,
@@ -886,43 +893,63 @@ async function persistSessionEvent({
   };
 }
 
-// Local MCP tools that act AS an agent: post, raise attention, react, reply, act on a
-// message, lease files, or advance that agent's read cursor. Each runs inside the
-// agent's admission scope, the same canonical path native `sl session` actor commands
-// use. A live stored admission is the only credential its requests carry; an expired,
-// malformed or mis-bound one is refused before any request; a credential the API
-// refuses (401/403) is final. With no stored admission a tool behaves as before.
-export const SESSION_MCP_ACTOR_TOOLS = Object.freeze([
-  "poll_inbox",
-  "read_history",
-  "send_message",
-  "attention_request",
-  "session_action",
-  "session_react",
-  "session_reply",
-  "session_lock",
-  "session_unlock",
-]);
-
-function actorAgentId(toolName, input = {}) {
-  const raw =
-    normalizeString(input.agentId || input.agent_id || input.agent) ||
-    (toolName === "read_history" ? normalizeString(process.env.SENTINELAYER_AGENT_ID) : "");
-  if (!raw) return "";
-  // One canonical identity for authorisation and execution (see admission-auth.js).
-  assertCanonicalAgentId(raw, "agentId");
-  return canonicalAgentId(raw);
+function refuseOutsideAdmission(reason) {
+  throw new AdmissionCredentialRefused(
+    `This tool runs for an agent on this machine and needs an admission it can bind to: ${reason}. ` +
+      `It will not fall back to other credentials.`,
+    { reason: "session_admission_not_bound" },
+  );
 }
 
-function routeActorToolsThroughAdmission(handlers) {
-  for (const name of SESSION_MCP_ACTOR_TOOLS) {
+/**
+ * An agent context is a process that acts for an agent: SENTINELAYER_AGENT_ID is set, or
+ * this machine stores any agent admission credential (usable or not).
+ */
+export async function isAgentContext({ env = process.env } = {}) {
+  return Boolean(normalizeString(env.SENTINELAYER_AGENT_ID)) || (await hasStoredAdmissionCredentials());
+}
+
+/**
+ * The one credential policy for local MCP session tools, by the tool's class in
+ * SESSION_ROUTE_CLASSES (src/session/route-classes.js):
+ *   - exempt-local tools, and every tool outside an agent context: run as before
+ *   - owner tools: refused in an agent context
+ *   - the session stores an admission on this machine (in any state): the tool binds to the
+ *     admission of the agent it names (input agentId, else SENTINELAYER_AGENT_ID) and runs
+ *     inside its scope; naming no agent, an agent holding none of the session's admissions,
+ *     or an expired, malformed or mis-bound admission is refused before any request
+ *   - the session stores none: legacy-data-plane tools run as before; control, owner and
+ *     unclassified (including newly added) tools are refused before any request
+ */
+export async function runInSessionToolContext(name, input = {}, run, { env = process.env } = {}) {
+  const routeClass = sessionRouteClass(`mcp:${name}`);
+  if (routeClass === "exempt-local") return run(input);
+  if (!(await isAgentContext({ env }))) return run(input);
+  if (routeClass === "owner") refuseOutsideAdmission("owner actions are not available to agents");
+  const sessionId = normalizeString(input.sessionId || input.session_id || input.session);
+  if (!sessionId) refuseOutsideAdmission("no session id was given");
+  const stored = await storedAdmissionAgentsForSession(sessionId);
+  if (stored.length === 0) {
+    if (routeClass === "legacy-data-plane") return run(input);
+    refuseOutsideAdmission(`session ${sessionId} stores no admission on this machine and "${name}" needs one`);
+  }
+  const raw = normalizeString(input.agentId || input.agent_id || input.agent) || normalizeString(env.SENTINELAYER_AGENT_ID);
+  if (!raw) refuseOutsideAdmission("no agent id was given");
+  // One canonical identity for authorisation and execution (see admission-auth.js).
+  assertCanonicalAgentId(raw, "agentId");
+  const agentId = canonicalAgentId(raw);
+  if (!stored.includes(agentId)) {
+    refuseOutsideAdmission(`agent "${agentId}" holds none of the admissions stored for session ${sessionId}`);
+  }
+  // live: runs inside the admission scope; an expired, malformed or mis-bound one is refused there.
+  // The file was seen above, so one removed since then refuses too: never a fallback.
+  return withAgentAdmission(sessionId, agentId, () => run(input), { requireStored: true });
+}
+
+export function routeAgentToolsThroughAdmission(handlers, { env = process.env } = {}) {
+  for (const name of Object.keys(handlers)) {
     const run = handlers[name];
-    handlers[name] = async (input = {}) => {
-      const agentId = actorAgentId(name, input);
-      // No agent named: the tool's own validation reports it (read_history reads as the user).
-      if (!agentId) return run(input);
-      return withAgentAdmission(requireSessionId(input), agentId, () => run(input));
-    };
+    handlers[name] = (input = {}) => runInSessionToolContext(name, input, run, { env });
   }
   return handlers;
 }
@@ -1336,7 +1363,7 @@ export function createSessionMcpToolHandlers({
       });
     },
   };
-  return routeActorToolsThroughAdmission(handlers);
+  return routeAgentToolsThroughAdmission(handlers);
 }
 
 export const SESSION_MCP_TOOLS = Object.freeze([
@@ -1625,13 +1652,14 @@ export const SESSION_MCP_TOOLS = Object.freeze([
     name: "session_locks",
     title: "List Senti File Locks",
     description:
-      "List active authoritative file leases for a session.",
+      "List active authoritative file leases for a session. In an agent context it runs on the agent's admission (agentId, else SENTINELAYER_AGENT_ID).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       required: ["sessionId"],
       properties: {
         sessionId: { type: "string", minLength: 1 },
+        agentId: { type: "string", minLength: 1 },
       },
     },
   },

@@ -15,7 +15,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 // ---------------------------------------------------------------- isolation
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-admission-cmd-"));
@@ -445,6 +445,7 @@ const MCP_ACTOR_CALLS = [
   ["session_reply", (h, agentId) => h.session_reply({ sessionId: SID, agentId, targetSequenceId: 1, message: "on it" })],
   ["session_lock", (h, agentId) => h.session_lock({ sessionId: SID, agentId, files: ["src/a.js"] })],
   ["session_unlock", (h, agentId) => h.session_unlock({ sessionId: SID, agentId, files: ["src/a.js"] })],
+  ["session_locks", (h, agentId) => h.session_locks({ sessionId: SID, agentId })],
 ];
 
 const STORED_CREDENTIAL_STATES = [
@@ -463,10 +464,12 @@ async function mcpHandlersFor(ws) {
   return createSessionMcpToolHandlers({ targetPath: ws });
 }
 
-test("every actor-bearing MCP tool is covered by these admission tests", async () => {
-  const { SESSION_MCP_ACTOR_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+test("every admission-routed MCP session tool is covered by these admission tests", async () => {
+  const { sessionRouteClass } = await import("../src/session/route-classes.js");
+  const handlers = await mcpHandlersFor(os.tmpdir());
+  const routed = Object.keys(handlers).filter((name) => sessionRouteClass(`mcp:${name}`) !== "exempt-local");
   const covered = new Set(MCP_ACTOR_CALLS.map(([label]) => label.split(" ")[0]));
-  assert.deepEqual([...SESSION_MCP_ACTOR_TOOLS].sort(), [...covered].sort());
+  assert.deepEqual(routed.sort(), [...covered].sort());
 });
 
 test("MCP actor tools with a LIVE admission send only the admission credential", async () => {
@@ -829,6 +832,31 @@ test("after the `--` terminator, --agent is message text, not an identity", asyn
   const calls = since(api, mark);
   assert.ok(calls.length >= 1);
   assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), [], "ran as terminator-agent, on its admission");
+});
+
+test("an admission resolved for a command but gone when runCli reads it refuses, with no request", async () => {
+  const { ws, api } = await joinAdmitted("removed-agent");
+  const file = path.resolve(admissionCredentialPath(SID, "removed-agent", { homeDir }));
+  const readFile = fsp.readFile;
+  // The file is removed at the moment the dispatch wrapper reads it, after the command's
+  // (session, agent) was resolved from it.
+  mock.method(fsp, "readFile", async (target, ...rest) => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    const stack = String(new Error().stack);
+    Error.stackTraceLimit = limit;
+    if (path.resolve(String(target)) === file && /withAgentAdmission/.test(stack)) await fsp.rm(file, { force: true });
+    return readFile.call(fsp, target, ...rest);
+  });
+  const mark = api.requests.length;
+  let ran;
+  try {
+    ran = await viaCli(["session", "say", SID, "after removal", "--agent", "removed-agent", "--json", "--path", ws]);
+  } finally {
+    mock.restoreAll();
+  }
+  assert.match(String(ran.error?.message), /no longer present.*will not fall back/s);
+  assert.deepEqual(since(api, mark), [], "no request at all, so never the human token");
 });
 
 function fakeCommand({ path: names, opts, sources = {}, args = [] }) {

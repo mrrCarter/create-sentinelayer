@@ -241,6 +241,30 @@ function validateBridgeToolInput(tool = {}, input = {}) {
       return `unsupported_input_type:${key}`;
     }
   }
+  const dashKey = dashLeadingValueKey(tool, input);
+  if (dashKey) {
+    return `unsupported_input_value:${dashKey}`;
+  }
+  return "";
+}
+
+// Positional and option values are copied into argv verbatim, and a value that starts with
+// "-" would be parsed as command-line syntax rather than as a value. The bridge does not
+// accept such values; the direct CLI remains available for them.
+function dashLeadingValueKey(tool = {}, input = {}) {
+  const metadata = tool.metadata || {};
+  const names = [
+    ...(Array.isArray(metadata.positional) ? metadata.positional : []).map((spec) => spec.name),
+    ...(Array.isArray(metadata.options) ? metadata.options : [])
+      .filter((spec) => spec.expectsValue && !spec.json)
+      .map((spec) => spec.name),
+  ];
+  for (const name of names) {
+    const value = input[name];
+    const items = Array.isArray(value) ? value : [value];
+    if (items.some((item) => typeof item === "string" && item.trimStart().startsWith("-"))) return name;
+    if (items.some((item) => typeof item === "number" && item < 0)) return name;
+  }
   return "";
 }
 
