@@ -5,6 +5,7 @@ import "./setup-env.mjs";
 // stands in for any other origin, and the token sent there must be refused.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import fsp from "node:fs/promises";
@@ -17,7 +18,12 @@ import { readStoredSession, writeStoredSession } from "../src/auth/session-store
 import { requestHostedMcpAccessToken } from "../src/mcp/token-service.js";
 import { __legacyCredentialFlowForTests as legacy } from "../src/legacy-cli.js";
 
-const token = (label) => `${label}_${"t".repeat(40)}`;
+// One random token per label: none is a substring of another, so each source is recognised on its own.
+const tokens = new Map();
+const token = (label) => {
+  if (!tokens.has(label)) tokens.set(label, `${label}_${randomBytes(24).toString("hex")}`);
+  return tokens.get(label);
+};
 
 // A loopback server; `routes` maps "METHOD /path" (or "METHOD /prefix*") to a handler.
 async function startServer(routes = {}) {
