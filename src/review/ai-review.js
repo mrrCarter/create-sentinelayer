@@ -10,7 +10,7 @@ import {
 import { computeProviderCost } from "../billing/price-book.js";
 import { buildBillingRunId, buildCallIdempotencyKey, sanitizeBillingMetadata } from "../billing/ledger-entry.js";
 import { recordSessionUsage } from "../billing/session-usage.js";
-import { loadConfig } from "../config/service.js";
+import { loadConfig, userConfigValues } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateTokens } from "../cost/tokenizer.js";
@@ -534,7 +534,7 @@ export async function runAiReviewLayer({
     configModel: config.resolved.defaultModelId || DEFAULT_REVIEW_AI_MODEL,
   });
   const explicitApiKey = normalizeString(apiKey);
-  const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, config.resolved);
+  const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, userConfigValues(config));
 
   const prompt = buildAiReviewPrompt({
     targetPath: normalizedTargetPath,

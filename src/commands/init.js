@@ -1,23 +1,26 @@
 import process from "node:process";
 
-import { loadConfig } from "../config/service.js";
+import { loadConfig, userConfigValues } from "../config/service.js";
 
 // Config values the scaffold flow reads from the environment. The API it talks to and the token
 // it sends are never set here: they come from the trust context and the auth service
 // (src/auth/credential-destinations.js), so a workspace .sentinelayer.yml cannot choose them,
 // and child processes inherit neither.
-function applyConfigEnvDefaults(resolvedConfig) {
+// Provider keys come from the user's own config (global, or the environment), never the workspace.
+function applyConfigEnvDefaults(config) {
+  const resolvedConfig = config.resolved;
+  const userValues = userConfigValues(config);
   if (!process.env.SENTINELAYER_WEB_URL && resolvedConfig.webUrl) {
-    process.env.SENTINELAYER_WEB_URL = resolvedConfig.webUrl;
+    process.env.SENTINELAYER_WEB_URL = resolvedConfig.webUrl; // printed as a link only
   }
-  if (!process.env.OPENAI_API_KEY && resolvedConfig.openaiApiKey) {
-    process.env.OPENAI_API_KEY = resolvedConfig.openaiApiKey;
+  if (!process.env.OPENAI_API_KEY && userValues.openaiApiKey) {
+    process.env.OPENAI_API_KEY = userValues.openaiApiKey;
   }
-  if (!process.env.ANTHROPIC_API_KEY && resolvedConfig.anthropicApiKey) {
-    process.env.ANTHROPIC_API_KEY = resolvedConfig.anthropicApiKey;
+  if (!process.env.ANTHROPIC_API_KEY && userValues.anthropicApiKey) {
+    process.env.ANTHROPIC_API_KEY = userValues.anthropicApiKey;
   }
-  if (!process.env.GOOGLE_API_KEY && resolvedConfig.googleApiKey) {
-    process.env.GOOGLE_API_KEY = resolvedConfig.googleApiKey;
+  if (!process.env.GOOGLE_API_KEY && userValues.googleApiKey) {
+    process.env.GOOGLE_API_KEY = userValues.googleApiKey;
   }
 }
 
@@ -30,7 +33,7 @@ export function registerInitCommand(program, invokeLegacy) {
     .option("--skip-browser-open", "Do not auto-open browser during auth")
     .action(async (projectName, options) => {
       const config = await loadConfig();
-      applyConfigEnvDefaults(config.resolved);
+      applyConfigEnvDefaults(config);
 
       const legacyArgs = [];
       const normalizedProjectName = String(projectName || "").trim();

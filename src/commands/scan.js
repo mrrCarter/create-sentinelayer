@@ -12,7 +12,7 @@ import {
   resolveProvider,
 } from "../ai/client.js";
 import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-usage.js";
-import { loadConfig, resolveOutputRoot } from "../config/service.js";
+import { loadConfig, resolveOutputRoot, userConfigValues } from "../config/service.js";
 import { evaluateBudget } from "../cost/budget.js";
 import { appendCostEntry, summarizeCostHistory } from "../cost/history.js";
 import { estimateModelCost } from "../cost/tracker.js";
@@ -579,7 +579,7 @@ export function registerScanCommand(program) {
         configModel: config.resolved.defaultModelId,
       });
       const explicitApiKey = String(options.apiKey || "").trim();
-      const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, config.resolved);
+      const configuredApiKey = resolveConfiguredApiKey(resolvedProvider, userConfigValues(config));
 
       const prompt = buildAiPreScanPrompt({
         targetPath,

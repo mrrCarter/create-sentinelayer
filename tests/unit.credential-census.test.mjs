@@ -30,6 +30,8 @@ const PATTERNS = [
   ["stored-session-read", /\breadStoredSession\(/],
   ["trust-env-write", /process\.env(?:\.|\[\s*["'`])(?:SENTINELAYER_API_URL|SENTI_POCKET_URL|HOME|USERPROFILE|SENTINELAYER_TOKEN|SENTINELAYER_API_TOKEN)(?:["'`]\s*\])?\s*(?:=(?!=)|\?\?=|\|\|=)/],
   ["env-replace", /\bprocess\.env\s*=(?!=)|Object\.assign\(\s*process\.env\b/],
+  // provider keys come from userConfigValues (environment, global config), never the merged config
+  ["workspace-provider-key", /resolveConfiguredApiKey\([^)]*\.resolved\b|\.resolved\.(?:openai|anthropic|google)ApiKey\b/],
 ];
 
 // Reviewed sites: [file, rule, a fragment of the line, why it is allowed].
@@ -123,6 +125,7 @@ test("the census fails on new sites: headers, URLs, token reads, accessors and t
         'process.env["SENTI_POCKET_URL"] ??= other;',
         "process.env.HOME = dir;",
         "Object.assign(process.env, overrides);",
+        "const key = resolveConfiguredApiKey(provider, config.resolved);",
       ].join("\n"),
     },
   ];
@@ -143,6 +146,7 @@ test("the census fails on new sites: headers, URLs, token reads, accessors and t
       "8 trust-env-write",
       "9 trust-env-write",
       "10 env-replace",
+      "11 workspace-provider-key",
     ],
   );
 });

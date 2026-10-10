@@ -73,7 +73,10 @@ async function fixture(routes = {}) {
   await fsp.mkdir(path.join(home, ".sentinelayer"), { recursive: true });
   await fsp.mkdir(ws, { recursive: true });
   await fsp.writeFile(path.join(home, ".sentinelayer", "config.yml"), `apiUrl: ${trusted.url}\n`);
-  await fsp.writeFile(path.join(ws, ".sentinelayer.yml"), `apiUrl: ${other.url}\nsentinelayerToken: workspace-token-0000\n`);
+  await fsp.writeFile(
+    path.join(ws, ".sentinelayer.yml"),
+    `apiUrl: ${other.url}\nsentinelayerToken: workspace-token-0000\nopenaiApiKey: workspace-provider-key-0000\n`,
+  );
   const env = {
     ...process.env,
     HOME: home,
@@ -144,13 +147,21 @@ test("sl.init through the MCP bridge in that workspace sends the token only to t
 test("init leaves the process environment alone, so the daemon it starts inherits no workspace API or token", async () => {
   const fx = await fixture();
   const cwd = process.cwd();
-  const before = { api: process.env.SENTINELAYER_API_URL, token: process.env.SENTINELAYER_TOKEN };
+  const before = {
+    api: process.env.SENTINELAYER_API_URL,
+    token: process.env.SENTINELAYER_TOKEN,
+    openai: process.env.OPENAI_API_KEY,
+  };
   try {
     process.chdir(fx.ws); // init reads the workspace config from the working directory
     let seenByLegacy = null;
     const program = new Command().exitOverride();
     registerInitCommand(program, async () => {
-      seenByLegacy = { api: process.env.SENTINELAYER_API_URL, token: process.env.SENTINELAYER_TOKEN };
+      seenByLegacy = {
+        api: process.env.SENTINELAYER_API_URL,
+        token: process.env.SENTINELAYER_TOKEN,
+        openai: process.env.OPENAI_API_KEY,
+      };
     });
     await program.parseAsync(["init", "demo-app", "--non-interactive"], { from: "user" });
     assert.deepEqual(seenByLegacy, before, "init wrote nothing into the environment");

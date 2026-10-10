@@ -67,12 +67,39 @@ function normalizeLayerScope(scope, { allowResolved = true } = {}) {
   return normalized;
 }
 
+// Values a workspace .sentinelayer.yml may not set for the user: where the user's token goes, the
+// token itself, and provider keys. They come from the environment or the global config only.
+const USER_ONLY_KEYS = Object.freeze({
+  apiUrl: "SENTINELAYER_API_URL",
+  sentinelayerToken: "SENTINELAYER_TOKEN",
+  openaiApiKey: "OPENAI_API_KEY",
+  anthropicApiKey: "ANTHROPIC_API_KEY",
+  googleApiKey: "GOOGLE_API_KEY",
+});
+const noticedProjectFiles = new Set();
+
+// One notice per workspace config that sets any of them, so an ignored value is never silent.
+function noticeIgnoredWorkspaceValues(projectPath, projectConfig) {
+  const keys = Object.keys(USER_ONLY_KEYS).filter((key) => projectConfig?.[key] !== undefined);
+  if (keys.length === 0 || noticedProjectFiles.has(projectPath)) return;
+  noticedProjectFiles.add(projectPath);
+  process.stderr.write(
+    `NOTICE: workspace .sentinelayer.yml ${keys.join(", ")} ignored; set ${keys.map((key) => USER_ONLY_KEYS[key]).join(", ")} or the global config (~/.sentinelayer/config.yml).\n`,
+  );
+}
+
+/** The user's own config values (global, then environment), never the workspace's. */
+export function userConfigValues(config) {
+  return { ...(config?.layers?.global || {}), ...(config?.layers?.env || {}) };
+}
+
 export async function loadConfig({ cwd = process.cwd(), env = process.env, homeDir } = {}) {
   const paths = getConfigPaths({ cwd, homeDir });
   const [globalConfig, projectConfig] = await Promise.all([
     readConfigFile(paths.global),
     readConfigFile(paths.project),
   ]);
+  noticeIgnoredWorkspaceValues(paths.project, projectConfig);
 
   const envConfig = buildEnvLayer(env);
   const resolved = configSchema.parse(mergeLayers(globalConfig, projectConfig, envConfig));
