@@ -243,6 +243,34 @@ export function admissionCredentialPath(sessionId, agentId, { homeDir } = {}) {
 }
 
 /**
+ * Whether this machine stores ANY agent admission credential (usable or not, any
+ * session): `<home>/.sentinelayer/agents/<agent>/admissions/<session>.json`. Agent keys
+ * alone do not count. An unreadable directory counts as present, never as absence.
+ */
+export async function hasStoredAdmissionCredentials({ homeDir } = {}) {
+  const agentsDir = path.join(sentinelayerHome(homeDir), "agents");
+  let agents;
+  try {
+    agents = await fsp.readdir(agentsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    return true;
+  }
+  for (const agent of agents) {
+    if (!agent.isDirectory()) continue;
+    let files;
+    try {
+      files = await fsp.readdir(path.join(agentsDir, agent.name, "admissions"));
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      return true;
+    }
+    if (files.some((name) => name.endsWith(".json"))) return true;
+  }
+  return false;
+}
+
+/**
  * What this machine holds for (session, agent):
  *   { state: "none" }                        -- never admitted here: the legacy path applies
  *   { state: "live", credential }            -- use it, and only it
