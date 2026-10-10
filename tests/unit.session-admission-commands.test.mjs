@@ -74,6 +74,8 @@ function fakeApi({
     admissions: new Map(),
     events: [],
     revoked: new Set(),
+    scopeDenied: new Set(),
+    identityForgery: new Set(),
     order: [],
   };
   globalThis.fetch = async (url, init = {}) => {
@@ -89,6 +91,10 @@ function fakeApi({
     if (bearer.startsWith("sladm_")) {
       const adm = [...state.admissions.values()].find((a) => a.token === bearer);
       if (!adm || state.revoked.has(adm.id)) return json({ error: { code: "INVALID_TOKEN" } }, 401);
+      if (state.scopeDenied.has(adm.id)) return json({ error: { code: "ADMISSION_SCOPE_DENIED" } }, 403);
+      if (state.identityForgery.has(adm.id) && method === "POST" && /\/events$/.test(p)) {
+        return json({ error: { code: "IDENTITY_FORGERY" } }, 403);
+      }
       const allowed = ADMISSION_ALLOWED.some(([m, re]) => m === method && re.test(p));
       if (!allowed) return json({ error: { code: "INVALID_TOKEN" } }, 401);
       if (method === "POST" && /\/events$/.test(p) && !adm.actions.includes("session.post")) {
@@ -417,6 +423,117 @@ test("MCP reactions run on the agent's admission and refuse a tombstone before a
     await assert.rejects(react(reaction), /expired.*will not fall back/s, reaction);
     assert.deepEqual(since(api, mark), [], `${reaction}: no request at all`);
   }
+});
+
+// Every actor-bearing local MCP tool, in every stored-credential state. The user's own
+// credential stays configured throughout, so any request made with it would be visible.
+const MCP_ACTOR_CALLS = [
+  ["poll_inbox", (h, agentId) => h.poll_inbox({ sessionId: SID, agentId })],
+  ["read_history", (h, agentId) => h.read_history({ sessionId: SID, agentId })],
+  ["send_message", (h, agentId) => h.send_message({ sessionId: SID, agentId, message: "status update" })],
+  ["attention_request", (h, agentId) => h.attention_request({ sessionId: SID, agentId, message: "please look" })],
+  ["session_action ack", (h, agentId) => h.session_action({ sessionId: SID, agentId, actionType: "ack", targetSequenceId: 1 })],
+  ["session_action working_on", (h, agentId) =>
+    h.session_action({ sessionId: SID, agentId, actionType: "working_on", targetSequenceId: 1, note: "taking it" })],
+  ["session_action reply", (h, agentId) =>
+    h.session_action({ sessionId: SID, agentId, actionType: "reply", targetSequenceId: 1, note: "on it" })],
+  ["session_action disregard", (h, agentId) =>
+    h.session_action({ sessionId: SID, agentId, actionType: "disregard", targetSequenceId: 1 })],
+  ["session_action view", (h, agentId) => h.session_action({ sessionId: SID, agentId, actionType: "view", targetSequenceId: 1 })],
+  ["session_react ack", (h, agentId) => h.session_react({ sessionId: SID, agentId, reaction: "ack", targetSequenceId: 1 })],
+  ["session_react like", (h, agentId) => h.session_react({ sessionId: SID, agentId, reaction: "like", targetSequenceId: 1 })],
+  ["session_reply", (h, agentId) => h.session_reply({ sessionId: SID, agentId, targetSequenceId: 1, message: "on it" })],
+  ["session_lock", (h, agentId) => h.session_lock({ sessionId: SID, agentId, files: ["src/a.js"] })],
+  ["session_unlock", (h, agentId) => h.session_unlock({ sessionId: SID, agentId, files: ["src/a.js"] })],
+];
+
+const STORED_CREDENTIAL_STATES = [
+  ["expired", async (agent) => expire(agent), /expired.*will not fall back/s],
+  ["malformed", async (agent) => tombstone(agent, "{not json"), /unreadable.*will not fall back/s],
+  ["bound elsewhere", async (agent) => {
+    const file = admissionCredentialPath(SID, agent, { homeDir });
+    const stored = JSON.parse(await fsp.readFile(file, "utf8"));
+    await fsp.writeFile(file, JSON.stringify({ ...stored, sessionId: "0f1e2d3c-4b5a-6978-8a9b-0c1d2e3f4a5b" }));
+  }, /names a different session or agent.*will not fall back/s],
+];
+
+async function mcpHandlersFor(ws) {
+  const { createSessionMcpToolHandlers } = await import("../src/mcp/session-stdio-server.js");
+  resetSessionSyncStateForTests();
+  return createSessionMcpToolHandlers({ targetPath: ws });
+}
+
+test("every actor-bearing MCP tool is covered by these admission tests", async () => {
+  const { SESSION_MCP_ACTOR_TOOLS } = await import("../src/mcp/session-stdio-server.js");
+  const covered = new Set(MCP_ACTOR_CALLS.map(([label]) => label.split(" ")[0]));
+  assert.deepEqual([...SESSION_MCP_ACTOR_TOOLS].sort(), [...covered].sort());
+});
+
+test("MCP actor tools with a LIVE admission send only the admission credential", async () => {
+  const { ws, api } = await joinAdmitted("mcp-live");
+  const handlers = await mcpHandlersFor(ws);
+  for (const [label, call] of MCP_ACTOR_CALLS) {
+    const mark = api.requests.length;
+    // The fixture API does not open file leases to admission credentials, so lease tools
+    // fail there; what matters here is which credential each request carries.
+    await call(handlers, "mcp-live").catch(() => null);
+    const calls = since(api, mark);
+    assert.ok(calls.length >= 1, `${label}: reaches the API`);
+    assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), [], `${label}: admission credential only`);
+  }
+  // a spelling that canonicalises to a different identity is refused, never aliased
+  const mark = api.requests.length;
+  await assert.rejects(
+    handlers.send_message({ sessionId: SID, agentId: "mcp:live", message: "hello" }),
+    /not a canonical agent id/,
+  );
+  assert.deepEqual(since(api, mark), []);
+});
+
+for (const [state, makeState, refusal] of STORED_CREDENTIAL_STATES) {
+  test(`MCP actor tools with a ${state.toUpperCase()} stored admission refuse before any request`, async () => {
+    const agent = `mcp-${state.replace(/\s+/g, "-")}`;
+    const { ws, api } = await joinAdmitted(agent);
+    await makeState(agent);
+    const handlers = await mcpHandlersFor(ws);
+    for (const [label, call] of MCP_ACTOR_CALLS) {
+      const mark = api.requests.length;
+      await assert.rejects(call(handlers, agent), refusal, label);
+      assert.deepEqual(since(api, mark), [], `${label}: no request at all`);
+    }
+  });
+}
+
+for (const [state, refuse] of [
+  ["revoked (401)", (api) => { for (const adm of api.admissions.values()) api.revoked.add(adm.id); }],
+  ["scope-denied (403)", (api) => { for (const adm of api.admissions.values()) api.scopeDenied.add(adm.id); }],
+]) {
+  test(`MCP actor tools whose admission the API refuses as ${state} fail with no other credential`, async () => {
+    const agent = `mcp-${state.split(" ")[0]}`;
+    const { ws, api } = await joinAdmitted(agent);
+    refuse(api);
+    const handlers = await mcpHandlersFor(ws);
+    for (const [label, call] of MCP_ACTOR_CALLS) {
+      const mark = api.requests.length;
+      const result = await call(handlers, agent).catch((error) => ({ ok: false, error }));
+      assert.notEqual(result?.ok, true, `${label}: not reported as success`);
+      const calls = since(api, mark);
+      assert.ok(calls.length >= 1, `${label}: the admission credential was tried`);
+      assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), [], `${label}: no other credential`);
+    }
+  });
+}
+
+test("an admitted agent's post refused for an ungranted identity never creates an account-level grant", async () => {
+  const { ws, api } = await joinAdmitted("mcp-grantless");
+  for (const adm of api.admissions.values()) api.identityForgery.add(adm.id);
+  const handlers = await mcpHandlersFor(ws);
+  const mark = api.requests.length;
+  const result = await handlers.send_message({ sessionId: SID, agentId: "mcp-grantless", message: "hello" });
+  assert.notEqual(result.ok, true);
+  const calls = since(api, mark);
+  assert.deepEqual(calls.filter((c) => /agent-grants/.test(c.path)), [], "no agent-grant request");
+  assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), []);
 });
 
 test("`listen --transport stream` is refused for an admitted agent before any request", async () => {

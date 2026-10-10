@@ -196,6 +196,45 @@ test("Unit MCP CLI command tools: blocks sensitive AIdenID commands in the real 
   }
 });
 
+test("Unit MCP CLI command tools: session access administration is not bridge-callable", async () => {
+  const tools = await buildCliCommandMcpTools({
+    buildProgramFn: async () => buildCliProgram({ invokeLegacy: async () => {} }),
+  });
+  const accessTools = tools.filter((tool) => tool.name.startsWith("sl.session.access."));
+  assert.deepEqual(
+    accessTools.map((tool) => tool.name).sort(),
+    [
+      "sl.session.access.approve",
+      "sl.session.access.deny",
+      "sl.session.access.list",
+      "sl.session.access.mode",
+      "sl.session.access.request",
+      "sl.session.access.revoke",
+      "sl.session.access.status",
+    ],
+  );
+  for (const tool of accessTools) {
+    assert.equal(tool.security.runtime_blocked, true, `${tool.name} should be runtime_blocked`);
+    assert.equal(tool.security.runtime_block_reason, "blocked_sensitive_cli_command");
+  }
+
+  let executed = 0;
+  const handlers = createCliCommandMcpToolHandlers(tools, {
+    executeCliCommandFn: async () => {
+      executed += 1;
+      return { ok: true };
+    },
+  });
+  for (const name of ["sl.session.access.approve", "sl.session.access.mode", "sl.session.access.revoke"]) {
+    const result = await handlers[name]({});
+    assert.equal(result.ok, false, name);
+    assert.equal(result.reason, "blocked_sensitive_cli_command", name);
+  }
+  assert.equal(executed, 0, "no access command is executed through the bridge");
+  // ordinary session tools stay callable
+  assert.equal(tools.find((tool) => tool.name === "sl.session.say")?.security.runtime_blocked, undefined);
+});
+
 test("Unit MCP CLI command tools: generates leaf tools from commander tree", async () => {
   const tools = await buildCliCommandMcpTools({
     buildProgramFn: async () => buildFakeProgram(),

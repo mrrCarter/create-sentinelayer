@@ -63,7 +63,8 @@ const ROUTE = {
   claim: "POST /api/v1/sessions/{session_id}/admissions/{admission_id}/claim",
   cancel: "POST /api/v1/sessions/{session_id}/admissions/{admission_id}/cancel",
 };
-const TERMINAL = new Set(["denied", "cancelled", "expired", "revoked"]);
+// Final admission statuses: polling stops, nothing is claimed, local request state is cleared.
+const TERMINAL = new Set(["denied", "cancelled", "expired", "revoked", "stopped"]);
 const TTL_MIN_SECONDS = 300;
 const TTL_MAX_SECONDS = 86_400;
 
@@ -240,6 +241,34 @@ export function admissionCredentialPath(sessionId, agentId, { homeDir } = {}) {
     "admissions",
     `${safeSegment(sessionId, "sessionId")}.json`
   );
+}
+
+/**
+ * Whether this machine stores ANY agent admission credential (usable or not, any
+ * session): `<home>/.sentinelayer/agents/<agent>/admissions/<session>.json`. Agent keys
+ * alone do not count. An unreadable directory counts as present, never as absence.
+ */
+export async function hasStoredAdmissionCredentials({ homeDir } = {}) {
+  const agentsDir = path.join(sentinelayerHome(homeDir), "agents");
+  let agents;
+  try {
+    agents = await fsp.readdir(agentsDir, { withFileTypes: true });
+  } catch (error) {
+    if (error && error.code === "ENOENT") return false;
+    return true;
+  }
+  for (const agent of agents) {
+    if (!agent.isDirectory()) continue;
+    let files;
+    try {
+      files = await fsp.readdir(path.join(agentsDir, agent.name, "admissions"));
+    } catch (error) {
+      if (error && error.code === "ENOENT") continue;
+      return true;
+    }
+    if (files.some((name) => name.endsWith(".json"))) return true;
+  }
+  return false;
 }
 
 /**
@@ -471,18 +500,24 @@ export async function runAdmissionJoin(
       headers: { Authorization: `Bearer ${auth.token}` },
     });
     state.status = polled.status;
-    const claimReady =
-      polled.status === "approved" &&
-      polled.identityReady === true &&
-      polled?.claim?.domain === CLAIM_DOMAIN &&
-      polled?.claim?.preimage;
-    if (polled.status === "approved" && polled.identityReady === true && !claimReady) {
-      throw new Error("Identity-ready admission did not include a valid claim challenge.");
+    // Identity readiness is a server capability: a server that gates the claim on
+    // AIdenID identity evidence reports `identityReady` (true or false) on every
+    // approved poll. A server that does not report it issues the claim challenge on
+    // approval, so the claim proceeds as soon as the admission is approved.
+    const reportsIdentityReadiness =
+      polled.status === "approved" && Object.prototype.hasOwnProperty.call(polled, "identityReady");
+    const claimable =
+      polled.status === "approved" && (!reportsIdentityReadiness || polled.identityReady === true);
+    if (reportsIdentityReadiness) {
+      const claimReady = claimable && polled?.claim?.domain === CLAIM_DOMAIN && polled?.claim?.preimage;
+      if (polled.identityReady === true && !claimReady) {
+        throw new Error("Identity-ready admission did not include a valid claim challenge.");
+      }
+      if (polled.identityReady !== true && polled?.claim) {
+        throw new Error("Admission exposed a claim challenge before AIdenID identity evidence was ready.");
+      }
     }
-    if (polled.status === "approved" && polled.identityReady !== true && polled?.claim) {
-      throw new Error("Admission exposed a claim challenge before AIdenID identity evidence was ready.");
-    }
-    if (claimReady || TERMINAL.has(polled.status) || polled.status === "active") break;
+    if (claimable || TERMINAL.has(polled.status) || polled.status === "active") break;
     const phase = polled.status === "approved" ? "identity" : "approval";
     onPending({
       admissionId: state.admissionId,

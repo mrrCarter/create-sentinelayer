@@ -5,6 +5,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-session-access-"));
 const homeDir = path.join(scratch, "home");
@@ -18,6 +19,8 @@ process.env.SENTINELAYER_API_URL = "https://api.fixture.invalid";
 process.env.SENTINELAYER_API_ALLOWED_HOSTS = "api.fixture.invalid";
 process.env.SENTINELAYER_CIRCUIT_STATE_DIR = path.join(scratch, "circuits");
 process.env.SENTINELAYER_TOKEN = "human-fixture-token";
+// These are owner flows: an inherited agent identity would make them an agent context.
+delete process.env.SENTINELAYER_AGENT_ID;
 
 const { Command } = await import("commander");
 const { registerSessionCommand } = await import("../src/commands/session.js");
@@ -414,6 +417,96 @@ test("access validation fails before auth or network I/O", async () => {
   );
   assert.equal(requestCalls, 0);
   assert.equal(authCalls, 0);
+});
+
+const OWNER_ACTIONS = [
+  ["approve", ["session", "access", "approve", SID, AID, "--ttl", "24h", "--json"]],
+  ["deny", ["session", "access", "deny", SID, AID, "--json"]],
+  ["revoke", ["session", "access", "revoke", SID, AID, "--json"]],
+  ["mode", ["session", "access", "mode", SID, "legacy", "--json"]],
+];
+
+async function withEnv(name, value, fn) {
+  const saved = process.env[name];
+  process.env[name] = value;
+  try {
+    return await fn();
+  } finally {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  }
+}
+
+test("access owner actions are unavailable while SENTINELAYER_AGENT_ID is set", async () => {
+  await withEnv("SENTINELAYER_AGENT_ID", "review-agent", async () => {
+    for (const [name, args] of OWNER_ACTIONS) {
+      const state = fakeApi();
+      const result = await sl(args);
+      assert.match(
+        String(result.error?.message),
+        /owner actions and are unavailable in an agent context \(SENTINELAYER_AGENT_ID is set\)/,
+        name,
+      );
+      assert.deepEqual(state.requests, [], `${name}: no request at all`);
+    }
+  });
+  // the same commands work again for the owner once the agent context is gone
+  const state = fakeApi();
+  const approved = await sl(OWNER_ACTIONS[0][1]);
+  assert.equal(approved.error, null, String(approved.error?.stack || approved.error));
+  assert.ok(mutationCall(state, `/admissions/${AID}/decision`));
+});
+
+test("access owner actions are unavailable while this machine stores agent admission credentials", async () => {
+  const { admissionCredentialPath } = await import("../src/session/admission.js");
+  const stored = admissionCredentialPath(SID, "review-agent", { homeDir });
+  await fsp.mkdir(path.dirname(stored), { recursive: true });
+  // usable or not: an expired credential is still an agent context
+  await fsp.writeFile(stored, JSON.stringify({ token: "sladm_x", expiresAt: 1, sessionId: SID, agentId: "review-agent" }));
+  try {
+    for (const [name, args] of OWNER_ACTIONS) {
+      const state = fakeApi();
+      const result = await sl(args);
+      assert.match(
+        String(result.error?.message),
+        /unavailable in an agent context \(agent admission credentials are stored on this machine\)/,
+        name,
+      );
+      assert.deepEqual(state.requests, [], `${name}: no request at all`);
+    }
+    // the library entry points refuse as well, before any auth lookup
+    let authCalls = 0;
+    const resolveAuthSession = async () => {
+      authCalls += 1;
+      return { token: "unused", apiUrl: API };
+    };
+    for (const call of [
+      () => decideSessionAdmission(SID, AID, { decision: "approve", resolveAuthSession }),
+      () => revokeSessionAdmission(SID, AID, { resolveAuthSession }),
+      () => setSessionAdmissionMode(SID, "legacy", { resolveAuthSession }),
+    ]) {
+      await assert.rejects(call(), /unavailable in an agent context/);
+    }
+    assert.equal(authCalls, 0);
+  } finally {
+    await fsp.rm(path.join(homeDir, ".sentinelayer", "agents"), { recursive: true, force: true });
+  }
+});
+
+test("README and docs/sessions.md describe access behavior that holds on every API version", async () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  for (const file of ["README.md", "docs/sessions.md"]) {
+    const text = (await fsp.readFile(path.join(root, file), "utf8")).replace(/\s+/g, " ");
+    // the identity wait depends on what the API reports, never unconditionally
+    assert.match(text, /reports? identity readiness/, `${file}: identity wait is conditional`);
+    assert.doesNotMatch(text, /the API withholds the claim challenge until both identity artifacts are ready/, file);
+    assert.doesNotMatch(text, /New rooms default to (fail-closed )?`required`/, file);
+    // owner actions and the bridge
+    assert.match(text, /unavailable in an agent context/, `${file}: owner actions in an agent context`);
+    assert.match(text, /not exposed through the MCP CLI bridge/, `${file}: bridge exposure`);
+  }
+  const sessions = (await fsp.readFile(path.join(root, "docs/sessions.md"), "utf8")).replace(/\s+/g, " ");
+  assert.match(sessions, /revoked, or stopped grants never join/);
 });
 
 test.after(async () => {

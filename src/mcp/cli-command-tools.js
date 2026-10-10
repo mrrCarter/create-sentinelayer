@@ -64,6 +64,9 @@ const SENSITIVE_COMMAND_PREFIXES = [
   "ai.identity.target.",
   "ai.identity.site.",
   "ai.identity.legal-hold.",
+  // Room access administration (request/list/status/approve/deny/revoke/mode) belongs to
+  // the room owner's own session; operators use the direct CLI or the web dashboard.
+  "session.access.",
 ];
 const REDACTION_MARKER = "[REDACTED]";
 

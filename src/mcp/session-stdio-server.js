@@ -13,6 +13,7 @@ import { eventMatchesAgent } from "../session/listener.js";
 import { isSessionControlEvent } from "../session/control-events.js";
 import { buildObservations } from "../session/recall/observations.js";
 import { createMemoryService } from "../engram/index.js";
+import { assertCanonicalAgentId, canonicalAgentId, withAgentAdmission } from "../session/admission-auth.js";
 import {
   SESSION_REACTION_TYPES,
   isSessionReactionType,
@@ -885,6 +886,47 @@ async function persistSessionEvent({
   };
 }
 
+// Local MCP tools that act AS an agent: post, raise attention, react, reply, act on a
+// message, lease files, or advance that agent's read cursor. Each runs inside the
+// agent's admission scope, the same canonical path native `sl session` actor commands
+// use. A live stored admission is the only credential its requests carry; an expired,
+// malformed or mis-bound one is refused before any request; a credential the API
+// refuses (401/403) is final. With no stored admission a tool behaves as before.
+export const SESSION_MCP_ACTOR_TOOLS = Object.freeze([
+  "poll_inbox",
+  "read_history",
+  "send_message",
+  "attention_request",
+  "session_action",
+  "session_react",
+  "session_reply",
+  "session_lock",
+  "session_unlock",
+]);
+
+function actorAgentId(toolName, input = {}) {
+  const raw =
+    normalizeString(input.agentId || input.agent_id || input.agent) ||
+    (toolName === "read_history" ? normalizeString(process.env.SENTINELAYER_AGENT_ID) : "");
+  if (!raw) return "";
+  // One canonical identity for authorisation and execution (see admission-auth.js).
+  assertCanonicalAgentId(raw, "agentId");
+  return canonicalAgentId(raw);
+}
+
+function routeActorToolsThroughAdmission(handlers) {
+  for (const name of SESSION_MCP_ACTOR_TOOLS) {
+    const run = handlers[name];
+    handlers[name] = async (input = {}) => {
+      const agentId = actorAgentId(name, input);
+      // No agent named: the tool's own validation reports it (read_history reads as the user).
+      if (!agentId) return run(input);
+      return withAgentAdmission(requireSessionId(input), agentId, () => run(input));
+    };
+  }
+  return handlers;
+}
+
 export function createSessionMcpToolHandlers({
   targetPath = process.cwd(),
   pollSessionEventsFn = pollSessionEvents,
@@ -924,7 +966,7 @@ export function createSessionMcpToolHandlers({
       verified: false,
     };
   };
-  return {
+  const handlers = {
     async poll_inbox(input = {}) {
       const sessionId = requireSessionId(input);
       const agentId = requireAgentId(input);
@@ -1294,6 +1336,7 @@ export function createSessionMcpToolHandlers({
       });
     },
   };
+  return routeActorToolsThroughAdmission(handlers);
 }
 
 export const SESSION_MCP_TOOLS = Object.freeze([
