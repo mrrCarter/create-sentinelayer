@@ -376,6 +376,18 @@ function recordCircuitFailure(circuit, nowMs) {
   persistCircuitState();
 }
 
+// 401 and 403 refuse one credential (an expired, revoked or narrower agent admission, or
+// an identity the account has not granted). They say nothing about API health, so they
+// never count toward the machine-wide outbound breaker; every other failure does.
+function isCredentialRefusal(response) {
+  return Boolean(response) && (response.status === 401 || response.status === 403);
+}
+
+function recordOutboundFailure(response, nowMs) {
+  if (isCredentialRefusal(response)) return;
+  recordCircuitFailure(outboundCircuit, nowMs);
+}
+
 function recordCircuitSuccess(circuit) {
   if (!circuit) {
     return;
@@ -1039,14 +1051,14 @@ export async function syncSessionEventToApi(
         if (!agentId || isReservedAgentIdForGrant(agentId)) {
           // Reserved or empty — server enforcement is intentional, no grant
           // attempt is meaningful. Treat as a normal 403 failure.
-          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          recordOutboundFailure(response, normalizedNowMs);
           return { synced: false, reason: "api_403" };
         }
         if (autoGrantAttemptedAgentIds.has(agentId)) {
           // We already tried to grant this identity in a prior event in this
           // process and either it succeeded but the server still says no, or
           // the grant failed. Either way, don't loop — surface the 403.
-          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          recordOutboundFailure(response, normalizedNowMs);
           return { synced: false, reason: "api_403" };
         }
         rememberAutoGrantAttempt(agentId);
@@ -1083,7 +1095,7 @@ export async function syncSessionEventToApi(
         // Treat 409 (already granted) as success — idempotent on the server.
         const grantIdempotent = grantStatus === 409;
         if (!grantOk && !grantIdempotent) {
-          recordCircuitFailure(outboundCircuit, normalizedNowMs);
+          recordOutboundFailure(grantResponse, normalizedNowMs);
           return {
             synced: false,
             reason: `grant_failed_${grantStatus || "no_response"}`,
@@ -1111,7 +1123,7 @@ export async function syncSessionEventToApi(
             autoGranted: true,
           };
         }
-        recordCircuitFailure(outboundCircuit, normalizedNowMs);
+        recordOutboundFailure(retryResponse, normalizedNowMs);
         return {
           synced: false,
           reason: `api_${retryResponse ? retryResponse.status : "no_response"}`,
@@ -1119,7 +1131,7 @@ export async function syncSessionEventToApi(
       }
     }
 
-    recordCircuitFailure(outboundCircuit, normalizedNowMs);
+    recordOutboundFailure(response, normalizedNowMs);
     return {
       synced: false,
       reason: `api_${response ? response.status : "no_response"}`,
@@ -1209,7 +1221,7 @@ async function syncSessionAuxPayload(
       { readSuccessBody: false },
     );
     if (!response || !response.ok) {
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      recordOutboundFailure(response, normalizedNowMs);
       return {
         synced: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -1845,7 +1857,7 @@ export async function renewSessionPresence(
           retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
         };
       }
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      recordOutboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -1960,7 +1972,7 @@ export async function requestSessionListenerStop(
           retryAfterMs: retryAfterMsFromResponse(response, payload, normalizedNowMs),
         };
       }
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      recordOutboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -2085,7 +2097,7 @@ export async function updateSessionReadCursor(
           updated: false,
         };
       }
-      recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      recordOutboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${response ? response.status : "no_response"}`,
@@ -3000,7 +3012,7 @@ export async function createSessionMessageAction(
       // A refusal (409 nothing-to-undo, 422 a server that predates the action) is an
       // answer about this request, not API health: it must not open the persisted
       // breaker that guards every other outbound write.
-      if (!refused) recordCircuitFailure(outboundCircuit, normalizedNowMs);
+      if (!refused) recordOutboundFailure(response, normalizedNowMs);
       return {
         ok: false,
         reason: `api_${status ?? "no_response"}`,

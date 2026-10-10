@@ -1334,6 +1334,52 @@ test("Unit session sync: createSessionMessageAction does not wait on stalled err
   assert.ok(Date.now() - startedAt < 500, "non-OK response bodies must not delay status handling");
 });
 
+test("Unit session sync: 401/403 credential refusals never open the outbound breaker; 5xx still does", async () => {
+  const auth = async () => ({ token: "tok_refusals", apiUrl: "https://api.sentinelayer.com/" });
+  const writers = {
+    syncSessionEventToApi: (fetchImpl) =>
+      syncSessionEventToApi(
+        "sess-refusals",
+        { event: "session_message", sessionId: "sess-refusals", payload: { message: "hello" } },
+        { resolveAuthSession: auth, fetchImpl, nowMs: () => 1_700_000_480_000 },
+      ),
+    createSessionMessageAction: (fetchImpl) =>
+      createSessionMessageAction("sess-refusals", {
+        actionType: "ack",
+        targetSequenceId: 42,
+        idempotencyKey: "ack-42",
+        resolveAuthSession: auth,
+        fetchImpl,
+        nowMs: () => 1_700_000_480_000,
+      }),
+    updateSessionReadCursor: (fetchImpl) =>
+      updateSessionReadCursor("sess-refusals", {
+        targetSequenceId: 42,
+        agentId: "codex",
+        resolveAuthSession: auth,
+        fetchImpl,
+        nowMs: () => 1_700_000_480_000,
+      }),
+  };
+  for (const [name, write] of Object.entries(writers)) {
+    for (const status of [401, 403, 500]) {
+      resetSessionSyncStateForTests();
+      let fetches = 0;
+      const fetchImpl = async () => {
+        fetches += 1;
+        return { ok: false, status, json: async () => ({ error: { code: "REFUSED" } }) };
+      };
+      for (let attempt = 0; attempt < 4; attempt += 1) await write(fetchImpl);
+      if (status === 500) {
+        assert.equal(fetches, 3, `${name}: three server failures open the breaker`);
+      } else {
+        assert.equal(fetches, 4, `${name}: ${status} refusals never open the breaker`);
+      }
+    }
+  }
+  resetSessionSyncStateForTests();
+});
+
 test("Unit session sync: createSessionMessageAction keeps 409/422 refusals out of the circuit breaker", async () => {
   const auth = async () => ({ token: "tok_actions", apiUrl: "https://api.sentinelayer.com/" });
   const writeWith = (status, body, index) =>
