@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.43.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.42.0...v0.43.0) (2026-10-10)
+
+
+### Features
+
+* **session:** add owner admission access controls ([3396696](https://github.com/mrrCarter/create-sentinelayer/commit/339669627a3bda5c62ecc3cdb5d4f8fe437fdc0b))
+* **session:** ship AIdenID admission controls ([a228e4d](https://github.com/mrrCarter/create-sentinelayer/commit/a228e4d2752704977593e7d728f6b43da0a7b37a))
+
+
+### Bug Fixes
+
+* **session:** harden admission terminal output ([7ef87b3](https://github.com/mrrCarter/create-sentinelayer/commit/7ef87b3c7c6576441b2fc5e47031fb65e278e5e0))
+* **session:** keep admission URLs terminal-safe ([9873cd8](https://github.com/mrrCarter/create-sentinelayer/commit/9873cd8bc83ab3974e38adfa0db91b8d951ea8d3))
+
 ## [0.42.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.41.0...v0.42.0) (2026-10-04)
 
 
