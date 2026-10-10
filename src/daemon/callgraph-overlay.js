@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path, { extname } from "node:path";
 import { promisify } from "node:util";
 
@@ -370,7 +371,7 @@ async function resolvePythonExecutable() {
     pythonExecutablePromise = (async () => {
       for (const executable of PYTHON_EXECUTABLE_CANDIDATES) {
         try {
-          await execFileAsync(executable, ["--version"], { timeout: 5000 });
+          await execFileAsync(executable, ["--version"], { timeout: 5000, cwd: os.tmpdir() });
           return executable;
         } catch {
           continue;
@@ -454,9 +455,13 @@ async function parsePythonCallgraph(absolutePath = "", content = "", normalizedL
     };
   }
   try {
-    const { stdout } = await execFileAsync(executable, ["-c", PYTHON_CALLGRAPH_SCRIPT, absolutePath], {
+    // Isolated (-I: no script or working directory on sys.path, no PYTHON* variables) and run from
+    // a neutral directory, so a repository's own ast.py or json.py is never imported; the file to
+    // parse is passed as an argument.
+    const { stdout } = await execFileAsync(executable, ["-I", "-c", PYTHON_CALLGRAPH_SCRIPT, path.resolve(absolutePath)], {
       timeout: 15000,
       maxBuffer: 1024 * 1024,
+      cwd: os.tmpdir(),
     });
     const parsed = JSON.parse(String(stdout || "{}"));
     return {

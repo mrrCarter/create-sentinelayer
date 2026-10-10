@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { extname } from "node:path";
+import os from "node:os";
+import { extname, resolve as resolvePath } from "node:path";
 import { promisify } from "node:util";
 
 import { parse } from "@babel/parser";
@@ -149,7 +150,7 @@ async function resolvePythonExecutable() {
     pythonExecutablePromise = (async () => {
       for (const executable of PYTHON_EXECUTABLE_CANDIDATES) {
         try {
-          await execFileAsync(executable, ["--version"], { timeout: 5000 });
+          await execFileAsync(executable, ["--version"], { timeout: 5000, cwd: os.tmpdir() });
           return executable;
         } catch {
           continue;
@@ -193,9 +194,13 @@ async function parsePythonAstSpecifiers(absolutePath = "") {
     };
   }
   try {
-    const { stdout } = await execFileAsync(executable, ["-c", PYTHON_AST_SCRIPT, absolutePath], {
+    // Isolated (-I: no script or working directory on sys.path, no PYTHON* variables) and run from
+    // a neutral directory, so a repository's own ast.py or json.py is never imported; the file to
+    // parse is passed as an argument.
+    const { stdout } = await execFileAsync(executable, ["-I", "-c", PYTHON_AST_SCRIPT, resolvePath(absolutePath)], {
       timeout: 10000,
       maxBuffer: 1024 * 1024,
+      cwd: os.tmpdir(),
     });
     const parsed = JSON.parse(String(stdout || "{}"));
     const specifiers = Array.isArray(parsed.specifiers) ? parsed.specifiers : [];

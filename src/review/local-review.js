@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { buildScrubbedEnv } from "../agents/shared-tools/shell.js";
 import { resolveOutputRoot } from "../config/service.js";
 import { resolveCodebaseIngest } from "../ingest/engine.js";
 import { runSpecBindingChecks } from "./spec-binding.js";
@@ -844,6 +845,13 @@ function buildStaticChecks(ingest = {}) {
   ];
 }
 
+// The repository's own scripts run here (lint, typecheck, format check, tests). Running its code is
+// the point; handing it this machine's credentials is not. SentinelLayer, provider, GitHub, cloud
+// and other secret-looking variables are removed from its environment.
+export function staticCheckEnv(env = process.env) {
+  return { ...buildScrubbedEnv(env), CI: "1", FORCE_COLOR: "0" };
+}
+
 async function executeStaticCheck({ check, targetPath, runDir } = {}) {
   const checksDir = path.join(runDir, "checks");
   await fsp.mkdir(checksDir, { recursive: true });
@@ -853,11 +861,7 @@ async function executeStaticCheck({ check, targetPath, runDir } = {}) {
     cwd: targetPath,
     encoding: "utf-8",
     timeout: STATIC_CHECK_TIMEOUT_MS,
-    env: {
-      ...process.env,
-      CI: "1",
-      FORCE_COLOR: "0",
-    },
+    env: staticCheckEnv(),
   });
 
   const durationMs = Date.now() - startedAt;
@@ -926,6 +930,8 @@ async function executeStaticCheck({ check, targetPath, runDir } = {}) {
     fileHint: check.fileHint,
   };
 }
+
+export const __localReviewForTests = Object.freeze({ executeStaticCheck });
 
 async function runStaticAnalysisLayer({ targetPath, ingest, runDir, maxFindings = MAX_FINDINGS } = {}) {
   const checks = buildStaticChecks(ingest);

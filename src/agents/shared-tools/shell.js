@@ -93,6 +93,9 @@ const EXACT_ENV_KEYS_TO_STRIP = new Set([
   "MONGODB_URI",
   "SSH_SIGNING_KEY",
   "SSH_PRIVATE_KEY",
+  "SSH_AUTH_SOCK",
+  "PGPASSWORD",
+  "MYSQL_PWD",
   "KUBECONFIG",
   "KUBE_CONFIG_DATA",
 ]);
@@ -114,6 +117,7 @@ const ENV_KEY_PREFIX_PATTERNS = [
   /^TWILIO_/i,
   /^SENDGRID_/i,
   /^RESEND_/i,
+  /^NPM_CONFIG_.*_AUTH(TOKEN)?$/i, // npm's _auth and _authToken, global or per registry
 ];
 
 const ENV_KEY_SUFFIX_PATTERNS = [
@@ -126,6 +130,11 @@ const ENV_KEY_SUFFIX_PATTERNS = [
   /_ACCESS_KEY$/i,
   /_AUTH_TOKEN$/i,
   /_SESSION_TOKEN$/i,
+  /_KEY$/i,
+  /_DSN$/i,
+  /_PASS$/i,
+  /_CREDENTIALS?$/i,
+  /_CONNECTION_STRING$/i,
 ];
 
 /**
