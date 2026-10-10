@@ -3,7 +3,8 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "sentinelayer-cli"
+      "package-name": "sentinelayer-cli",
+      "bump-minor-pre-major": true
     }
   },
   "include-v-in-tag": true,
