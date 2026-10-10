@@ -20,6 +20,8 @@ Touched AI-impacting files:
 - `src/ai/proxy.js` passes a credential object to `credentialedRequest` instead of building the header. The proxy URL, request body, model selection, provider routing, retry behaviour and response parsing are unchanged.
 - `src/ai/aidenid.js` passes the resolved SentinelLayer session (a credential) instead of its raw token when it fetches the AIdenID key from the SentinelLayer API, so that request is bound like any other. The AIdenID key itself is a reviewed census exception: it is AIdenID's own credential, sent to the AIdenID API as before.
 
+- In both files, `isAuthenticated(session)` replaces reading the session's raw token to check that one is present: an auth result no longer exposes its token. Which code path runs is unchanged.
+
 Prompt text, model selection, provider routing, tool permissions and finding parsing are unchanged.
 
 ## Risk Assessment
@@ -32,5 +34,6 @@ Prompt text, model selection, provider routing, tool permissions and finding par
 ## Verification
 
 - `tests/unit.outbound-credential-destinations.test.mjs`, `tests/unit.credential-token-sources.test.mjs` and `tests/unit.credential-census.test.mjs` cover the credential binding, the census and the proxy path.
+- `tests/unit.credential-opacity.test.mjs` shows an auth result and its credential expose no token.
 - Existing proxy and AI tests pass unchanged.
 - Full suite at `2e4a6ed`: unit 2220/2220, e2e 133/133.
