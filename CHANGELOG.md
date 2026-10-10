@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.46.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.45.0...v0.46.0) (2026-10-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** On Windows, the CLI needs Node.js 22 or later (libuv 1.48.0 or later). Under Node.js 20, which reached end of life on 2026-04-30, it prints an error and exits 1 before running any command. Other platforms are unchanged.
+
+### Bug Fixes
+
+* **cli:** PATH-only program lookup; scrub secret-looking env for repo scripts ([70df8dc](https://github.com/mrrCarter/create-sentinelayer/commit/70df8dc2b05e11d2795c22fc2224a940606790f8))
+
 ## [0.45.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.44.0...v0.45.0) (2026-10-10)
 
 
