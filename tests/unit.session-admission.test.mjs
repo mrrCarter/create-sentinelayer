@@ -156,6 +156,9 @@ async function scratch() {
 }
 
 function base(api, dirs, extra = {}) {
+  // A fake clock that sleeping advances: an approval or identity wait that never
+  // resolves ends at the default wait deadline (a failed assertion) instead of spinning.
+  let clock = Date.now();
   return {
     agentId: "builder-1",
     goal: "Implement and test the admission flow.",
@@ -164,7 +167,8 @@ function base(api, dirs, extra = {}) {
     resolveAuthSession: async () => ({ token: TOKEN, apiUrl: "https://api.test" }),
     requestMutation: api.requestMutation,
     requestRead: api.requestRead,
-    sleep: async () => {},
+    now: () => clock,
+    sleep: async (ms) => { clock += Math.max(1, Number(ms) || 0); },
     ...extra,
   };
 }
