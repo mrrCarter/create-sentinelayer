@@ -13,6 +13,7 @@ import { recordCliLlmSessionUsage, usageNumber } from "../billing/llm-session-us
 import { resolveOutputRoot } from "../config/service.js";
 import { estimateModelCost } from "../cost/tracker.js";
 import { estimateTokens } from "../cost/tokenizer.js";
+import { normalizeSessionId } from "../session/paths.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -81,7 +82,9 @@ export function registerChatCommand(program) {
         outputDirOverride: options.outputDir,
         env: process.env,
       });
-      const sessionId = String(options.sessionId || "").trim() || createSessionId();
+      // An explicit id names the transcript file under chat/sessions/, so it is held to the session-id rule.
+      const requestedSessionId = String(options.sessionId || "").trim();
+      const sessionId = requestedSessionId ? normalizeSessionId(requestedSessionId) : createSessionId();
       const transcriptPath = path.join(outputRoot, "chat", "sessions", `${sessionId}.jsonl`);
 
       const provider = resolveProvider({
