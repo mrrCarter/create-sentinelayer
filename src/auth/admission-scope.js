@@ -28,8 +28,7 @@ export function scopedAdmissionAuth() {
   if (!(credential.expiresAt * 1000 > Date.now())) return null;
   return {
     apiUrl: credential.apiUrl,
-    token: credential.token,
-    credential: admissionCredential(credential), // bound to the API that issued it
+    credential: admissionCredential(credential), // bound to the API that issued it; its token stays inside
     source: "session_admission",
     user: null,
     admissionId: credential.admissionId,

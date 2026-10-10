@@ -9,7 +9,7 @@ import {
   requestJson,
   requestJsonMutation,
 } from "../auth/http.js";
-import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveSessionPaths } from "./paths.js";
 
@@ -478,7 +478,7 @@ async function resolveLeaseApi({
     env: process.env,
     autoRotate: false,
   });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error(
       "Authoritative session file leases require Sentinelayer auth. Run `sl auth login` first.",
     );

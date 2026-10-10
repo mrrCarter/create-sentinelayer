@@ -8,6 +8,7 @@ import {
   redactDdEmailError,
   sendDdReportEmail,
 } from "../src/review/dd-report-email-client.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 // The fixture API is the configured API: the user's credential is only sent to that origin.
 process.env.SENTINELAYER_API_URL = "https://api.example.test";
@@ -54,7 +55,7 @@ test("dd report email client: posts authenticated email request with idempotency
     "https://api.example.test/api/v1/runs/investor-dd-123/send-report-email",
   );
   assert.equal(calls[0].options.method, "POST");
-  assert.equal(calls[0].options.credential.token, "tok_test");
+  assert.equal(await bearerOf(calls[0].options.credential), "tok_test");
   assert.equal(calls[0].options.credential.origin, "https://api.example.test");
   assert.deepEqual(calls[0].options.body, { to: "investor@example.com" });
   assert.equal(calls[0].options.idempotencyKey, result.idempotencyKey);

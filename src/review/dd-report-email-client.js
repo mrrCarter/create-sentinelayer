@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { requestJson } from "../auth/http.js";
 
@@ -98,7 +98,7 @@ export async function sendDdReportEmail({
     });
   }
 
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return errorResult({
       runId: normalizedRunId,
       to: normalizedTo,

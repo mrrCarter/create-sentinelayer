@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
+import { credentialedRequest, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
 // Read CLI version from package.json at module load
@@ -72,7 +72,7 @@ export async function syncRunToDashboard(runData) {
     return { synced: false, reason: "no_session" };
   }
 
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { synced: false, reason: "not_authenticated" };
   }
 

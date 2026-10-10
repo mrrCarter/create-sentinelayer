@@ -8,7 +8,7 @@
 
 import process from "node:process";
 
-import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { hasStoredAdmissionCredentials } from "./admission.js";
@@ -75,7 +75,7 @@ async function authContext(targetPath, resolveAuthSession) {
     env: process.env,
     autoRotate: false,
   });
-  if (!auth?.token || !auth?.apiUrl) {
+  if (!isAuthenticated(auth) || !auth?.apiUrl) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
   return {

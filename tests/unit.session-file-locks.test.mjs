@@ -26,6 +26,7 @@ import {
 import { resolveSessionPaths } from "../src/session/paths.js";
 import { createSession } from "../src/session/store.js";
 import { readStream } from "../src/session/stream.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 const API_URL = "https://lease-authority.example";
 // The fixture API is the configured API: the user's credential is only sent to that origin.
@@ -76,15 +77,15 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
     };
   }
 
-  function assertAuth(options) {
+  async function assertAuth(options) {
     // a credential bound to the configured API, attached by the client itself
-    assert.equal(`Bearer ${options?.credential?.token}`, TOKEN_HEADER);
+    assert.equal(`Bearer ${await bearerOf(options?.credential)}`, TOKEN_HEADER);
     assert.equal(options?.credential?.origin, API_URL);
   }
 
   async function request(url, options = {}) {
     calls.push({ kind: "read", url, options });
-    assertAuth(options);
+    await assertAuth(options);
     assert.equal(options.method, "GET");
     return {
       ok: true,
@@ -96,7 +97,7 @@ function createLeaseAuthority({ nowMs = Date.parse("2026-07-29T12:00:00.000Z") }
 
   async function requestMutation(url, options = {}) {
     calls.push({ kind: "mutation", url, options });
-    assertAuth(options);
+    await assertAuth(options);
     const body = options.body || {};
 
     if (url.endsWith("/file-leases/guard")) {

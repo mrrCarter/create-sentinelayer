@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 
-import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
@@ -71,7 +71,7 @@ async function writeState(filePath, state) {
 
 async function auth(targetPath, resolveAuthSession) {
   const session = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false });
-  if (!session?.token || !session?.apiUrl) throw new Error("Not authenticated for this session.");
+  if (!isAuthenticated(session) || !session?.apiUrl) throw new Error("Not authenticated for this session.");
   return { credential: await credentialFor(session), apiUrl: normalizeString(session.apiUrl).replace(/\/+$/, "") };
 }
 

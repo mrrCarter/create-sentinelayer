@@ -10,6 +10,7 @@ import {
   DEFAULT_API_URL,
   assertTrustedApiUrl,
   credentialFor,
+  isAuthenticated,
   resolveTrustContext,
   userCredential,
 } from "./credential-destinations.js";
@@ -171,7 +172,6 @@ function isNearExpiry(tokenExpiresAt, thresholdDays) {
  * @returns {Promise<string>}
  */
 export async function resolveApiUrl({
-  cwd = process.cwd(),
   env = process.env,
   explicitApiUrl = "",
   homeDir,
@@ -180,19 +180,9 @@ export async function resolveApiUrl({
   if (overrideUrl) {
     return normalizeApiUrl(overrideUrl);
   }
-
-  const envUrl = String(env.SENTINELAYER_API_URL || "").trim();
-  if (envUrl) {
-    return normalizeApiUrl(envUrl);
-  }
-
-  const config = await loadConfig({ cwd, env, homeDir });
-  const configuredApiUrl = String(config.resolved.apiUrl || "").trim();
-  if (configuredApiUrl) {
-    return normalizeApiUrl(configuredApiUrl);
-  }
-
-  return normalizeApiUrl(DEFAULT_API_URL);
+  // The trust context's API (SENTINELAYER_API_URL, else the global config, else the default). A
+  // workspace .sentinelayer.yml does not choose the API.
+  return normalizeApiUrl((await resolveTrustContext({ env, homeDir })).apiOrigin);
 }
 
 async function startCliAuthSession({ apiUrl, challenge, ide, cliVersion, flowRequestId }) {
@@ -642,7 +632,7 @@ export async function loginAndPersistSession({
  * }} [options]
  * @returns {Promise<null | {
  *   apiUrl: string,
- *   token: string,
+ *   credential: object,
  *   source: "env" | "config" | "session",
  *   user: {
  *     id: string,
@@ -683,7 +673,6 @@ export async function resolveActiveAuthSession({
   if (envToken) {
     return {
       apiUrl,
-      token: envToken,
       credential: await userCredential(envToken, { context, source: "env" }),
       source: "env",
       user: null,
@@ -697,12 +686,12 @@ export async function resolveActiveAuthSession({
     };
   }
 
+  // The user's own config only: a workspace .sentinelayer.yml does not choose whose token is used.
   const config = await loadConfig({ cwd, env, homeDir });
-  const configuredToken = String(config.resolved.sentinelayerToken || "").trim();
+  const configuredToken = String(config.layers.global.sentinelayerToken || "").trim();
   if (configuredToken) {
     return {
       apiUrl,
-      token: configuredToken,
       credential: await userCredential(configuredToken, { context, source: "config" }),
       source: "config",
       user: null,
@@ -750,7 +739,6 @@ export async function resolveActiveAuthSession({
 
   return {
     apiUrl,
-    token: active.token,
     credential: await userCredential(active.token, { context, source: "session" }),
     source: "session",
     user: normalizeUser(active.user || {}),
@@ -946,7 +934,7 @@ export async function revokeAuthToken({
     autoRotate: false,
     homeDir,
   });
-  if (!active || !active.token) {
+  if (!isAuthenticated(active)) {
     throw new SentinelayerApiError(`No active auth token found. Run \`${authLoginHint()}\` first.`, {
       status: 401,
       code: "AUTH_REQUIRED",

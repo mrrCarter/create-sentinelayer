@@ -25,8 +25,7 @@ import {
 import { listSites, recordTemporarySite } from "../../ai/site-store.js";
 import { getIdentityById, recordProvisionedIdentity } from "../../ai/identity-store.js";
 import { resolveOutputRoot } from "../../config/service.js";
-import { readStoredSession } from "../../auth/session-store.js";
-import { fetchAidenIdCredentials } from "../../auth/service.js";
+import { fetchAidenIdCredentials, resolveActiveAuthSession } from "../../auth/service.js";
 import {
   buildCurlPreview,
   normalizeIdempotencyKey,
@@ -37,6 +36,7 @@ import {
   stableTimestampForFile,
   writeArtifact,
 } from "./shared.js";
+import { isAuthenticated } from "../../auth/credential-destinations.js";
 
 function addProvisionEmailOptions(cmd) {
   return cmd
@@ -92,11 +92,12 @@ async function provisionEmailAction(options, command) {
       payload,
     });
 
-    let session = null;
-    try { session = await readStoredSession(); } catch { /* no session */ }
+    const session = await resolveActiveAuthSession({ cwd: process.cwd(), env: process.env, autoRotate: false }).catch(
+      () => null,
+    );
 
     const makeFetcher = () => {
-      if (!session || !session.token) return null;
+      if (!isAuthenticated(session)) return null;
       return () => fetchAidenIdCredentials({ apiUrl: session.apiUrl, auth: session });
     };
 

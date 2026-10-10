@@ -13,6 +13,7 @@ import {
   writeSessionOnboardingBrief,
 } from "../src/session/invitations.js";
 import { userCredential } from "../src/auth/credential-destinations.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 function jsonResponse(status, body = {}) {
   return {
@@ -81,7 +82,7 @@ test("Unit session invitations: accept posts token, seat, agent, idempotency, an
     seatKey: "codex-seat",
     agentId: "codex",
   });
-  assert.equal(calls[0].init.credential.token, "test-token");
+  assert.equal(await bearerOf(calls[0].init.credential), "test-token");
   assert.equal(calls[0].init.credential.origin, "https://api.sentinelayer.com");
   assert.equal(calls[0].init.headers.Authorization, undefined);
   assert.equal(calls[0].init.headers["X-Sentinelayer-Session-Mutation"], "session-mutation");

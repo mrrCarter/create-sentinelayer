@@ -242,6 +242,11 @@ export async function buildCliProgram({
 }
 
 export async function runCli(rawArgs = process.argv.slice(2)) {
+  // Where the user's credentials may go is decided once, here, from the real environment and the
+  // global config, and frozen: nothing that changes process.env later can move it.
+  const { freezeProcessTrustContext } = await import("./auth/credential-destinations.js");
+  await freezeProcessTrustContext();
+
   // Normalize slash commands (/omargate → omargate, /audit → audit, etc.)
   const normalizedArgs = normalizeSlashArgs(rawArgs);
 

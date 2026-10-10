@@ -2,15 +2,13 @@ import process from "node:process";
 
 import { loadConfig } from "../config/service.js";
 
+// Config values the scaffold flow reads from the environment. The API it talks to and the token
+// it sends are never set here: they come from the trust context and the auth service
+// (src/auth/credential-destinations.js), so a workspace .sentinelayer.yml cannot choose them,
+// and child processes inherit neither.
 function applyConfigEnvDefaults(resolvedConfig) {
-  if (!process.env.SENTINELAYER_API_URL && resolvedConfig.apiUrl) {
-    process.env.SENTINELAYER_API_URL = resolvedConfig.apiUrl;
-  }
   if (!process.env.SENTINELAYER_WEB_URL && resolvedConfig.webUrl) {
     process.env.SENTINELAYER_WEB_URL = resolvedConfig.webUrl;
-  }
-  if (!process.env.SENTINELAYER_TOKEN && resolvedConfig.sentinelayerToken) {
-    process.env.SENTINELAYER_TOKEN = resolvedConfig.sentinelayerToken;
   }
   if (!process.env.OPENAI_API_KEY && resolvedConfig.openaiApiKey) {
     process.env.OPENAI_API_KEY = resolvedConfig.openaiApiKey;

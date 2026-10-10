@@ -7,6 +7,7 @@ import pc from "picocolors";
 import { resolveActiveAuthSession } from "./service.js";
 import { resolveAgentAdmissionTarget } from "../session/admission-auth.js";
 import { authLoginHint } from "../ui/command-hints.js";
+import { isAuthenticated } from "./credential-destinations.js";
 
 /**
  * Auth gate — ensures user is logged in before running any command.
@@ -316,12 +317,11 @@ function isSessionUnexpired(tokenExpiresAt) {
 // without fixing anything.
 //
 // So the gate checks:
-//   - session.token is present and non-empty
+//   - the session carries a credential
 //   - for source === "session", expiry is in the future
 //   - for source === "env" or "config", the downstream API call is the gate
 function isAuthenticatedSessionValid(session) {
-  const token = String(session?.token || "").trim();
-  if (!token) {
+  if (!isAuthenticated(session)) {
     return false;
   }
   if (String(session?.source || "").trim() === "session") {
@@ -369,7 +369,7 @@ export async function checkAuthGate(args) {
     }
     if (session) {
       // Session resolved but failed validation (empty token or expired).
-      const tokenPresent = Boolean(String(session?.token || "").trim());
+      const tokenPresent = isAuthenticated(session);
       if (!tokenPresent) {
         resolveError = "session_token_missing";
       } else if (String(session?.source || "").trim() === "session" && !isSessionUnexpired(session?.tokenExpiresAt)) {

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import process from "node:process";
 
-import { checkedTransport, credentialFor } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { SentinelayerApiError, requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { pollSessionEventsBefore } from "./sync.js";
@@ -420,7 +420,7 @@ async function resolveCheckpointApi({
     env: process.env,
     autoRotate: false,
   });
-  if (!auth || !auth.token) {
+  if (!isAuthenticated(auth)) {
     throw new Error("Sentinelayer auth is required. Run `sl auth login` first.");
   }
   return {

@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { credentialFor, userCredential } from "../auth/credential-destinations.js";
+import { credentialFor, isAuthenticated, userCredential } from "../auth/credential-destinations.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, requestJsonMutation } from "../auth/http.js";
 import {
   DEFAULT_API_TOKEN_TTL_DAYS,
@@ -113,7 +113,7 @@ export async function requestHostedMcpAccessToken({
     tokenTtlDays,
     homeDir,
   });
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
   }
 

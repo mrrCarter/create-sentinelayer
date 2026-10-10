@@ -9,6 +9,7 @@ import {
   requestJson,
   requestJsonMutation,
 } from "../src/auth/http.js";
+import { userCredential } from "../src/auth/credential-destinations.js";
 
 function createResponse(status, payload, headers = {}) {
   const normalizedHeaders = Object.fromEntries(
@@ -308,9 +309,13 @@ test("Unit auth http: one credential's 401/403s never open the per-origin breake
         seen.b += 1;
         return createResponse(200, { ok: true });
       };
+      const credentials = {
+        "token-agent-a": await userCredential("token-agent-a", { env: { SENTINELAYER_API_URL: "https://api.example.com" } }),
+        "token-agent-b": await userCredential("token-agent-b", { env: { SENTINELAYER_API_URL: "https://api.example.com" } }),
+      };
       const call = (token) =>
         requestJson("https://api.example.com/test", {
-          headers: { Authorization: `Bearer ${token}` },
+          credential: credentials[token],
           maxRetries: 0,
           retryDelayMs: 1,
         });

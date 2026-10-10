@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { credentialedRequest } from "../../../auth/credential-destinations.js";
+import { credentialedRequest, isAuthenticated } from "../../../auth/credential-destinations.js";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 
 /**
@@ -438,7 +438,7 @@ async function callScannerApi(url) {
     });
   } catch { /* session read failed */ }
 
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { available: false, reason: "Not authenticated — run sl auth login" };
   }
 

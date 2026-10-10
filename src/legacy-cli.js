@@ -22,8 +22,8 @@ import {
 } from "./config/agent-dictionary.js";
 import {
   CredentialDestinationRefused,
-  assertTrustedApiUrl,
   credentialedRequest,
+  resolveTrustContext,
   userCredential,
 } from "./auth/credential-destinations.js";
 import { resolveOutputRoot } from "./config/service.js";
@@ -460,6 +460,10 @@ async function requestJson(
   url,
   { method = "GET", headers = {}, body, credential = null, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS } = {},
 ) {
+  // Without a credential, nothing here attaches one: a caller-built Authorization header is refused.
+  if (Object.keys(headers || {}).some((name) => /^(?:proxy-)?authorization$/i.test(name))) {
+    throw new TypeError("requestJson: send a credential with { credential }, not an Authorization header.");
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -579,7 +583,7 @@ async function issueBootstrapToken({ apiUrl, credential }) {
 }
 
 // The init flow's credential steps, for tests.
-export const __legacyCredentialFlowForTests = Object.freeze({ pollCliSession, generateArtifacts, issueBootstrapToken });
+export const __legacyCredentialFlowForTests = Object.freeze({ pollCliSession, generateArtifacts, issueBootstrapToken, requestJson });
 
 function detectRepoSlug(cwd) {
   const gitRemote = spawnSync("git", ["config", "--get", "remote.origin.url"], {
@@ -3202,6 +3206,9 @@ function printInfo(message) {
 
 export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
   refreshRuntimeDefaults();
+  // The API this flow talks to is the trust context's (environment, then global config): the token
+  // it is issued may only be sent there, and a workspace .sentinelayer.yml does not choose it.
+  DEFAULT_API_URL = (await resolveTrustContext()).apiOrigin;
   const commandExitCode = await tryRunLocalCommandMode(rawArgs);
   if (commandExitCode !== null) {
     if (commandExitCode !== 0) {
@@ -3286,8 +3293,6 @@ export async function runLegacyCli(rawArgs = process.argv.slice(2)) {
       await waitForEnter("Press Enter to authenticate with Sentinelayer in your browser...");
     }
 
-    // The token this flow issues is the user's: the API must be the configured one.
-    await assertTrustedApiUrl(DEFAULT_API_URL);
     const challenge = crypto.randomBytes(32).toString("hex");
     const session = await startCliSession({
       apiUrl: DEFAULT_API_URL,

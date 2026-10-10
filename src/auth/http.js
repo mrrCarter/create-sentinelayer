@@ -448,6 +448,10 @@ export async function requestJson(
   if (credential && !isCredential(credential)) {
     throw new TypeError("requestJson: credential must come from src/auth/credential-destinations.js.");
   }
+  // Without a credential, nothing here attaches one: a caller-built Authorization header is refused.
+  if (Object.keys(headers || {}).some((name) => /^(?:proxy-)?authorization$/i.test(name))) {
+    throw new TypeError("requestJson: send a credential with { credential }, not an Authorization header.");
+  }
   const normalizedMethod = String(method || "GET").trim().toUpperCase();
   const explicitIdempotencyKey = String(idempotencyKey || "").trim() || null;
   const existingIdempotencyKey = explicitIdempotencyKey || resolveIdempotencyKey(headers);

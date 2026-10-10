@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import { checkedTransport, credentialFor, gatewayCredential } from "../auth/credential-destinations.js";
+import { checkedTransport, credentialFor, gatewayCredential, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 
@@ -73,7 +73,7 @@ export async function ringOwner(
   }
 
   const auth = await resolveAuthSession({ cwd, env, autoRotate: false });
-  if (!auth?.token) {
+  if (!isAuthenticated(auth)) {
     throw new Error("Not authenticated. Run `sl auth login` first.");
   }
   // The user's token, bound to the gateway SENTI_POCKET_URL names; a --gateway-url on any other

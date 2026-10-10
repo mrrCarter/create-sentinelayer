@@ -8,7 +8,7 @@
  * Response: { content, usage: { model, provider, tokens_in, tokens_out, cost_usd, latency_ms } }
  */
 
-import { CredentialDestinationRefused, credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
+import { CredentialDestinationRefused, credentialedRequest, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
 
@@ -358,7 +358,7 @@ export async function invokeViaProxy({
       env: process.env,
       autoRotate: false,
     });
-    if (!session || !session.token) {
+    if (!isAuthenticated(session)) {
       throw new Error(
         `SentinelLayer LLM proxy requires authentication. Run '${authLoginHint()}' first.`
       );

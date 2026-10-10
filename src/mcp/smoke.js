@@ -1,6 +1,11 @@
 import process from "node:process";
 
-import { CredentialDestinationRefused, credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
+import {
+  CredentialDestinationRefused,
+  credentialedRequest,
+  isCredential,
+  userCredential,
+} from "../auth/credential-destinations.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS } from "../auth/http.js";
 import { requestHostedMcpAccessToken } from "./token-service.js";
 
@@ -177,8 +182,12 @@ export async function runHostedMcpSmoke({
   if (!accessToken) {
     throw new Error("Hosted MCP token mint succeeded but returned no access token.");
   }
-  // The minted bearer as a credential: the mint's own, or the bare token bound to the configured API.
-  const credential = await credentialFor({ credential: minted.credential, token: accessToken }, { env, homeDir });
+  // The minted bearer as a credential: the mint's own hosted MCP credential, or the bare token bound
+  // to the configured API. Any other credential (an agent's admission, say) is not accepted here.
+  if (minted.credential !== undefined && !(isCredential(minted.credential) && minted.credential.source === "hosted_mcp")) {
+    throw new TypeError("The hosted MCP mint must return a hosted MCP credential.");
+  }
+  const credential = minted.credential || (await userCredential(accessToken, { env, homeDir, source: "hosted_mcp" }));
   const redactionSecrets = [accessToken];
 
   const mcpUrl = joinUrl(minted.apiUrl, "/mcp");

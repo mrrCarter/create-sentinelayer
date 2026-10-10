@@ -12,6 +12,7 @@ import {
   getSession,
   recordSessionRemoteTitleSync,
 } from "../src/session/store.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 test("Unit session title sync: push uses bounded retryable title endpoint and records success", async () => {
   const records = [];
@@ -51,7 +52,7 @@ test("Unit session title sync: push uses bounded retryable title endpoint and re
   assert.equal(calls[0].options.timeoutMs, 2_000);
   assert.equal(calls[0].options.maxRetries, 1);
   assert.equal(calls[0].options.retryDelayMs, 200);
-  assert.equal(calls[0].options.credential.token, "tok_test_123");
+  assert.equal(await bearerOf(calls[0].options.credential), "tok_test_123");
   assert.equal(calls[0].options.credential.origin, "https://api.sentinelayer.com");
   assert.deepEqual(calls[0].options.body, { title: "My Session" });
   assert.equal(records.length, 2);

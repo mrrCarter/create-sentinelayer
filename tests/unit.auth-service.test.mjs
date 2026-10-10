@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import {
   getAuthStatus,
@@ -18,6 +18,7 @@ import {
   resolveActiveAuthSession,
 } from "../src/auth/service.js";
 import { readStoredSession, resolveCredentialsFilePath } from "../src/auth/session-store.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 function jsonResponse(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -260,7 +261,7 @@ test("Unit auth service: login/status/runtime/list/logout flow remains determini
       autoRotate: false,
     });
     assert.equal(activeSession?.source, "session");
-    assert.equal(activeSession?.token, "api_token_1");
+    assert.equal(await bearerOf(activeSession?.credential), "api_token_1");
     assert.equal(Object.prototype.hasOwnProperty.call(activeSession || {}, "aidenid"), true);
 
     const authStatus = await getAuthStatus({
@@ -471,7 +472,7 @@ test("Unit auth service: session metadata listing and explicit revoke are determ
   }
 });
 
-test("Unit auth service: env and project config token precedence is deterministic", async () => {
+test("Unit auth service: env, then the global config token; a workspace config token is never used", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-auth-unit-"));
   try {
     await writeFile(path.join(tempRoot, ".sentinelayer.yml"), "sentinelayerToken: project_token\n", "utf-8");
@@ -486,17 +487,28 @@ test("Unit auth service: env and project config token precedence is deterministi
       homeDir: tempRoot,
     });
     assert.equal(envSession?.source, "env");
-    assert.equal(envSession?.token, "env_token");
+    assert.equal(await bearerOf(envSession?.credential), "env_token");
 
-    const projectSession = await resolveActiveAuthSession({
+    const workspaceOnly = await resolveActiveAuthSession({
       cwd: tempRoot,
       env: {},
       explicitApiUrl: "https://api.example.com",
       autoRotate: false,
       homeDir: tempRoot,
     });
-    assert.equal(projectSession?.source, "config");
-    assert.equal(projectSession?.token, "project_token");
+    assert.equal(workspaceOnly, null, "the workspace .sentinelayer.yml token is not the user's");
+
+    await mkdir(path.join(tempRoot, ".sentinelayer"), { recursive: true });
+    await writeFile(path.join(tempRoot, ".sentinelayer", "config.yml"), "sentinelayerToken: global_token\n", "utf-8");
+    const globalSession = await resolveActiveAuthSession({
+      cwd: tempRoot,
+      env: {},
+      explicitApiUrl: "https://api.example.com",
+      autoRotate: false,
+      homeDir: tempRoot,
+    });
+    assert.equal(globalSession?.source, "config");
+    assert.equal(await bearerOf(globalSession?.credential), "global_token");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

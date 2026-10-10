@@ -34,6 +34,7 @@ import { detectRepoSlug, setupSecrets } from "../scan/gh-secrets.js";
 import { appendRunEvent, deriveStopClassFromBudget } from "../telemetry/ledger.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { authLoginHint } from "../ui/command-hints.js";
+import { exportCredentialToken, isAuthenticated } from "../auth/credential-destinations.js";
 
 const LEGACY_SCAN_WORKFLOW_PATH = ".github/workflows/security-review.yml";
 
@@ -856,8 +857,9 @@ export function registerScanCommand(program) {
           env: process.env,
           autoRotate: false,
         });
-        if (session && session.token) {
-          tokenValue = session.token;
+        if (isAuthenticated(session)) {
+          // the one reviewed export of the token: to a GitHub Actions secret, through gh
+          tokenValue = exportCredentialToken(session.credential, { purpose: "github-actions-secret" });
         }
       } catch {
         /* no active auth session */

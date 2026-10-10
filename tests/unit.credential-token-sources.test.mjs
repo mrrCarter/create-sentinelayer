@@ -27,6 +27,7 @@ import { queryHybridRetriever } from "../src/memory/retrieval.js";
 import { runHostedMcpSmoke } from "../src/mcp/smoke.js";
 import { requestHostedMcpAccessToken } from "../src/mcp/token-service.js";
 import { __legacyCredentialFlowForTests as legacy } from "../src/legacy-cli.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 // A loopback server; `routes` maps "METHOD /path" (or "METHOD /prefix*") to a handler.
 async function startServer(routes = {}) {
@@ -89,7 +90,7 @@ test("source: SENTINELAYER_TOKEN, while --api-url names another origin", async (
       explicitApiUrl: w.other.url,
     });
     assert.equal(auth.apiUrl, w.other.url, "resolution follows --api-url");
-    assert.equal(auth.credential.token, "e1");
+    assert.equal(await bearerOf(auth.credential), "e1");
     assert.equal(auth.credential.origin, w.configured.url, "the credential follows the trust context");
     await w.assertHeldBack(auth.credential);
   } finally {
@@ -97,7 +98,7 @@ test("source: SENTINELAYER_TOKEN, while --api-url names another origin", async (
   }
 });
 
-test("source: the sentinelayerToken config value, while a project config names another origin", async () => {
+test("source: the sentinelayerToken config value; a project config does not choose the API", async () => {
   const w = await world();
   try {
     await fsp.mkdir(path.join(w.home, ".sentinelayer"), { recursive: true });
@@ -107,8 +108,8 @@ test("source: the sentinelayerToken config value, while a project config names a
     );
     await fsp.writeFile(path.join(w.home, ".sentinelayer.yml"), `apiUrl: ${w.other.url}\n`);
     const auth = await resolveActiveAuthSession({ env: {}, homeDir: w.home, cwd: w.home });
-    assert.equal(auth.apiUrl, w.other.url, "resolution follows the project config");
-    assert.equal(auth.credential.token, "c1");
+    assert.equal(auth.apiUrl, w.configured.url, "resolution ignores the project config's API");
+    assert.equal(await bearerOf(auth.credential), "c1");
     assert.equal(auth.credential.origin, w.configured.url, "the project config is not trusted");
     await w.assertHeldBack(auth.credential);
   } finally {
@@ -121,7 +122,7 @@ test("source: the stored login session", async () => {
   try {
     await writeStoredSession({ apiUrl: w.configured.url, token: "s1", tokenExpiresAt: inFuture(30) }, { homeDir: w.home });
     const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home, explicitApiUrl: w.other.url });
-    assert.equal(auth.credential.token, "s1");
+    assert.equal(await bearerOf(auth.credential), "s1");
     assert.equal(auth.credential.origin, w.configured.url);
     await w.assertHeldBack(auth.credential);
   } finally {
@@ -141,7 +142,7 @@ test("source: a rotated token, and the token it replaces, are only sent to the c
     );
     const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home });
     assert.equal(auth.rotated, true);
-    assert.equal(auth.credential.token, "r2");
+    assert.equal(await bearerOf(auth.credential), "r2");
     assert.equal(auth.credential.origin, w.configured.url);
     assert.deepEqual(
       w.configured.requests.map((r) => `${r.method} ${r.authorization}`),
@@ -170,30 +171,36 @@ test("source: a login's approval token is only sent to the API it was issued by,
       ["GET /api/v1/auth/me Bearer a1", "POST /api/v1/auth/api-tokens Bearer a1"],
     );
     const auth = await resolveActiveAuthSession({ env: w.env, homeDir: w.home, cwd: w.home, autoRotate: false });
-    assert.equal(auth.credential.token, "i1", "the issued token is stored and loaded as a credential");
+    assert.equal(await bearerOf(auth.credential), "i1", "the issued token is stored and loaded as a credential");
     await w.assertHeldBack(auth.credential);
   } finally {
     await w.close();
   }
 });
 
-test("a login whose resolved API differs from the trust context is refused before anything is sent", async () => {
+test("a login against an API outside the trust context is refused before anything is sent", async () => {
   const w = await world(LOGIN_ROUTES);
   try {
-    // resolution would use the project config's API; the trust context (global config) names another
-    await fsp.mkdir(path.join(w.home, ".sentinelayer"), { recursive: true });
-    await fsp.writeFile(path.join(w.home, ".sentinelayer", "config.yml"), `apiUrl: ${w.configured.url}\n`);
-    await fsp.writeFile(path.join(w.home, ".sentinelayer.yml"), `apiUrl: ${w.other.url}\n`);
-    await assert.rejects(
-      loginAndPersistSession({ env: {}, homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 5_000 }),
-      /Refusing to send your SentinelLayer credential .*SENTINELAYER_API_URL/s,
-    );
     await assert.rejects(
       loginAndPersistSession({ env: w.env, homeDir: w.home, cwd: w.home, explicitApiUrl: w.other.url, skipBrowserOpen: true }),
-      CredentialDestinationRefused,
+      /Refusing to send your SentinelLayer credential .*SENTINELAYER_API_URL/s,
     );
     assert.deepEqual(w.other.requests, [], "not even the login request");
     assert.deepEqual(w.configured.requests, []);
+  } finally {
+    await w.close();
+  }
+});
+
+test("a login in a workspace whose .sentinelayer.yml names another API goes to the trusted one", async () => {
+  const w = await world(LOGIN_ROUTES);
+  try {
+    await fsp.mkdir(path.join(w.home, ".sentinelayer"), { recursive: true });
+    await fsp.writeFile(path.join(w.home, ".sentinelayer", "config.yml"), `apiUrl: ${w.configured.url}\n`);
+    await fsp.writeFile(path.join(w.home, ".sentinelayer.yml"), `apiUrl: ${w.other.url}\n`);
+    await loginAndPersistSession({ env: {}, homeDir: w.home, cwd: w.home, skipBrowserOpen: true, timeoutMs: 20_000 });
+    assert.ok(w.configured.requests.some((r) => r.path === "/api/v1/auth/me"));
+    assert.deepEqual(w.other.requests, []);
   } finally {
     await w.close();
   }
@@ -237,7 +244,7 @@ test("source: a hosted MCP bearer minted for the user", async () => {
   });
   try {
     const minted = await requestHostedMcpAccessToken({ env: { ...w.env, SENTINELAYER_TOKEN: "m0" }, homeDir: w.home, cwd: w.home });
-    assert.equal(minted.credential.token, "m1");
+    assert.equal(await bearerOf(minted.credential), "m1");
     assert.equal(minted.credential.origin, w.configured.url);
     await w.assertHeldBack(minted.credential);
   } finally {
@@ -255,13 +262,31 @@ test("the MCP smoke sends nothing to another origin, through an injected mint an
     };
     for (const requestTokenImpl of [
       async () => ({ apiUrl: w.other.url, accessToken: "x1" }), // a bare token
-      async () => ({ apiUrl: w.other.url, accessToken: "x2", credential: await userCredential("x2", { env: w.env }) }),
+      async () => ({
+        apiUrl: w.other.url,
+        accessToken: "x2",
+        credential: await userCredential("x2", { env: w.env, source: "hosted_mcp" }),
+      }),
     ]) {
       await assert.rejects(
         runHostedMcpSmoke({ env: w.env, homeDir: w.home, requestTokenImpl, fetchImpl }),
         CredentialDestinationRefused,
       );
     }
+    // a credential minted for another purpose (an agent admission bound to another origin) is not accepted
+    await assert.rejects(
+      runHostedMcpSmoke({
+        env: w.env,
+        homeDir: w.home,
+        fetchImpl,
+        requestTokenImpl: async () => ({
+          apiUrl: w.other.url,
+          accessToken: "x3",
+          credential: admissionCredential({ token: "x3", apiUrl: w.other.url }),
+        }),
+      }),
+      /hosted MCP credential/,
+    );
     assert.deepEqual(sent, [], "the injected transport was never called");
     assert.deepEqual(w.other.requests, []);
   } finally {

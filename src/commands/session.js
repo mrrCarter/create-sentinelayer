@@ -7,7 +7,7 @@ import { spawn as defaultSpawn } from "node:child_process";
 
 import pc from "picocolors";
 
-import { credentialFor } from "../auth/credential-destinations.js";
+import { credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { SentinelayerApiError, requestJsonMutation } from "../auth/http.js";
 import {
   buildProvisionEmailPayload,
@@ -16,7 +16,6 @@ import {
   resolveAidenIdCredentials,
 } from "../ai/aidenid.js";
 import { recordProvisionedIdentity } from "../ai/identity-store.js";
-import { readStoredSession } from "../auth/session-store.js";
 import { fetchAidenIdCredentials } from "../auth/service.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveOutputRoot } from "../config/service.js";
@@ -1323,19 +1322,11 @@ async function resolveSessionRemoteSyncState({ dashboardUrl } = {}) {
     };
   }
 
-  let storedSession = null;
-  try {
-    storedSession = await readStoredSession();
-  } catch {
-    storedSession = null;
-  }
-  const apiUrl =
-    normalizeString(storedSession?.apiUrl) ||
-    normalizeString(process.env.SENTINELAYER_API_URL) ||
-    "https://api.sentinelayer.com";
-  const hasToken = Boolean(
-    normalizeString(storedSession?.token) || normalizeString(process.env.SENTINELAYER_TOKEN),
+  const auth = await resolveActiveAuthSession({ cwd: process.cwd(), env: process.env, autoRotate: false }).catch(
+    () => null,
   );
+  const apiUrl = normalizeString(auth?.apiUrl) || "https://api.sentinelayer.com";
+  const hasToken = isAuthenticated(auth);
   if (!hasToken) {
     return {
       status: "auth_required",
@@ -1517,7 +1508,7 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
   } catch {
     return { ok: false, reason: "no_session" };
   }
-  if (!auth || !auth.token) {
+  if (!isAuthenticated(auth)) {
     return { ok: false, reason: "not_authenticated", status: 401 };
   }
   const apiUrl = String(auth.apiUrl || "").replace(/\/+$/, "");
@@ -2783,7 +2774,7 @@ async function resolveAdminApiSession({ targetPath, explicitApiUrl }) {
     explicitApiUrl,
     autoRotate: true,
   });
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     throw new Error(`No active auth token found. Run \`${authLoginHint()}\` first.`);
   }
   return session;
@@ -3305,7 +3296,7 @@ export function registerSessionCommand(program) {
         env: process.env,
         autoRotate: false,
       });
-      if (!session?.token || !session?.apiUrl) {
+      if (!isAuthenticated(session) || !session?.apiUrl) {
         throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
       }
       const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
@@ -3355,7 +3346,7 @@ export function registerSessionCommand(program) {
         env: process.env,
         autoRotate: false,
       });
-      if (!session?.token || !session?.apiUrl) {
+      if (!isAuthenticated(session) || !session?.apiUrl) {
         throw new Error(`Not authenticated. Run \`${authLoginHint()}\` first.`);
       }
       const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
@@ -6399,7 +6390,7 @@ export function registerSessionCommand(program) {
           env: process.env,
           autoRotate: false,
         });
-        if (!authSession || !authSession.token) {
+        if (!isAuthenticated(authSession)) {
           throw new Error(`Remote session read requires authentication. Run \`${authLoginHint()}\` first.`);
         }
         hydration = await hydrateSessionFromRemote({
@@ -8602,21 +8593,19 @@ export function registerSessionCommand(program) {
         return;
       }
 
-      let storedSession = null;
-      try {
-        storedSession = await readStoredSession();
-      } catch {
-        storedSession = null;
-      }
+      const storedSession = await resolveActiveAuthSession({
+        cwd: process.cwd(),
+        env: process.env,
+        autoRotate: false,
+      }).catch(() => null);
 
-      const fetchCredentials =
-        storedSession && storedSession.token
-          ? () =>
-              fetchAidenIdCredentials({
-                apiUrl: storedSession.apiUrl,
-                auth: storedSession,
-              })
-          : null;
+      const fetchCredentials = isAuthenticated(storedSession)
+        ? () =>
+            fetchAidenIdCredentials({
+              apiUrl: storedSession.apiUrl,
+              auth: storedSession,
+            })
+        : null;
       const credentials = await resolveAidenIdCredentials({
         apiKey: options.apiKey,
         orgId: options.orgId,

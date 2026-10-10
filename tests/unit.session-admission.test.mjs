@@ -26,6 +26,7 @@ import {
 } from "../src/session/admission.js";
 import { canonicalPreimage } from "../src/session/admission-preimage.js";
 import { createSessionMutationCsrfToken } from "../src/session/invitations.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 const SID = "e9e8dc5e-8d57-4603-975f-09156e3b4473";
 const TOKEN = "unit-test-human-bearer";
@@ -97,7 +98,7 @@ function fakeApi({ onPoll, reportsIdentityReadiness = true } = {}) {
   };
   const requestRead = async (url, { credential }) => {
     calls.push({ method: "GET", url });
-    assert.equal(credential.token, TOKEN);
+    assert.equal(await bearerOf(credential), TOKEN);
     assert.equal(credential.origin, "https://api.test");
     const id = decodeURIComponent(url.split("/").pop());
     const adm = admissions.get(id);

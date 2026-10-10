@@ -4,7 +4,7 @@ import path from "node:path";
 import process from "node:process";
 import { randomUUID } from "node:crypto";
 
-import { credentialFor, credentialedRequest } from "../auth/credential-destinations.js";
+import { credentialedRequest, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { createAgentEvent } from "../events/schema.js";
 import { isSessionControlEvent } from "./control-events.js";
@@ -1018,7 +1018,7 @@ export async function syncSessionEventToApi(
     return { synced: false, reason: "no_session" };
   }
 
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { synced: false, reason: "not_authenticated" };
   }
 
@@ -1216,7 +1216,7 @@ async function syncSessionAuxPayload(
   } catch {
     return { synced: false, reason: "no_session" };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { synced: false, reason: "not_authenticated" };
   }
 
@@ -1335,7 +1335,7 @@ export async function pollHumanMessages(
       cursor: normalizeString(since) || null,
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -1502,7 +1502,7 @@ export async function pollSessionEvents(
       cursor: normalizeString(since) || null,
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -1670,7 +1670,7 @@ export async function fetchSessionPresence(
       present: [],
     };
   }
-  if (!session?.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -1822,7 +1822,7 @@ export async function renewSessionPresence(
       recorded: false,
     };
   }
-  if (!session?.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -1947,7 +1947,7 @@ export async function requestSessionListenerStop(
   } catch {
     return { ok: false, reason: "no_session", recorded: false };
   }
-  if (!session?.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", recorded: false };
   }
 
@@ -2075,7 +2075,7 @@ export async function updateSessionReadCursor(
   } catch {
     return { ok: false, reason: "no_session", updated: false };
   }
-  if (!session?.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", updated: false };
   }
 
@@ -2209,7 +2209,7 @@ export async function streamSessionEvents(
       errorCount: 0,
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -2430,7 +2430,7 @@ export async function pollSessionEventsBefore(
       beforeSequence: null,
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -2553,7 +2553,7 @@ export async function listSessionMessageActions(
   } catch {
     return { ok: false, reason: "no_session", actions: [], count: 0, projection: null };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", actions: [], count: 0, projection: null };
   }
 
@@ -2658,7 +2658,7 @@ export async function fetchSessionUsageLedger(
   } catch {
     return { ok: false, reason: "no_session", status: 0, payload: null };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", status: 0, payload: null };
   }
 
@@ -2857,7 +2857,7 @@ export async function editSessionMessage(sessionId, {
   let auth;
   try { auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false }); }
   catch { return { ok: false, reason: "no_session" }; }
-  if (!auth?.token) return { ok: false, reason: "not_authenticated" };
+  if (!isAuthenticated(auth)) return { ok: false, reason: "not_authenticated" };
   const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${encodeURIComponent(sid)}`;
   const credential = await credentialFor(auth);
   const failure = (response, payload) => {
@@ -2980,7 +2980,7 @@ export async function createSessionMessageAction(
   } catch {
     return { ok: false, reason: "no_session", action: null };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", action: null };
   }
 
@@ -3120,7 +3120,7 @@ export async function searchSessionEvents(
       nextBeforeSequence: null,
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -3242,7 +3242,7 @@ export async function listSessionsFromApi({
       warnings: [],
     };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return {
       ok: false,
       reason: "not_authenticated",
@@ -3384,7 +3384,7 @@ export async function fetchSessionFromApi(
   } catch {
     return { ok: false, reason: "no_session", session: null };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { ok: false, reason: "not_authenticated", session: null, status: 401 };
   }
 
@@ -3463,7 +3463,7 @@ export async function probeSessionAccess(
   } catch {
     return { accessible: false, reason: "no_session" };
   }
-  if (!session || !session.token) {
+  if (!isAuthenticated(session)) {
     return { accessible: false, reason: "not_authenticated" };
   }
 

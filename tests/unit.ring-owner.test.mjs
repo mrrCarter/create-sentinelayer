@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ringOwner, resolvePocketGatewayUrl, RING_OWNER_KINDS } from "../src/pocket/ring-owner.js";
+import { bearerOf } from "./credential-probe.mjs";
 
 test("ring-owner: posts question+kind+context to the POCKET gateway with the caller's bearer (target from auth, not body)", async () => {
   const calls = [];
@@ -19,7 +20,7 @@ test("ring-owner: posts question+kind+context to the POCKET gateway with the cal
   assert.equal(calls[0].url, "https://pocket.example.com/dial/ring-owner", "hits the gateway /dial/ring-owner (NOT the senti apiUrl); trailing slash normalized");
   assert.equal(calls[0].init.method, "POST");
   assert.equal(calls[0].init.operationName, "pocket.ring_owner");
-  assert.equal(calls[0].init.credential.token, "tok-abc", "caller's own bearer — the gateway derives the ring TARGET from it, never a body field");
+  assert.equal(await bearerOf(calls[0].init.credential), "tok-abc", "caller's own bearer — the gateway derives the ring TARGET from it, never a body field");
   assert.equal(calls[0].init.credential.origin, "https://pocket.example.com", "bound to the configured gateway");
   assert.deepEqual(calls[0].init.body, {
     question: "Ship the consolidation to master?",
