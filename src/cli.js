@@ -269,17 +269,18 @@ export async function runCli(rawArgs = process.argv.slice(2)) {
   // the subcommand (say, post-agent, observe, locks, checkpoints, ...), so no
   // subcommand, present or future, can reach the human token. A tombstoned
   // admission refuses here, before any request.
-  const { assertBridgedSessionRoute, assertDispatchMatchesScope, resolveAgentAdmissionTarget, withAgentAdmission } =
+  const { assertDispatchMatchesScope, resolveAgentAdmissionTarget, withAgentAdmission } =
     await import("./session/admission-auth.js");
   const target = await resolveAgentAdmissionTarget(normalizedArgs);
-  // Through the MCP CLI bridge in an agent context: bind to the session's admission, run a
-  // legacy data-plane route as before, or refuse (src/session/route-classes.js).
-  await assertBridgedSessionRoute(normalizedArgs, target);
-  // Execution must match authorization: before ANY action runs, re-derive the identity
-  // from Commander's resolved options and compare it with the scope in force.
+  // Execution must match authorization: before ANY action runs, decide on Commander's parsed
+  // arguments and options -- the values the action will use. Through the MCP CLI bridge in an
+  // agent context the action binds to its session's admission, runs a legacy data-plane route
+  // as before, or is refused (src/session/route-classes.js); and the identity it resolves must
+  // be the one whose scope is in force.
   program.hook("preAction", (_hooked, actionCommand) => assertDispatchMatchesScope(actionCommand));
   if (target) {
-    await withAgentAdmission(target.sessionId, target.agentId, dispatch);
+    // An admission seen above that is gone by the time it is read refuses: never a fallback.
+    await withAgentAdmission(target.sessionId, target.agentId, dispatch, { requireStored: true });
     return;
   }
   await dispatch();

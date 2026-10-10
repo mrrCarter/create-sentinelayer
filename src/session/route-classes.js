@@ -4,7 +4,7 @@
 // In an agent context it decides what a route may do when the session it acts in stores NO
 // admission on this machine (when the session stores one, every route binds to it or is
 // refused; see runInSessionToolContext in src/mcp/session-stdio-server.js and
-// assertBridgedSessionRoute in src/session/admission-auth.js):
+// assertDispatchMatchesScope in src/session/admission-auth.js):
 //
 //   legacy-data-plane  a compatibility list for rooms that don't require admission:
 //                      posting, replying, reading/polling, message actions and reactions,
@@ -104,18 +104,4 @@ export const LEGACY_DATA_PLANE_TOOLS = Object.freeze(
 
 export function sessionRouteClass(route) {
   return SESSION_ROUTE_CLASSES[route] || "unclassified";
-}
-
-/**
- * The classified route a `session` argv names: the longest "session ..." command path in
- * the table (argv from the bridge always starts with the command path), else the bare
- * "session <subcommand>", which is then unclassified.
- */
-export function sessionCommandRoute(args = []) {
-  const tokens = args.map((arg) => String(arg ?? "").trim().toLowerCase());
-  for (const depth of [3, 2]) {
-    const route = `cli:${tokens.slice(0, depth + 1).join(" ")}`;
-    if (SESSION_ROUTE_CLASSES[route]) return { route, depth };
-  }
-  return { route: `cli:${tokens.slice(0, 2).join(" ")}`, depth: 1 };
 }

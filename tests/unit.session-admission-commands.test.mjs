@@ -15,7 +15,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 // ---------------------------------------------------------------- isolation
 const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-admission-cmd-"));
@@ -832,6 +832,31 @@ test("after the `--` terminator, --agent is message text, not an identity", asyn
   const calls = since(api, mark);
   assert.ok(calls.length >= 1);
   assert.deepEqual(calls.filter((c) => !c.bearer.startsWith("sladm_")), [], "ran as terminator-agent, on its admission");
+});
+
+test("an admission resolved for a command but gone when runCli reads it refuses, with no request", async () => {
+  const { ws, api } = await joinAdmitted("removed-agent");
+  const file = path.resolve(admissionCredentialPath(SID, "removed-agent", { homeDir }));
+  const readFile = fsp.readFile;
+  // The file is removed at the moment the dispatch wrapper reads it, after the command's
+  // (session, agent) was resolved from it.
+  mock.method(fsp, "readFile", async (target, ...rest) => {
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    const stack = String(new Error().stack);
+    Error.stackTraceLimit = limit;
+    if (path.resolve(String(target)) === file && /withAgentAdmission/.test(stack)) await fsp.rm(file, { force: true });
+    return readFile.call(fsp, target, ...rest);
+  });
+  const mark = api.requests.length;
+  let ran;
+  try {
+    ran = await viaCli(["session", "say", SID, "after removal", "--agent", "removed-agent", "--json", "--path", ws]);
+  } finally {
+    mock.restoreAll();
+  }
+  assert.match(String(ran.error?.message), /no longer present.*will not fall back/s);
+  assert.deepEqual(since(api, mark), [], "no request at all, so never the human token");
 });
 
 function fakeCommand({ path: names, opts, sources = {}, args = [] }) {

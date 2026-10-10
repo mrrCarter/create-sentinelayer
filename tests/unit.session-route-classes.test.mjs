@@ -1,8 +1,9 @@
 import "./setup-env.mjs";
 // The ONE route classification (src/session/route-classes.js) must cover every local MCP
 // session tool and every `sl session` command the MCP CLI bridge can invoke, derived from the
-// real handlers and command tree so it cannot go stale. Also checks the bridge guard for the
-// routes the end-to-end bridge tests cannot reach: owner and unclassified commands.
+// real handlers and command tree so it cannot go stale. Also checks the preAction guard for
+// bridged commands, on Commander-parsed values, for the routes the end-to-end bridge tests
+// cannot reach: owner and unclassified commands, and sessions named outside the first operand.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
@@ -13,7 +14,8 @@ import { buildCliCommandMcpTools } from "../src/mcp/cli-command-tools.js";
 import { createSessionMcpToolHandlers } from "../src/mcp/session-stdio-server.js";
 import { buildCliProgram } from "../src/cli.js";
 import { LEGACY_DATA_PLANE_TOOLS, SESSION_ROUTE_CLASSES } from "../src/session/route-classes.js";
-import { assertBridgedSessionRoute } from "../src/session/admission-auth.js";
+import { admittedAgentScope } from "../src/auth/admission-scope.js";
+import { assertDispatchMatchesScope, resolveAgentAdmissionTarget } from "../src/session/admission-auth.js";
 import { admissionCredentialPath } from "../src/session/admission.js";
 
 const CLASSES = new Set(["legacy-data-plane", "control", "owner", "exempt-local"]);
@@ -86,48 +88,120 @@ async function withStoredAdmission(fn) {
   }
 }
 
-test("a bridged owner command is refused in an agent context, with or without a stored admission", async () => {
-  const args = ["session", "access", "approve", SID, "adm-1", "--json"];
+async function withEmptyHome(fn) {
   const homeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-route-classes-empty-"));
-  await assert.rejects(assertBridgedSessionRoute(args, null, { env: BRIDGE_ENV, homeDir }), /owner actions are not available/);
-  await fsp.rm(homeDir, { recursive: true, force: true });
-  await withStoredAdmission((home) =>
+  try {
+    await fn(homeDir);
+  } finally {
+    await fsp.rm(homeDir, { recursive: true, force: true });
+  }
+}
+
+// An action as Commander hands it to preAction: its command path, its options (and which of
+// them were given on the command line) and its parsed operands.
+function parsedAction(names, { args = [], opts = {}, sources = {} } = {}) {
+  let parent = { name: () => "sl", parent: null };
+  let node = null;
+  for (const name of names) {
+    node = { name: () => name, parent };
+    parent = node;
+  }
+  node.opts = () => opts;
+  node.getOptionValueSource = (key) => sources[key];
+  node.processedArgs = args;
+  return node;
+}
+
+// Running inside SID's admission scope, as runCli runs a command it bound to that admission.
+const bound = (fn) =>
+  admittedAgentScope.run({ sessionId: SID, agentId: "bridge-agent", admissionId: "adm-route", expiresAt: 0 }, fn);
+const guard = (action, homeDir, env = BRIDGE_ENV) => assertDispatchMatchesScope(action, { env, homeDir });
+
+test("a bridged owner command is refused in an agent context, with or without a stored admission", async () => {
+  const approve = parsedAction(["session", "access", "approve"], { args: [SID, "adm-1"] });
+  await withEmptyHome((homeDir) => assert.rejects(guard(approve, homeDir), /owner actions are not available/));
+  await withStoredAdmission((homeDir) =>
     assert.rejects(
-      assertBridgedSessionRoute(args, { sessionId: SID, agentId: "bridge-agent" }, { env: BRIDGE_ENV, homeDir: home }),
+      bound(() => guard(approve, homeDir)),
       /owner actions are not available/,
     ),
   );
 });
 
 test("a bridged unclassified command is refused when its session stores no admission", async () => {
-  const homeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-route-classes-empty-"));
-  try {
+  await withEmptyHome(async (homeDir) => {
     await assert.rejects(
-      assertBridgedSessionRoute(["session", "brand-new-command", SID], null, { env: BRIDGE_ENV, homeDir }),
+      guard(parsedAction(["session", "brand-new-command"], { args: [SID] }), homeDir),
       /not classified for agents/,
     );
     // the legacy data-plane list still runs as before
-    await assertBridgedSessionRoute(["session", "say", SID, "hello"], null, { env: BRIDGE_ENV, homeDir });
-  } finally {
-    await fsp.rm(homeDir, { recursive: true, force: true });
-  }
+    await guard(parsedAction(["session", "say"], { args: [SID, ["hello"]], opts: { path: homeDir } }), homeDir);
+  });
 });
 
-test("a bridged command whose session stores an admission must be bound to it", async () => {
+test("a bridged command whose session stores an admission must be running on it", async () => {
   await withStoredAdmission(async (homeDir) => {
-    for (const args of [["session", "say", SID, "hello"], ["session", "brand-new-command", SID]]) {
-      await assert.rejects(assertBridgedSessionRoute(args, null, { env: BRIDGE_ENV, homeDir }), /not bound to it/);
-      await assertBridgedSessionRoute(args, { sessionId: SID, agentId: "bridge-agent" }, { env: BRIDGE_ENV, homeDir });
+    const say = parsedAction(["session", "say"], { args: [SID, ["hello"]], opts: { path: homeDir } });
+    const named = parsedAction(["session", "brand-new-command"], {
+      args: [SID],
+      opts: { agent: "bridge-agent", path: homeDir },
+      sources: { agent: "cli" },
+    });
+    for (const action of [say, named]) {
+      await assert.rejects(guard(action, homeDir), /not bound to it/);
+      await bound(() => guard(action, homeDir));
+    }
+  });
+});
+
+test("a bridged command counts every session it will use: --session or --id, given or defaulted, and any operand", async () => {
+  await withStoredAdmission(async (homeDir) => {
+    for (const action of [
+      parsedAction(["session", "locks"], { opts: { session: SID }, sources: { session: "cli" } }),
+      parsedAction(["session", "locks"], { opts: { session: SID }, sources: { session: "default" } }),
+      parsedAction(["session", "locks"], { opts: { id: SID }, sources: { id: "env" } }),
+      parsedAction(["session", "locks"], { args: ["first-operand", SID] }),
+      parsedAction(["session", "locks"], { args: ["first-operand", ["more", SID]] }),
+    ]) {
+      await assert.rejects(guard(action, homeDir), /stores an admission and this command's agent is not bound to it/);
+    }
+    // the same command using no session that stores one is a control operation
+    await assert.rejects(
+      guard(parsedAction(["session", "locks"], { args: ["first-operand"] }), homeDir),
+      /control operation/,
+    );
+  });
+});
+
+test("bridged join, leave and stop-listener are refused in an agent context, with or without a stored admission", async () => {
+  const cases = [
+    [["session", "join"], ["session", "join", SID, "--agent", "bridge-agent"], { args: [SID], opts: { agent: "bridge-agent" } }],
+    [["session", "leave"], ["session", "leave", SID, "--agent", "bridge-agent"], { args: [SID], opts: { agent: "bridge-agent" } }],
+    [
+      ["session", "stop-listener"],
+      ["session", "stop-listener", "--session", SID, "--agent", "bridge-agent"],
+      { opts: { session: SID, agent: "bridge-agent" } },
+    ],
+  ];
+  const sources = { agent: "cli", session: "cli" };
+  await withEmptyHome(async (homeDir) => {
+    for (const [names, , parsed] of cases) {
+      await assert.rejects(guard(parsedAction(names, { ...parsed, sources }), homeDir), /control operation/);
+    }
+  });
+  await withStoredAdmission(async (homeDir) => {
+    for (const [names, argv, parsed] of cases) {
+      // runCli never binds them to an admission: they act on an agent, not as one
+      assert.equal(await resolveAgentAdmissionTarget(argv, { env: BRIDGE_ENV, homeDir }), null);
+      await assert.rejects(guard(parsedAction(names, { ...parsed, sources }), homeDir), /not bound to it/);
     }
   });
 });
 
 test("outside the bridge, or with no agent signal, the guard does not apply", async () => {
-  const homeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "sl-route-classes-empty-"));
-  try {
-    await assertBridgedSessionRoute(["session", "lock", SID, "a.js"], null, { env: {}, homeDir });
-    await assertBridgedSessionRoute(["session", "lock", SID, "a.js"], null, { env: { SENTINELAYER_MCP_BRIDGE: "1" }, homeDir });
-  } finally {
-    await fsp.rm(homeDir, { recursive: true, force: true });
-  }
+  await withEmptyHome(async (homeDir) => {
+    const lock = parsedAction(["session", "lock"], { args: [SID, ["a.js"]], opts: { path: homeDir } });
+    await guard(lock, homeDir, {});
+    await guard(lock, homeDir, { SENTINELAYER_MCP_BRIDGE: "1" });
+  });
 });

@@ -7,7 +7,7 @@ import "./setup-env.mjs";
 //   (c) the session stores none and the tool is control, owner or unclassified/new: refuse
 // Owner mutations are refused in an agent context either way. Credential-free: synthetic
 // ids, an invalid example origin and injected transports; nothing reaches a network.
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -138,6 +138,28 @@ test("a legacy data-plane tool with no admission for the session runs as before"
 });
 
 // ---- (a) the session stores an admission: every class binds exactly to it or refuses
+
+test("an admission seen in the listing but gone when it is read refuses, and nothing runs", async () => {
+  await storeCredential(AGENT);
+  const file = path.resolve(admissionCredentialPath(SESSION, AGENT));
+  const readFile = fsp.readFile;
+  mock.method(fsp, "readFile", async (target, ...rest) => {
+    if (path.resolve(String(target)) === file) throw Object.assign(new Error("removed"), { code: "ENOENT" });
+    return readFile.call(fsp, target, ...rest);
+  });
+  try {
+    await withEnv(AGENT, async () => {
+      const { handlers, calls } = tools();
+      await assert.rejects(
+        handlers.send_message({ sessionId: SESSION, agentId: AGENT, message: "hello" }),
+        /no longer present.*will not fall back/s,
+      );
+      assert.deepEqual(calls, []);
+    });
+  } finally {
+    mock.restoreAll();
+  }
+});
 
 for (const name of ["brand_new_tool", "send_message", "session_lock"]) {
   test(`${name} binds to the LIVE admission stored for its session`, async () => {

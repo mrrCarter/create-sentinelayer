@@ -12,7 +12,12 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { buildCliCommandMcpTools, createCliCommandMcpToolHandlers } from "../src/mcp/cli-command-tools.js";
+import {
+  buildCliCommandArgs,
+  buildCliCommandMcpTools,
+  createCliCommandMcpToolHandlers,
+  executeCliCommand,
+} from "../src/mcp/cli-command-tools.js";
 import { buildCliProgram } from "../src/cli.js";
 import { admissionCredentialPath } from "../src/session/admission.js";
 
@@ -89,11 +94,23 @@ async function bridgeFixture({ agentEnv } = {}) {
   const say = (agent) =>
     handlers["sl.session.say"]({ sessionId: SID, message: ["status from the bridge"], agent, path: ws, timeoutMs: 60_000 });
   const locks = () => handlers["sl.session.locks"]({ sessionId: SID, path: ws, timeoutMs: 60_000 });
+  // The bridge handler for a tool, and the argv it builds for an input run directly in the
+  // bridge's child environment, so the CLI's own checks are exercised without the handler's.
+  const call = (toolName, input) => handlers[toolName]({ ...input, timeoutMs: 60_000 });
+  const runArgv = (toolName, input) =>
+    executeCliCommand(buildCliCommandArgs(tools.find((tool) => tool.name === toolName), input), {
+      targetPath: ws,
+      timeoutMs: 60_000,
+      env,
+    });
   return {
     api,
+    ws,
     store,
     say,
     locks,
+    call,
+    runArgv,
     close: async () => {
       await api.close();
       await fsp.rm(home, { recursive: true, force: true });
@@ -150,6 +167,96 @@ test("a bridged control command (locks) in an agent context with no admission fo
     const result = await fx.locks();
     assert.equal(result.ok, false);
     assert.match(String(result.stderr), /control operation.*will not fall back/s);
+    assert.deepEqual(fx.api.requests, []);
+  } finally {
+    await fx.close();
+  }
+});
+
+// Values the bridge copies into argv. Each case runs twice against a session that stores
+// AGENT's live admission: through the bridge handler, which refuses the input outright, and
+// as the argv that input would build, run directly in the bridge's child environment, where
+// the CLI decides on Commander's parsed values and refuses. Neither sends a request.
+const OUTSIDER = "outside-agent";
+const DASH_VALUE_CASES = [
+  ["say, a dash-only session id, agent from the environment", "sl.session.say", { sessionId: "--", message: [SID, "hi"] }, OUTSIDER],
+  ["say, a dash-only session id, no agent in the environment", "sl.session.say", { sessionId: "--", message: [SID, "hi"] }, undefined],
+  [
+    "say, an option-shaped session id, agent from the environment",
+    "sl.session.say",
+    { sessionId: "--agent", message: [OUTSIDER, "--", SID, "hi"] },
+    OUTSIDER,
+  ],
+  [
+    "say, an option-shaped session id, no agent in the environment",
+    "sl.session.say",
+    { sessionId: "--agent", message: [OUTSIDER, "--", SID, "hi"] },
+    undefined,
+  ],
+  [
+    "reply, a dash-only session id, agent from the environment",
+    "sl.session.reply",
+    { sessionId: "--", targetSequenceId: SID, message: ["1", "hi"] },
+    OUTSIDER,
+  ],
+  [
+    "reply, a dash-only session id, no agent in the environment",
+    "sl.session.reply",
+    { sessionId: "--", targetSequenceId: SID, message: ["1", "hi"] },
+    undefined,
+  ],
+];
+
+for (const [label, toolName, input, agentEnv] of DASH_VALUE_CASES) {
+  test(`a bridged value that starts with a dash is refused with zero requests: ${label}`, async () => {
+    const fx = await bridgeFixture({ agentEnv });
+    try {
+      await fx.store(AGENT);
+      const viaBridge = await fx.call(toolName, { ...input, path: fx.ws });
+      assert.equal(viaBridge.ok, false);
+      assert.equal(viaBridge.reason, "invalid_cli_tool_input");
+      assert.equal(viaBridge.detail, "unsupported_input_value:sessionId");
+      assert.deepEqual(fx.api.requests, [], "the bridge handler ran nothing");
+
+      const direct = await fx.runArgv(toolName, { ...input, path: fx.ws });
+      assert.notEqual(direct.exitCode, 0, String(direct.stdout));
+      assert.match(String(direct.stderr), /stores an admission and this command's agent is not bound to it.*will not fall back/s);
+      assert.deepEqual(fx.api.requests, [], "no request at all, so never the user's token");
+    } finally {
+      await fx.close();
+    }
+  });
+}
+
+for (const [label, toolName, input] of [
+  ["say", "sl.session.say", { sessionId: SID, message: ["status from the holder"] }],
+  ["reply", "sl.session.reply", { sessionId: SID, targetSequenceId: "1", message: ["reply from the holder"] }],
+]) {
+  test(`the session's own holder still runs on its admission through the bridge: ${label}, agent from the environment`, async () => {
+    const fx = await bridgeFixture({ agentEnv: AGENT });
+    try {
+      await fx.store(AGENT);
+      await fx.call(toolName, { ...input, path: fx.ws });
+      assert.ok(fx.api.requests.length >= 1, "the command reached the API");
+      assert.deepEqual(fx.api.requests.filter((r) => r.bearer !== ADMISSION_TOKEN), [], "admission credential only");
+    } finally {
+      await fx.close();
+    }
+  });
+}
+
+test("the bridge refuses a dash-leading value in any positional or option value", async () => {
+  const fx = await bridgeFixture();
+  try {
+    for (const [toolName, input, key] of [
+      ["sl.session.say", { sessionId: SID, message: ["fine", "-x"] }, "message"],
+      ["sl.session.say", { sessionId: SID, message: ["fine"], agent: "--json" }, "agent"],
+      ["sl.session.say", { sessionId: SID, message: ["fine"], path: " -p" }, "path"],
+      ["sl.session.reply", { sessionId: SID, targetSequenceId: -1, message: ["fine"] }, "targetSequenceId"],
+    ]) {
+      const result = await fx.call(toolName, input);
+      assert.equal(result.detail, `unsupported_input_value:${key}`);
+    }
     assert.deepEqual(fx.api.requests, []);
   } finally {
     await fx.close();

@@ -941,8 +941,9 @@ export async function runInSessionToolContext(name, input = {}, run, { env = pro
   if (!stored.includes(agentId)) {
     refuseOutsideAdmission(`agent "${agentId}" holds none of the admissions stored for session ${sessionId}`);
   }
-  // live: runs inside the admission scope; an expired, malformed or mis-bound one is refused there
-  return withAgentAdmission(sessionId, agentId, () => run(input));
+  // live: runs inside the admission scope; an expired, malformed or mis-bound one is refused there.
+  // The file was seen above, so one removed since then refuses too: never a fallback.
+  return withAgentAdmission(sessionId, agentId, () => run(input), { requireStored: true });
 }
 
 export function routeAgentToolsThroughAdmission(handlers, { env = process.env } = {}) {
