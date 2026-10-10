@@ -206,7 +206,7 @@ required` (or `legacy`).
 The owner actions (`approve`, `deny`, `revoke`, `mode`) run on the owner's own
 session. They are unavailable in an agent context, meaning `SENTINELAYER_AGENT_ID`
 is set or agent admission credentials are stored on the machine; owners use the
-web dashboard from such machines. `session access` commands are not exposed
+web dashboard from such machines. `session access` commands are not callable
 through the MCP CLI bridge.
 
 Sentinelayer includes a deterministic session coordination surface for multi-agent coding loops:

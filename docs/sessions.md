@@ -84,7 +84,7 @@ for it; `access list` shows it, and its owner changes it with
 own session. They are unavailable in an agent context: when
 `SENTINELAYER_AGENT_ID` is set or agent admission credentials are stored on the
 machine, use the web dashboard instead. `session access` commands are not
-exposed through the MCP CLI bridge.
+callable through the MCP CLI bridge.
 
 Listener presence is outside the durable transcript. The CLI renews a membership-gated TTL through `PUT /sessions/{id}/presence`; `listeners`, remote recaps, and `status` read the three-state presence roster directly. If the capability is disabled, unsupported, or degraded, presence is reported as unknown—never reconstructed from historical heartbeat events.
 
