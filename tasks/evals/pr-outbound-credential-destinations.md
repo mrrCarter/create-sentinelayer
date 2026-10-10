@@ -18,7 +18,7 @@ Touched AI-impacting files:
 ## Candidate
 
 - `src/ai/proxy.js` passes a credential object to `credentialedRequest` instead of building the header. The proxy URL, request body, model selection, provider routing, retry behaviour and response parsing are unchanged.
-- `src/ai/aidenid.js` is listed as a reviewed census exception: the AIdenID key is AIdenID's own credential, sent to the AIdenID API exactly as before. Its request construction is unchanged.
+- `src/ai/aidenid.js` passes the resolved SentinelLayer session (a credential) instead of its raw token when it fetches the AIdenID key from the SentinelLayer API, so that request is bound like any other. The AIdenID key itself is a reviewed census exception: it is AIdenID's own credential, sent to the AIdenID API as before.
 
 Prompt text, model selection, provider routing, tool permissions and finding parsing are unchanged.
 
