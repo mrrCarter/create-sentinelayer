@@ -1,5 +1,5 @@
 #!/usr/bin/env node
 
-import { runCli } from "../src/cli.js";
+import { bootstrapCli } from "../src/cli-bootstrap.js";
 
-await runCli();
+await bootstrapCli();

@@ -388,7 +388,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs | tee windows-child-process.tap
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs tests/unit.cli-bootstrap.test.mjs | tee windows-child-process.tap
           grep -qx '# skipped 0' windows-child-process.tap
 
       # The Windows floor, pinned: Node.js 22.0.0 is the first runtime with libuv 1.48.0, which
@@ -405,7 +405,7 @@ jobs:
           runtime="$(node -p '`${process.version} ${process.versions.uv}`')"
           echo "Node.js and libuv: $runtime"
           test "$runtime" = "v22.0.0 1.48.0"
-          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs | tee windows-node-22.0.0.tap
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-program-lookup.test.mjs tests/unit.repo-child-env.test.mjs tests/unit.cli-runtime-floor.test.mjs tests/unit.cli-bootstrap.test.mjs | tee windows-node-22.0.0.tap
           grep -qx '# skipped 0' windows-node-22.0.0.tap
 
       # Below the floor, pinned: Node.js 20.19.0 ships libuv 1.46.0, which ignores the setting, so
@@ -422,7 +422,7 @@ jobs:
           runtime="$(node -p '`${process.version} ${process.versions.uv}`')"
           echo "Node.js and libuv: $runtime"
           test "$runtime" = "v20.19.0 1.46.0"
-          node --import ./tests/setup-env.mjs --test tests/unit.cli-runtime-floor.test.mjs | tee windows-node-20.19.0.tap
+          node --import ./tests/setup-env.mjs --test tests/unit.cli-runtime-floor.test.mjs tests/unit.cli-bootstrap.test.mjs | tee windows-node-20.19.0.tap
           grep -qx '# skipped 0' windows-node-20.19.0.tap
 
   playwright-e2e:
