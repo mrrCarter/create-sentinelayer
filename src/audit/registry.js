@@ -1,6 +1,8 @@
 import fsp from "node:fs/promises";
 import path from "node:path";
 
+import { agentIdProblem } from "../agents/agent-id-path.js";
+
 export const DEFAULT_AUDIT_AGENT_TOOLS = Object.freeze([
   "FileRead",
   "Grep",
@@ -246,10 +248,16 @@ function mergeRegistry(builtinAgents = [], overrideAgents = []) {
   for (const builtin of builtinAgents) {
     byId.set(builtin.id, { ...builtin });
   }
-  for (const override of overrideAgents) {
+  for (const [index, override] of overrideAgents.entries()) {
     const normalized = normalizeAgentRecord(override);
     if (!normalized.id) {
       continue;
+    }
+    // An agent id names the agent's file in every audit run, so the whole registry is refused
+    // before anything is written when one id cannot.
+    const problem = agentIdProblem(normalized.id);
+    if (problem) {
+      throw new Error(`Invalid audit registry file: agents[${index}].id ${JSON.stringify(normalized.id)}: ${problem}`);
     }
     const existing = byId.get(normalized.id) || {};
     if (!Object.prototype.hasOwnProperty.call(override, "tools")) {
