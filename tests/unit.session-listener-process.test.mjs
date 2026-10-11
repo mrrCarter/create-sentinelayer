@@ -61,13 +61,16 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
       /codex-product-0344\.json$/,
     );
 
+    // These checks are about pid records, so the process table is a fixed empty one.
+    const noProcesses = async () => [];
     const initial = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
       homeDir: tempRoot,
+      _listProcesses: noProcesses,
     });
     assert.deepEqual(
-      { running: initial.running, pid: initial.pid, stale: initial.stale },
-      { running: false, pid: null, stale: false },
+      { state: initial.state, running: initial.running, pid: initial.pid, stale: initial.stale },
+      { state: "not_running", running: false, pid: null, stale: false },
     );
 
     await writeListenerPidRecord(session.sessionId, "Codex", {
@@ -95,7 +98,9 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
       targetPath: tempRoot,
       homeDir: tempRoot,
       _readProcessCommandLine: async () => `${process.execPath} unrelated-worker.js`,
+      _listProcesses: noProcesses,
     });
+    assert.equal(reused.state, "not_running");
     assert.equal(reused.running, false);
     assert.equal(reused.stale, true);
     assert.equal(reused.reused, true);
@@ -110,7 +115,9 @@ test("Unit listener-process: pid record round-trip and stale detection", async (
     const stale = await getListenerProcessStatus(session.sessionId, "Codex", {
       targetPath: tempRoot,
       homeDir: tempRoot,
+      _listProcesses: noProcesses,
     });
+    assert.equal(stale.state, "not_running");
     assert.equal(stale.running, false);
     assert.equal(stale.stale, true);
 
@@ -234,20 +241,22 @@ test("Unit listener-process: process scan detects untracked duplicate listener",
       ],
     });
 
+    assert.equal(status.state, "running");
     assert.equal(status.running, true);
     assert.equal(status.pid, duplicatePid);
     assert.equal(status.recordScope, "process_scan");
     assert.equal(status.untracked, true);
     assert.equal(status.matchingProcesses.length, 1);
 
-    const matches = await listMatchingListenerProcesses(sessionId, agentId, {
+    const scan = await listMatchingListenerProcesses(sessionId, agentId, {
       _listProcesses: async () => [
         { pid: process.pid, commandLine },
         { pid: extraDuplicatePid, commandLine },
         { pid: adjacentPid, commandLine: adjacentAgentCommandLine },
       ],
     });
-    assert.deepEqual(matches.map((match) => match.pid), [extraDuplicatePid]);
+    assert.equal(scan.ok, true);
+    assert.deepEqual(scan.matches.map((match) => match.pid), [extraDuplicatePid]);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

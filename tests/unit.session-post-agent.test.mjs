@@ -2,6 +2,7 @@ import "./setup-env.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -104,6 +105,60 @@ function installAuthEnv(apiUrl = "https://api.sentinelayer.com") {
         process.env[key] = value;
       }
     }
+  };
+}
+
+// Stops a spawned fake listener and waits for it to exit, so temp cleanup and the next
+// test's process scan never run beside it.
+async function stopChildAndWait(child, { timeoutMs = 10_000 } = {}) {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit", { signal: AbortSignal.timeout(timeoutMs) });
+  child.kill("SIGTERM");
+  try {
+    await exited;
+  } catch {
+    throw new Error(`fake listener pid ${child.pid} did not exit within ${timeoutMs} ms`);
+  }
+}
+
+// A fake API that tells this agent's listener to stop on its first poll. A listen the
+// duplicate check wrongly lets through then ends after one poll instead of running
+// unbounded, and the recorded calls show it.
+function installStopOnFirstPollFetch(agentId) {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (options.method === "PUT") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "ok", recorded: true, ttlSeconds: 90 }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        listenerControls: [
+          {
+            controlId: "control-stop-duplicate-check",
+            type: "stop",
+            issuedAt: new Date(Date.now() + 30_000).toISOString(),
+            targetAgentId: agentId,
+            reason: "test_bound",
+          },
+        ],
+        events: [],
+        cursor: null,
+      }),
+    };
+  };
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = originalFetch;
+    },
   };
 }
 
@@ -1402,8 +1457,13 @@ test("Unit session listen: fresh stop control exits before events and publishes 
   }
 });
 
-test("Unit session listen: refuses duplicate local listener for same session and agent", async () => {
+// A listen this check wrongly lets through runs until it is stopped, so the timeout makes
+// such a regression fail instead of hanging the file.
+test("Unit session listen: refuses duplicate local listener for same session and agent", { timeout: 60_000 }, async () => {
+  resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-singleton-"));
+  const restoreEnv = installAuthEnv();
+  const api = installStopOnFirstPollFetch("codex");
   const child = spawn(
     process.execPath,
     [
@@ -1442,25 +1502,28 @@ test("Unit session listen: refuses duplicate local listener for same session and
       ]),
       /already running for session remote-listen as codex/,
     );
+    assert.equal(api.calls.length, 0);
 
     const record = await readListenerPidRecord("remote-listen", "Codex", {
       targetPath: tempRoot,
     });
     assert.equal(record.listenerId, "listener-codex-existing");
   } finally {
-    if (child.pid) {
-      try {
-        process.kill(child.pid, "SIGTERM");
-      } catch {
-        // Already stopped.
-      }
-    }
+    api.restore();
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await stopChildAndWait(child);
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("Unit session listen: refuses untracked duplicate local listener for same session and agent", async () => {
+// Uses the real process scan. A listen it wrongly lets through is bounded by the fake API's
+// stop control and by the timeout, so a regression fails instead of hanging the file.
+test("Unit session listen: refuses untracked duplicate local listener for same session and agent", { timeout: 60_000 }, async () => {
+  resetSessionSyncStateForTests();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "create-sentinelayer-session-listen-scan-"));
+  const restoreEnv = installAuthEnv();
+  const api = installStopOnFirstPollFetch("codex");
   const child = spawn(
     process.execPath,
     [
@@ -1493,19 +1556,17 @@ test("Unit session listen: refuses untracked duplicate local listener for same s
       ]),
       /already running for session remote-listen-untracked as codex/,
     );
+    assert.equal(api.calls.length, 0);
 
     const record = await readListenerPidRecord("remote-listen-untracked", "Codex", {
       targetPath: tempRoot,
     });
     assert.equal(record, null);
   } finally {
-    if (child.pid) {
-      try {
-        process.kill(child.pid, "SIGTERM");
-      } catch {
-        // Already stopped.
-      }
-    }
+    api.restore();
+    resetSessionSyncStateForTests();
+    restoreEnv();
+    await stopChildAndWait(child);
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
