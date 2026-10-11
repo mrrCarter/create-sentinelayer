@@ -6,7 +6,7 @@ import process from "node:process";
 import { buildArtifactLineageIndex, verifyArtifactChain } from "../daemon/artifact-lineage.js";
 import { readSessionCodebaseContext } from "./codebase-context.js";
 import { computeSessionAnalytics } from "./analytics.js";
-import { resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
+import { isValidSessionId, resolveSessionPaths, resolveSessionsRoot } from "./paths.js";
 import { appendToStream, withSessionStreamLock } from "./stream.js";
 
 const SESSION_SCHEMA_VERSION = "1.0.0";
@@ -637,7 +637,7 @@ export async function listActiveSessions({ targetPath = process.cwd() } = {}) {
 
   const sessions = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || !isValidSessionId(entry.name)) continue;
     const loaded = await loadMetadata(entry.name, { targetPath: resolvedTargetPath });
     if (!loaded) continue;
     if (isExpired(loaded.metadata)) continue;
@@ -677,7 +677,7 @@ export async function listAllSessions({ targetPath = process.cwd() } = {}) {
 
   const sessions = [];
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || !isValidSessionId(entry.name)) continue;
     const loaded = await loadMetadata(entry.name, { targetPath: resolvedTargetPath });
     if (!loaded) continue;
 
