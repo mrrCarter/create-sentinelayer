@@ -1,5 +1,3 @@
-#!/usr/bin/env node
-
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -8,7 +6,6 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { pathToFileURL } from "node:url";
 
 import open from "open";
 import pc from "picocolors";
@@ -3759,12 +3756,5 @@ export async function runLegacyCliWithErrorHandling(rawArgs = process.argv.slice
     renderCliFailure(error);
     process.exitCode = 1;
   }
-}
-
-const invokedAsEntrypoint =
-  process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
-
-if (invokedAsEntrypoint) {
-  runLegacyCliWithErrorHandling();
 }
 

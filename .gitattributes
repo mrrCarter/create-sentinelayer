@@ -1,1 +1,3 @@
 tests/fixtures/engram/* -text
+# bin scripts keep LF so a package built from any checkout has a working shebang.
+bin/*.js text eol=lf

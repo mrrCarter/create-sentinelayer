@@ -244,7 +244,9 @@ export async function buildCliProgram({
 
 export async function runCli(rawArgs = process.argv.slice(2)) {
   // Programs named without a path come from PATH only, never from the working directory, before
-  // anything is spawned. On a Windows runtime that cannot guarantee that, nothing runs.
+  // anything is spawned. On a Windows runtime that cannot guarantee that, nothing runs. The bin
+  // scripts check this before loading this module (cli-bootstrap.js); here it covers callers that
+  // import runCli directly.
   const programLookup = restrictProgramLookupToPath();
   if (!programLookup.ok) {
     console.error(programLookup.message);
