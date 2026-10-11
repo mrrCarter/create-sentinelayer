@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import process from "node:process";
 import fs from "node:fs";
 
+import { isGhRepoSlug } from "../net/gh-api-path.js";
+
 function getGhCommand() {
   return String(process.env.SENTINELAYER_GH_BIN || "").trim() || "gh";
 }
@@ -10,8 +12,9 @@ function normalizeRepoSlug(value) {
   return String(value || "").trim().replace(/\.git$/i, "");
 }
 
+// Exactly owner/repo as GitHub names them: gh turns the --repo value into API paths.
 function isValidRepoSlug(value) {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizeRepoSlug(value));
+  return isGhRepoSlug(normalizeRepoSlug(value));
 }
 
 function isValidSecretName(value) {
