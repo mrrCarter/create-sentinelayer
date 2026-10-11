@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.46.1](https://github.com/mrrCarter/create-sentinelayer/compare/v0.46.0...v0.46.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **gh:** validate repository, ref and sha values in gh api paths ([1edcc85](https://github.com/mrrCarter/create-sentinelayer/commit/1edcc85025eef89846b30405afb30517bb6eedbb))
+* **session:** keep session ids to one path segment under the sessions root ([6b8986f](https://github.com/mrrCarter/create-sentinelayer/commit/6b8986f38e4b081c10173f2b611d1321e235bee3))
+
 ## [0.46.0](https://github.com/mrrCarter/create-sentinelayer/compare/v0.45.0...v0.46.0) (2026-10-10)
 
 
