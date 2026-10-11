@@ -13,6 +13,12 @@ const LISTENER_DIR_NAME = "listeners";
 const GLOBAL_LISTENER_DIR_NAME = "session-listeners";
 const execFileAsync = promisify(execFile);
 
+// Time allowed for one scan of the process table. A busy machine can need longer than the
+// first limit, so a caller that must not guess (the one-listener check in `session listen`)
+// retries once with the longer one before it reports the check as incomplete.
+export const LISTENER_PROCESS_SCAN_TIMEOUT_MS = 3_000;
+export const LISTENER_PROCESS_SCAN_RETRY_TIMEOUT_MS = 10_000;
+
 function normalizeString(value) {
   return String(value || "").trim();
 }
@@ -88,7 +94,7 @@ function normalizeProcessRows(rows = []) {
     .filter((row) => Number.isInteger(row.pid) && row.pid > 0 && row.commandLine);
 }
 
-async function listWindowsProcesses() {
+async function listWindowsProcesses({ timeoutMs }) {
   const command = [
     "$ErrorActionPreference = 'Stop';",
     "$rows = Get-CimInstance Win32_Process |",
@@ -99,7 +105,7 @@ async function listWindowsProcesses() {
   const { stdout } = await execFileAsync(
     "powershell.exe",
     ["-NoProfile", "-NonInteractive", "-Command", command],
-    { windowsHide: true, timeout: 3000, maxBuffer: 10 * 1024 * 1024 },
+    { windowsHide: true, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 },
   );
   const text = normalizeString(stdout);
   if (!text) return [];
@@ -107,9 +113,9 @@ async function listWindowsProcesses() {
   return normalizeProcessRows(Array.isArray(parsed) ? parsed : [parsed]);
 }
 
-async function listPosixProcesses() {
+async function listPosixProcesses({ timeoutMs }) {
   const { stdout } = await execFileAsync("ps", ["-eo", "pid=,command="], {
-    timeout: 3000,
+    timeout: timeoutMs,
     maxBuffer: 10 * 1024 * 1024,
   });
   return String(stdout || "")
@@ -121,30 +127,73 @@ async function listPosixProcesses() {
     .filter(Boolean);
 }
 
-async function listProcessTable() {
-  try {
-    return process.platform === "win32"
-      ? await listWindowsProcesses()
-      : await listPosixProcesses();
-  } catch {
-    return [];
-  }
+// Resolves to the process rows, or rejects when the table cannot be read (a timeout, a
+// missing tool, unreadable output). It never turns a failed read into an empty table.
+async function listProcessTable({ timeoutMs = LISTENER_PROCESS_SCAN_TIMEOUT_MS } = {}) {
+  return process.platform === "win32"
+    ? listWindowsProcesses({ timeoutMs })
+    : listPosixProcesses({ timeoutMs });
 }
 
+// The probes `session listen` uses; replaced only through setListenerProcessProbesForTests.
+let activeListProcessTable = listProcessTable;
+let activeReadProcessCommandLine = readProcessCommandLine;
+
+/**
+ * Test seam: replace the process-table scan and the per-pid command-line read that the
+ * listener commands use. Call with no argument to restore the real probes.
+ */
+export function setListenerProcessProbesForTests({ listProcesses = null, readCommandLine = null } = {}) {
+  activeListProcessTable = listProcesses || listProcessTable;
+  activeReadProcessCommandLine = readCommandLine || readProcessCommandLine;
+}
+
+function processScanFailureReason(error) {
+  const code = normalizeString(error?.code);
+  // execFile kills the scan at its timeout and reports it as killed with no code.
+  if (code === "ETIMEDOUT" || (!code && error?.killed)) return "process_scan_timeout";
+  if (error instanceof SyntaxError) return "process_scan_unreadable";
+  return code ? `process_scan_failed:${code}` : "process_scan_failed";
+}
+
+// One scan of the process table: { ok: true, rows } or { ok: false, reason }.
+async function scanProcessTable(listProcesses, timeoutMs) {
+  let rows;
+  try {
+    rows = await listProcesses({ timeoutMs });
+  } catch (error) {
+    return { ok: false, reason: processScanFailureReason(error) };
+  }
+  if (!Array.isArray(rows)) {
+    return { ok: false, reason: "process_scan_unreadable" };
+  }
+  return { ok: true, rows: normalizeProcessRows(rows) };
+}
+
+/**
+ * Listener processes for this session and agent: { ok: true, matches } when the process
+ * table was read, { ok: false, reason } when it could not be. A failed scan has no
+ * `matches`, so it can never be read as "no listener".
+ */
 export async function listMatchingListenerProcesses(
   sessionId,
   agentId,
   {
     excludePid = process.pid,
-    _listProcesses = listProcessTable,
+    timeoutMs = LISTENER_PROCESS_SCAN_TIMEOUT_MS,
+    _listProcesses = activeListProcessTable,
   } = {},
 ) {
-  const rows = normalizeProcessRows(await _listProcesses());
+  const scan = await scanProcessTable(_listProcesses, timeoutMs);
+  if (!scan.ok) return scan;
   const excluded = Number(excludePid);
-  return rows.filter((row) =>
-    row.pid !== excluded &&
-    listenerCommandLineMatches(row.commandLine, { sessionId, agentId })
-  );
+  return {
+    ok: true,
+    matches: scan.rows.filter((row) =>
+      row.pid !== excluded &&
+      listenerCommandLineMatches(row.commandLine, { sessionId, agentId })
+    ),
+  };
 }
 
 export async function summarizeLocalListenerProcesses(
@@ -152,16 +201,20 @@ export async function summarizeLocalListenerProcesses(
   agentIds = [],
   {
     excludePid = process.pid,
-    _listProcesses = listProcessTable,
+    timeoutMs = LISTENER_PROCESS_SCAN_TIMEOUT_MS,
+    _listProcesses = activeListProcessTable,
   } = {},
 ) {
   const normalizedSessionId = normalizeString(sessionId);
   const uniqueAgentIds = [...new Set((Array.isArray(agentIds) ? agentIds : [])
     .map((agentId) => normalizeString(agentId))
     .filter(Boolean))];
-  const rows = normalizeProcessRows(await _listProcesses());
+  const scan = await scanProcessTable(_listProcesses, timeoutMs);
+  if (!scan.ok) {
+    return { ok: false, reason: scan.reason, sessionId: normalizedSessionId };
+  }
   const excluded = Number(excludePid);
-  const candidates = rows.filter((row) => row.pid !== excluded);
+  const candidates = scan.rows.filter((row) => row.pid !== excluded);
   const agents = uniqueAgentIds.map((agentId) => {
     const matches = candidates
       .filter((row) => listenerCommandLineMatches(row.commandLine, {
@@ -178,6 +231,7 @@ export async function summarizeLocalListenerProcesses(
     };
   });
   return {
+    ok: true,
     sessionId: normalizedSessionId,
     processCount: agents.reduce((sum, agent) => sum + agent.processCount, 0),
     duplicateProcessCount: agents.reduce((sum, agent) => sum + agent.duplicateProcessCount, 0),
@@ -367,12 +421,13 @@ async function listenerStatusFromRecord(
     sessionId,
     agentId,
     recordScope,
-    _readProcessCommandLine = readProcessCommandLine,
+    _readProcessCommandLine = activeReadProcessCommandLine,
   } = {},
 ) {
   const alive = isProcessAlive(record.pid);
   if (!alive) {
     return {
+      state: "not_running",
       running: false,
       pid: null,
       stale: true,
@@ -384,6 +439,7 @@ async function listenerStatusFromRecord(
   const commandLine = await _readProcessCommandLine(record.pid);
   if (!listenerCommandLineMatches(commandLine, { sessionId, agentId })) {
     return {
+      state: "not_running",
       running: false,
       pid: null,
       stale: true,
@@ -396,6 +452,7 @@ async function listenerStatusFromRecord(
     };
   }
   return {
+    state: "running",
     running: true,
     pid: Number(record.pid),
     stale: false,
@@ -406,14 +463,21 @@ async function listenerStatusFromRecord(
   };
 }
 
+/**
+ * Whether a listener for this session and agent is running on this machine. `state` is
+ * "running", "not_running" or "unknown". A live pid record whose command line matches is
+ * "running" without a scan. Otherwise the process table decides, and when it cannot be read
+ * the answer is "unknown" (`running: null`, with `reason`), never "not_running".
+ */
 export async function getListenerProcessStatus(
   sessionId,
   agentId,
   {
     targetPath = process.cwd(),
     homeDir = os.homedir(),
-    _readProcessCommandLine = readProcessCommandLine,
-    _listProcesses = listProcessTable,
+    scanTimeoutMs = LISTENER_PROCESS_SCAN_TIMEOUT_MS,
+    _readProcessCommandLine = activeReadProcessCommandLine,
+    _listProcesses = activeListProcessTable,
   } = {},
 ) {
   const records = [
@@ -440,11 +504,24 @@ export async function getListenerProcessStatus(
     }
     staleStatuses.push(status);
   }
-  const matchingProcesses = await listMatchingListenerProcesses(sessionId, agentId, {
+  const scan = await listMatchingListenerProcesses(sessionId, agentId, {
+    timeoutMs: scanTimeoutMs,
     _listProcesses,
   });
+  if (!scan.ok) {
+    return {
+      state: "unknown",
+      running: null,
+      pid: null,
+      reason: scan.reason,
+      record: staleStatuses[0]?.record || null,
+      listenerKey: normalizeListenerProcessKey(agentId),
+    };
+  }
+  const matchingProcesses = scan.matches;
   if (matchingProcesses.length > 0) {
     return {
+      state: "running",
       running: true,
       pid: matchingProcesses[0].pid,
       stale: false,
@@ -458,6 +535,7 @@ export async function getListenerProcessStatus(
   }
   if (staleStatuses.length === 0) {
     return {
+      state: "not_running",
       running: false,
       pid: null,
       stale: false,
@@ -468,6 +546,10 @@ export async function getListenerProcessStatus(
   return staleStatuses[0];
 }
 
+/**
+ * Stops every listener process the scan finds for this session and agent. When the process
+ * table cannot be read it stops nothing and returns { ok: false, reason }.
+ */
 export async function stopMatchingListenerProcesses(
   sessionId,
   agentId,
@@ -475,13 +557,17 @@ export async function stopMatchingListenerProcesses(
     excludePid = process.pid,
     timeoutMs = 3000,
     pollIntervalMs = 100,
-    _listProcesses = listProcessTable,
+    scanTimeoutMs = LISTENER_PROCESS_SCAN_TIMEOUT_MS,
+    _listProcesses = activeListProcessTable,
   } = {},
 ) {
-  const matches = await listMatchingListenerProcesses(sessionId, agentId, {
+  const scan = await listMatchingListenerProcesses(sessionId, agentId, {
     excludePid,
+    timeoutMs: scanTimeoutMs,
     _listProcesses,
   });
+  if (!scan.ok) return scan;
+  const matches = scan.matches;
   const results = [];
   for (const match of matches) {
     const result = await requestListenerProcessStop(match.pid, {
@@ -496,6 +582,7 @@ export async function stopMatchingListenerProcesses(
   }
   const failed = results.filter((result) => !result.stopped);
   return {
+    ok: true,
     matches,
     results,
     stoppedCount: results.filter((result) => result.stopped).length,

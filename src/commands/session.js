@@ -76,6 +76,7 @@ import {
 import { fetchSessionListeners, formatListenerLine } from "../session/listeners.js";
 import {
   getListenerProcessStatus,
+  LISTENER_PROCESS_SCAN_RETRY_TIMEOUT_MS,
   removeListenerPidRecord,
   requestListenerProcessStop,
   summarizeLocalListenerProcesses,
@@ -5153,11 +5154,11 @@ export function registerSessionCommand(program) {
         agents: [],
       };
       if (listeners.length > 0) {
-        try {
-          const summary = await summarizeLocalListenerProcesses(
-            normalizedSessionId,
-            listeners.map((row) => row.agentId),
-          );
+        const summary = await summarizeLocalListenerProcesses(
+          normalizedSessionId,
+          listeners.map((row) => row.agentId),
+        );
+        if (summary.ok) {
           const byAgent = new Map(summary.agents.map((entry) => [entry.agentId, entry]));
           listeners = listeners.map((row) => {
             const local = byAgent.get(row.agentId) || {};
@@ -5175,10 +5176,11 @@ export function registerSessionCommand(program) {
             duplicateProcessCount: Number(summary.duplicateProcessCount || 0),
             agents: summary.agents,
           };
-        } catch (error) {
+        } else {
+          // The rows stay unannotated: an unread process table is not "no local listeners".
           localProcessScan = {
             ok: false,
-            reason: normalizeString(error?.message) || "process_scan_failed",
+            reason: summary.reason,
             processCount: 0,
             duplicateProcessCount: 0,
             agents: [],
@@ -5229,6 +5231,11 @@ export function registerSessionCommand(program) {
         if (row.status === "present" || row.status === "active") console.log(pc.green(`  ${line}`));
         else if (row.status === "idle") console.log(pc.cyan(`  ${line}`));
         else console.log(pc.gray(`  ${line}`));
+      }
+      if (!localProcessScan.ok) {
+        console.log(pc.yellow(
+          `Local listener processes: unknown. The local process check did not complete (${localProcessScan.reason}), so duplicate local listeners were not checked.`,
+        ));
       }
       const duplicateLocalRows = listeners.filter((row) => Number(row.localDuplicateProcessCount || 0) > 0);
       if (duplicateLocalRows.length > 0) {
@@ -5483,9 +5490,23 @@ export function registerSessionCommand(program) {
       const singletonEnabled = maxPolls === null && !options.allowDuplicate;
       let listenerPidRecordActive = false;
       if (singletonEnabled) {
-        const existingListener = await getListenerProcessStatus(normalizedSessionId, agentId, {
+        let existingListener = await getListenerProcessStatus(normalizedSessionId, agentId, {
           targetPath,
         });
+        if (existingListener.state === "unknown") {
+          // A busy machine can need longer than the first limit: check once more, slower.
+          existingListener = await getListenerProcessStatus(normalizedSessionId, agentId, {
+            targetPath,
+            scanTimeoutMs: LISTENER_PROCESS_SCAN_RETRY_TIMEOUT_MS,
+          });
+        }
+        if (existingListener.state === "unknown") {
+          // Starting without an answer could add a second listener, so refuse, with or
+          // without --force: --force replaces the listener the check finds.
+          throw new Error(
+            `Could not confirm whether a session listener is already running for session ${normalizedSessionId} as ${agentId}: the local process check did not complete (${existingListener.reason}), including one retry with a longer time limit. No listener was started. Run the command again, or use --allow-duplicate to start without this check (it can then run alongside an existing listener). --force does not skip the check: it stops the listener the check finds, then starts this one.`,
+          );
+        }
         if (existingListener.running && !options.force) {
           throw new Error(
             `A session listener is already running for session ${normalizedSessionId} as ${agentId} (pid ${existingListener.pid}). Use --force to take over or --allow-duplicate if you intentionally need more than one.`,
@@ -5493,8 +5514,19 @@ export function registerSessionCommand(program) {
         }
         if (existingListener.running && options.force) {
           const stopMatchesResult = await stopMatchingListenerProcesses(normalizedSessionId, agentId);
+          if (!stopMatchesResult.ok) {
+            // The listener being replaced is known (a verified pid record or a scan moments
+            // ago), so stopping it and starting this one never adds a listener. Only the
+            // cleanup of extra copies is skipped, and that is said rather than assumed.
+            console.error(
+              pc.yellow(
+                `The local process check did not complete (${stopMatchesResult.reason}); replacing listener pid ${existingListener.pid} only. Other copies of this listener, if any, were not checked.`,
+              ),
+            );
+          }
+          const scannedStops = stopMatchesResult.ok ? stopMatchesResult.results : [];
           const stoppedPids = new Set(
-            stopMatchesResult.results
+            scannedStops
               .filter((result) => result.stopped)
               .map((result) => Number(result.pid)),
           );
@@ -5503,7 +5535,7 @@ export function registerSessionCommand(program) {
             explicitStopResult = await requestListenerProcessStop(existingListener.pid);
           }
           const failedStops = [
-            ...stopMatchesResult.failed,
+            ...scannedStops.filter((result) => !result.stopped),
             ...(explicitStopResult && !explicitStopResult.stopped
               ? [{ pid: existingListener.pid, ...explicitStopResult }]
               : []),
