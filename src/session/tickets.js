@@ -22,6 +22,7 @@ import process from "node:process";
 import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { requestJson, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 function normalizeString(value) {
   return String(value ?? "").trim();
@@ -75,8 +76,14 @@ async function auth(targetPath, resolveAuthSession) {
   return { credential: await credentialFor(session), apiUrl: normalizeString(session.apiUrl).replace(/\/+$/, "") };
 }
 
-function ticketsUrl(apiUrl, sessionId, suffix = "") {
-  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/tickets${suffix}`;
+/** The room's tickets URL; `route` is a fixed collection route ("/events"). */
+function ticketsUrl(apiUrl, sessionId, route = "") {
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/tickets${route}`;
+}
+
+/** One ticket's URL: the raw ticket id is encoded here; `route` is a fixed route ("/claim"). */
+function ticketUrl(apiUrl, sessionId, ticketId, route) {
+  return `${ticketsUrl(apiUrl, sessionId)}/${urlPathSegment(ticketId, { label: "ticketId" })}${route}`;
 }
 
 /** The Idempotency-Key for this logical write: reused until its response is stored. */
@@ -226,7 +233,7 @@ export async function claimTicket(
   const statePath = ticketLeasePath(sessionId, ticketId, identity, { homeDir });
   const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "claim", String(expectedVersion ?? "any"));
-  const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/claim`), {
+  const response = await mutate(ticketUrl(apiUrl, sessionId, ticketId, "/claim"), {
     credential, key, operation: "claim", requestMutation,
     body: expectedVersion == null ? {} : { expectedVersion: Number(expectedVersion) },
   });
@@ -262,7 +269,7 @@ export async function renewTicketLease(
   const held = await heldLease(statePath);
   const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "renew", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
-  const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/lease/renew`), {
+  const response = await mutate(ticketUrl(apiUrl, sessionId, ticketId, "/lease/renew"), {
     credential, key, operation: "renew", requestMutation, body: { leaseId: held.leaseId, fence: held.fence },
   });
   await writeState(statePath, leaseState(response));
@@ -278,7 +285,7 @@ export async function releaseTicketLease(
   const held = await heldLease(statePath);
   const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "release", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
-  const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/lease/release`), {
+  const response = await mutate(ticketUrl(apiUrl, sessionId, ticketId, "/lease/release"), {
     credential, key, operation: "release", requestMutation,
     body: { leaseId: held.leaseId, fence: held.fence, expectedVersion: held.ticketVersion, ...(reason ? { reason } : {}) },
   });
@@ -303,7 +310,7 @@ export async function submitTicket(
   const held = await heldLease(statePath);
   const { credential, apiUrl } = await auth(targetPath, resolveAuthSession);
   const { key } = await operationKey(statePath, "submit", `${held.leaseId}:${held.fence}:${held.ticketVersion}`);
-  const response = await mutate(ticketsUrl(apiUrl, sessionId, `/${encodeURIComponent(ticketId)}/submit`), {
+  const response = await mutate(ticketUrl(apiUrl, sessionId, ticketId, "/submit"), {
     credential, key, operation: "submit", requestMutation,
     body: {
       leaseId: held.leaseId,

@@ -9,6 +9,7 @@ import {
 } from "./cli-command-tools.js";
 import { appendToStream, readStream } from "../session/stream.js";
 import { listFileLocks, lockFile, unlockFile } from "../session/file-locks.js";
+import { resolveSessionDir } from "../session/paths.js";
 import { eventMatchesAgent } from "../session/listener.js";
 import { isSessionControlEvent } from "../session/control-events.js";
 import { buildObservations } from "../session/recall/observations.js";
@@ -594,11 +595,14 @@ async function readSessionHistoryWindow({
   };
 }
 
-function requireSessionId(input = {}) {
+// A native tool's session id also names its local session directory, so it is held to the
+// session-id rule here, before any request is sent or any file is read or written.
+function requireSessionId(input = {}, { targetPath } = {}) {
   const sessionId = normalizeString(input.sessionId || input.session_id || input.session);
   if (!sessionId) {
     throw new Error("sessionId is required.");
   }
+  resolveSessionDir(sessionId, { targetPath });
   return sessionId;
 }
 
@@ -712,7 +716,7 @@ async function runSessionAction({
   targetPath,
   createSessionMessageActionFn,
 } = {}) {
-  const sessionId = requireSessionId(input);
+  const sessionId = requireSessionId(input, { targetPath });
   const agentId = requireAgentId(input);
   const normalizedActionType = normalizeSessionMessageActionType(actionType || input.actionType || input.action_type);
   const target = requireSessionActionTarget(input);
@@ -995,7 +999,7 @@ export function createSessionMcpToolHandlers({
   };
   const handlers = {
     async poll_inbox(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const agentId = requireAgentId(input);
       const cursor = normalizeString(input.cursor || input.after || input.since) || null;
       const limit = normalizeLimit(input.limit);
@@ -1071,7 +1075,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async read_history(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const cursor = normalizeString(input.cursor || input.after || input.since) || null;
       const beforeSequence = normalizeOptionalPositiveInteger(
         input.beforeSequence || input.before_sequence,
@@ -1164,7 +1168,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async send_message(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const agentId = requireAgentId(input);
       const recipients = normalizeRecipients(input.to || input.recipient || input.recipients);
       const agent = buildAgentEnvelope(agentId, input);
@@ -1223,7 +1227,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async session_lock(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const agentId = requireAgentId(input);
       const files = normalizeFileList(input.files || input.file || input.paths);
       const intent = normalizeString(input.intent || input.reason);
@@ -1257,7 +1261,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async session_unlock(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const agentId = requireAgentId(input);
       const files = normalizeFileList(input.files || input.file || input.paths);
       const reason = normalizeString(input.reason || input.intent) || "manual_release";
@@ -1290,7 +1294,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async session_locks(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const locks = await listFileLocksFn(sessionId, {
         targetPath,
       });
@@ -1304,7 +1308,7 @@ export function createSessionMcpToolHandlers({
     },
 
     async attention_request(input = {}) {
-      const sessionId = requireSessionId(input);
+      const sessionId = requireSessionId(input, { targetPath });
       const agentId = requireAgentId(input);
       const recipients = normalizeRecipients(input.to || input.recipient || input.recipients);
       const agent = buildAgentEnvelope(agentId, {

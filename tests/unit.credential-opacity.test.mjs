@@ -123,7 +123,7 @@ test("an agent's admission credential is never re-bound to the pocket gateway", 
   assert.equal((await gatewayCredential(person, { env })).origin, "https://pocket.example.test");
 });
 
-test("the URL that is checked is the URL that is sent", async () => {
+test("the URL that is checked is the URL that is sent: a string, never an object that can answer twice", async () => {
   const configured = await startServer();
   const other = await startServer();
   try {
@@ -132,12 +132,16 @@ test("the URL that is checked is the URL that is sent", async () => {
       let reads = 0;
       return { toString: () => (reads++ === 0 ? `${configured.url}/x` : `${other.url}/x`) };
     };
-    await credentialedRequest(credential, shifting());
     let sentTo = null;
-    await checkedTransport(async (url) => {
+    const send = checkedTransport(async (url) => {
       sentTo = url;
       return {};
-    })(shifting(), { credential });
+    });
+    await assert.rejects(credentialedRequest(credential, shifting()), TypeError);
+    await assert.rejects(send(shifting(), { credential }), TypeError);
+    assert.equal(sentTo, null);
+    await credentialedRequest(credential, `${configured.url}/x`);
+    await send(`${configured.url}/x`, { credential });
     assert.equal(sentTo, `${configured.url}/x`);
     assert.equal(other.requests.length, 0, "the other origin received nothing");
     assert.equal(configured.requests.length, 1);

@@ -41,6 +41,7 @@ import {
   createSessionMutationIdempotencyKey,
 } from "./invitations.js";
 import { resolveSessionPaths } from "./paths.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 export const ADMISSION_ACTIONS = Object.freeze([
   "session.read",
@@ -373,8 +374,14 @@ async function authContext({ targetPath, resolveAuthSession }) {
   return { credential: await credentialFor(auth), apiUrl: normalizeString(auth.apiUrl).replace(/\/+$/, "") };
 }
 
-function admissionUrl(apiUrl, sessionId, suffix = "") {
-  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/admissions${suffix}`;
+/** The session's admissions URL; `route` is a fixed collection route ("/self"). */
+function admissionUrl(apiUrl, sessionId, route = "") {
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/admissions${route}`;
+}
+
+/** One admission's URL: the raw admission id is encoded here; `route` is a fixed route ("/claim"). */
+function admissionMemberUrl(apiUrl, sessionId, admissionId, route = "") {
+  return `${admissionUrl(apiUrl, sessionId)}/${urlPathSegment(admissionId, { label: "admissionId" })}${route}`;
 }
 
 async function mutate(auth, sessionId, routeId, url, body, { requestMutation, operationName, origin }) {
@@ -530,7 +537,7 @@ export async function runAdmissionJoin(
   const deadline = now() + Math.max(0, waitTimeoutMs);
   let polled;
   for (;;) {
-    polled = await checkedTransport(requestRead)(admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}`), {
+    polled = await checkedTransport(requestRead)(admissionMemberUrl(auth.apiUrl, sid, state.admissionId), {
       method: "GET",
       credential: auth.credential,
     });
@@ -599,7 +606,7 @@ export async function runAdmissionJoin(
     auth,
     sid,
     ROUTE.claim,
-    admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}/claim`),
+    admissionMemberUrl(auth.apiUrl, sid, state.admissionId, "/claim"),
     { nonce: fields.nonce, signature: signature.toString("base64url") },
     { ...deps, operationName: "session.admission_claim" }
   );
@@ -702,7 +709,7 @@ export async function cancelAdmission(
     auth,
     sid,
     ROUTE.cancel,
-    admissionUrl(auth.apiUrl, sid, `/${encodeURIComponent(state.admissionId)}/cancel`),
+    admissionMemberUrl(auth.apiUrl, sid, state.admissionId, "/cancel"),
     undefined,
     { requestMutation, origin, operationName: "session.admission_cancel" }
   );

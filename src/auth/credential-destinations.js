@@ -20,9 +20,10 @@
 // (src/auth/admission-scope.js) and is never re-bound to the pocket gateway.
 //
 // credentialedRequest(credential, url, init, { fetchImpl }) is the one way to send a credential.
-// It refuses a URL on any other origin, sets the Authorization header itself, and never follows
-// a redirect. An injected transport (fetchImpl) is what it calls once those checks pass. A bare
-// token from an injected auth resolver (tests) is bound to the configured API by credentialFor.
+// It takes the URL as a string, refuses one on any other origin or one whose path is not plain
+// segments, sets the Authorization header itself, and never follows a redirect. An injected
+// transport (fetchImpl) is what it calls once those checks pass. A bare token from an injected
+// auth resolver (tests) is bound to the configured API by credentialFor.
 // tests/unit.credential-census.test.mjs fails on any other place in src/ that builds an
 // Authorization header, reads a raw token, or writes a trust-source variable into process.env.
 
@@ -51,6 +52,45 @@ export class CredentialDestinationRefused extends Error {
     this.code = "CREDENTIAL_DESTINATION_REFUSED";
     this.origin = origin;
   }
+}
+
+/**
+ * A URL on the credential's own origin whose path is not plain segments: a segment that is, or
+ * decodes to, "." or "..", that decodes to something containing "/" or "\", or that does not
+ * decode. Nothing is sent.
+ */
+export class CredentialPathRefused extends CredentialDestinationRefused {
+  constructor(origin) {
+    super(origin);
+    this.message =
+      "Refusing to send your SentinelLayer credential to a URL whose path is not plain segments: " +
+      "each identifier in a URL path must be one segment.";
+    this.name = "CredentialPathRefused";
+    this.code = "CREDENTIAL_PATH_REFUSED";
+  }
+}
+
+/** One raw path segment, decoded once: refused when it is "." or "..", holds "/" or "\", or does not decode. */
+function isUnsafePathSegment(segment) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(segment);
+  } catch {
+    return true;
+  }
+  return decoded === "." || decoded === ".." || /[/\\]/.test(decoded);
+}
+
+/**
+ * Whether the raw URL string has a path segment that is not plain, read the way the URL parser
+ * reads an http(s) URL, before it normalizes anything: tabs and newlines dropped, leading and
+ * trailing C0 controls and spaces trimmed, the path after the scheme and authority up to "?" or
+ * "#", and "\" a separator like "/". Each segment is then decoded once (isUnsafePathSegment).
+ */
+function hasUnsafePathSegment(target) {
+  const text = target.replace(/[\t\n\r]/g, "").replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "");
+  const afterAuthority = text.replace(/^[a-z][a-z0-9+.-]*:[/\\]*[^/\\?#]*/i, "");
+  return afterAuthority.split(/[?#]/, 1)[0].split(/[/\\]/).some(isUnsafePathSegment);
 }
 
 function originOf(value) {
@@ -161,11 +201,17 @@ export async function assertTrustedApiUrl(url, { context, env, homeDir } = {}) {
   if (origin !== trust.apiOrigin) throw new CredentialDestinationRefused(origin, [trust.apiOrigin]);
 }
 
-/** Refuse sending `credential` anywhere but its own origin. `target` is the exact URL string sent. */
+/**
+ * Refuse sending `credential` anywhere but its own origin, or to a path that is not plain
+ * segments. `target` is the exact URL string sent; a URL object is refused, because its path has
+ * already been normalized and the string that was built can no longer be checked.
+ */
 export function assertCredentialDestination(credential, target) {
   if (!isCredential(credential)) throw new TypeError("A credential from src/auth/credential-destinations.js is required.");
+  if (typeof target !== "string") throw new TypeError("A credentialed request takes its URL as a string, not a URL object.");
   const origin = originOf(target);
-  if (origin !== credential.origin) throw new CredentialDestinationRefused(origin || String(target), [credential.origin]);
+  if (origin !== credential.origin) throw new CredentialDestinationRefused(origin || target, [credential.origin]);
+  if (hasUnsafePathSegment(target)) throw new CredentialPathRefused(origin);
 }
 
 /**
@@ -174,9 +220,9 @@ export function assertCredentialDestination(credential, target) {
  */
 export function checkedTransport(requestImpl) {
   return async (url, options, ...rest) => {
-    const target = String(url); // checked and passed on as the same string
-    if (options?.credential) assertCredentialDestination(options.credential, target);
-    return requestImpl(target, options, ...rest);
+    if (!options?.credential) return requestImpl(String(url), options, ...rest);
+    assertCredentialDestination(options.credential, url); // a string, checked and passed on as is
+    return requestImpl(url, options, ...rest);
   };
 }
 
@@ -188,13 +234,11 @@ function headersWithout(headers, name) {
 /**
  * Send a request carrying `credential`: only to the credential's own origin, with the
  * Authorization header set here, and without following redirects. `fetchImpl` is the transport
- * it calls once those checks pass. The URL is turned into a string once, and that string is both
- * checked and sent.
+ * it calls once those checks pass. The URL is a string, and that string is both checked and sent.
  */
 export async function credentialedRequest(credential, url, init = {}, { fetchImpl = globalThis.fetch } = {}) {
-  const target = String(url);
-  assertCredentialDestination(credential, target);
-  return fetchImpl(target, {
+  assertCredentialDestination(credential, url);
+  return fetchImpl(url, {
     ...init,
     headers: { ...headersWithout(init.headers, "authorization"), Authorization: `Bearer ${tokens.get(credential)}` },
     redirect: "error",

@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import { isProcessAlive } from "./daemon-spawn.js";
-import { resolveSessionPaths } from "./paths.js";
+import { normalizeSessionId, resolveSessionChildDir, resolveSessionPaths } from "./paths.js";
 
 const LISTENER_DIR_NAME = "listeners";
 const GLOBAL_LISTENER_DIR_NAME = "session-listeners";
@@ -244,13 +244,12 @@ export function resolveGlobalListenerPidPath(
   agentId,
   { homeDir = os.homedir() } = {},
 ) {
-  return path.join(
-    path.resolve(String(homeDir || os.homedir())),
-    ".sentinelayer",
-    GLOBAL_LISTENER_DIR_NAME,
-    normalizeListenerProcessKey(sessionId),
-    `${normalizeListenerProcessKey(agentId)}.json`,
+  // The id is held to the session-id rule as given; its directory is the lower-cased key.
+  const sessionDir = resolveSessionChildDir(
+    path.join(path.resolve(String(homeDir || os.homedir())), ".sentinelayer", GLOBAL_LISTENER_DIR_NAME),
+    normalizeListenerProcessKey(normalizeSessionId(sessionId)),
   );
+  return path.join(sessionDir, `${normalizeListenerProcessKey(agentId)}.json`);
 }
 
 async function readPidRecordAtPath(pidPath) {

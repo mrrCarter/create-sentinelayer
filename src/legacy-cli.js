@@ -31,6 +31,7 @@ import { normalizeAgentEvent } from "./events/schema.js";
 import { collectCodebaseIngest, formatIngestSummary } from "./ingest/engine.js";
 import { getExpressTemplate, getPackageJsonTemplate, buildReadmeContent } from "./scaffold/templates.js";
 import { generateScaffold } from "./scaffold/generator.js";
+import { isGhRepoSlug } from "./net/gh-api-path.js";
 import {
   getCoordinationEtiquetteItems,
   renderCoordinationNumberedList,
@@ -117,8 +118,10 @@ function normalizeRepoSlug(value) {
   return String(value || "").trim().replace(/\.git$/i, "");
 }
 
+// Exactly owner/repo as GitHub names them (src/net/gh-api-path.js): the slug goes into gh API
+// paths and --repo values, and into the clone and remote URLs.
 function isValidRepoSlug(value) {
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizeRepoSlug(value));
+  return isGhRepoSlug(normalizeRepoSlug(value));
 }
 
 function getRepoNameFromSlug(value) {

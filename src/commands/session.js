@@ -198,6 +198,7 @@ import {
 import createSentid from "../session/wake/sentid.js";
 import { authLoginHint, preferredCliCommand } from "../ui/command-hints.js";
 import { parseCsvTokens } from "./ai/shared.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 function shouldEmitJson(options, command) {
   const local = Boolean(options && options.json);
@@ -1515,7 +1516,7 @@ async function verifyRemoteSession(sessionId, { targetPath } = {}) {
   if (!apiUrl) {
     return { ok: false, reason: "no_api_url" };
   }
-  const endpoint = `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
+  const endpoint = `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}`;
   const credential = await credentialFor(auth);
   const firstAttempt = await fetchRemoteSessionDetail(endpoint, credential);
   const detail = firstAttempt.retryable
@@ -3301,7 +3302,7 @@ export function registerSessionCommand(program) {
       }
       const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
       const result = await requestJsonMutation(
-        `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/title`,
+        `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/title`,
         {
           method: "POST",
           operationName: "session.set_title",
@@ -8744,7 +8745,7 @@ export function registerSessionCommand(program) {
       try {
         result = await postAdminSessionMutation({
           session: apiSession,
-          pathSuffix: `/api/v1/admin/sessions/${encodeURIComponent(normalizedSessionId)}/kill`,
+          pathSuffix: `/api/v1/admin/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/kill`,
           operationName: "session-admin-kill",
           body: { reason },
         });

@@ -24,12 +24,20 @@
  *
  * Every lookup is INJECTED (`run`), so each branch above -- including every failure
  * branch -- is reachable in a test without a network.
+ *
+ * The repo, PR number, sha, branch and ref come from the ticket file. Each is checked for
+ * its role before `run` is called (src/net/gh-api-path.js); a value that does not fit is
+ * refused with an Error, which the gate reports as cannot-verify.
  */
+
+import { ghCommitSha, ghRefSegment, ghRepoSlug } from "../net/gh-api-path.js";
 
 /** Shape a resolver must return. Anything else is treated as indeterminate. */
 const YES = true;
 const NO = false;
 const UNKNOWN = null;
+
+const PR_NUMBER = /^[1-9][0-9]{0,9}$/;
 
 function parseJson(stdout) {
   try {
@@ -52,7 +60,10 @@ export function createEvidenceResolver({ run, probeDeployedSha } = {}) {
   if (typeof run !== "function") throw new TypeError("a run() is required");
 
   async function prMerged({ repo, number }) {
-    const res = await run(["pr", "view", String(number), "--repo", repo, "--json", "state,mergedAt"]);
+    const slug = ghRepoSlug(repo);
+    const pr = String(number);
+    if (!PR_NUMBER.test(pr)) throw new Error("number must be a pull request number.");
+    const res = await run(["pr", "view", pr, "--repo", slug, "--json", "state,mergedAt"]);
     if (!res || !res.ok) return UNKNOWN; // unreachable, missing, or unauthorised
     const data = parseJson(res.stdout);
     if (!data || typeof data.state !== "string") return UNKNOWN;
@@ -63,7 +74,8 @@ export function createEvidenceResolver({ run, probeDeployedSha } = {}) {
   }
 
   async function shaOnBranch({ repo, sha, branch }) {
-    const res = await run(["api", `repos/${repo}/compare/${branch}...${sha}`, "--jq", ".status"]);
+    const basehead = `${ghRefSegment(branch, { label: "branch" })}...${ghCommitSha(sha)}`;
+    const res = await run(["api", `repos/${ghRepoSlug(repo)}/compare/${basehead}`, "--jq", ".status"]);
     if (!res || !res.ok) return UNKNOWN;
     const status = String(res.stdout ?? "").trim();
     // GitHub's compare status, base=branch head=sha:
@@ -75,7 +87,7 @@ export function createEvidenceResolver({ run, probeDeployedSha } = {}) {
   }
 
   async function checkConclusive({ repo, ref, check }) {
-    const res = await run(["api", `repos/${repo}/commits/${ref}/check-runs`, "--jq", ".check_runs"]);
+    const res = await run(["api", `repos/${ghRepoSlug(repo)}/commits/${ghRefSegment(ref)}/check-runs`, "--jq", ".check_runs"]);
     if (!res || !res.ok) return UNKNOWN;
     const runs = parseJson(res.stdout);
     if (!Array.isArray(runs)) return UNKNOWN;

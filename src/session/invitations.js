@@ -8,6 +8,7 @@ import { requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { renderCoordinationBulletList } from "./coordination-guidance.js";
 import { resolveSessionPaths } from "./paths.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 export const SESSION_INVITATION_ACCEPT_ROUTE_ID =
   "POST /api/v1/sessions/{session_id}/invitations/accept";
@@ -128,7 +129,7 @@ export async function acceptSessionInvitation(
   if (normalizedAgentId) body.agentId = normalizedAgentId;
 
   const result = await checkedTransport(requestMutation)(
-    `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/invitations/accept`,
+    `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/invitations/accept`,
     {
       method: "POST",
       operationName: "session.invitation_accept",

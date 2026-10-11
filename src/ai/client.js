@@ -1,4 +1,5 @@
 import { invokeViaProxy, DEFAULT_PROXY_MODEL } from "./proxy.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 const PROVIDER_ENV_KEYS = Object.freeze({
   openai: "OPENAI_API_KEY",
@@ -248,7 +249,7 @@ function buildProviderRequest({ provider, apiKey, model, prompt, stream }) {
 
   const method = stream ? "streamGenerateContent" : "generateContent";
   return {
-    url: `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:${method}`,
+    url: `https://generativelanguage.googleapis.com/v1beta/models/${urlPathSegment(model, { label: "model" })}:${method}`,
     headers: {
       "Content-Type": "application/json",
       "x-goog-api-key": apiKey,

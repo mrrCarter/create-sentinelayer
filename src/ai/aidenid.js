@@ -1,6 +1,7 @@
 import process from "node:process";
 import { authLoginHint } from "../ui/command-hints.js";
 import { isAuthenticated } from "../auth/credential-destinations.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 export const DEFAULT_AIDENID_API_URL = "https://api.aidenid.com";
 
@@ -439,7 +440,7 @@ export async function revokeIdentity({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/revoke`,
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedIdentityId, { label: "identityId" })}/revoke`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -482,7 +483,7 @@ export async function listIdentityEvents({
   const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
 
   const endpoint = new URL(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/events`
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedIdentityId, { label: "identityId" })}/events`
   );
   endpoint.searchParams.set("limit", String(normalizedLimit));
   if (normalizedCursor) {
@@ -530,7 +531,7 @@ export async function getLatestIdentityExtraction({
   const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/latest-extraction`,
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedIdentityId, { label: "identityId" })}/latest-extraction`,
     {
       method: "GET",
       headers: requestHeaders,
@@ -595,7 +596,7 @@ export async function createChildIdentity({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedParentIdentityId)}/children`,
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedParentIdentityId, { label: "identityId" })}/children`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -635,7 +636,7 @@ export async function getIdentityLineage({
   const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/lineage`,
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedIdentityId, { label: "identityId" })}/lineage`,
     {
       method: "GET",
       headers: requestHeaders,
@@ -686,7 +687,7 @@ export async function revokeIdentityChildren({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/identities/${encodeURIComponent(normalizedIdentityId)}/revoke-children`,
+    `${normalizedApiUrl}/v1/identities/${urlPathSegment(normalizedIdentityId, { label: "identityId" })}/revoke-children`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -781,7 +782,7 @@ export async function verifyDomain({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/domains/${encodeURIComponent(normalizedDomainId)}/verify`,
+    `${normalizedApiUrl}/v1/domains/${urlPathSegment(normalizedDomainId, { label: "domainId" })}/verify`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -828,7 +829,7 @@ export async function freezeDomain({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/domains/${encodeURIComponent(normalizedDomainId)}/freeze`,
+    `${normalizedApiUrl}/v1/domains/${urlPathSegment(normalizedDomainId, { label: "domainId" })}/freeze`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -917,7 +918,7 @@ export async function verifyTarget({
   });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/targets/${encodeURIComponent(normalizedTargetId)}/verify`,
+    `${normalizedApiUrl}/v1/targets/${urlPathSegment(normalizedTargetId, { label: "targetId" })}/verify`,
     {
       method: "POST",
       headers: requestHeaders,
@@ -957,7 +958,7 @@ export async function getTarget({
   const requestHeaders = buildReadHeaders({ apiKey, orgId, projectId });
 
   const response = await fetchImpl(
-    `${normalizedApiUrl}/v1/targets/${encodeURIComponent(normalizedTargetId)}`,
+    `${normalizedApiUrl}/v1/targets/${urlPathSegment(normalizedTargetId, { label: "targetId" })}`,
     {
       method: "GET",
       headers: requestHeaders,

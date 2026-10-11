@@ -12,6 +12,7 @@ import {
 import { checkedTransport, credentialFor, isAuthenticated } from "../auth/credential-destinations.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { resolveSessionPaths } from "./paths.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 const FILE_LEASE_CAPABILITY_SCHEMA_VERSION = "1.0.0";
 const DEFAULT_FILE_LOCK_TTL_SECONDS = 300;
@@ -490,11 +491,12 @@ async function resolveLeaseApi({
 }
 
 function leaseCollectionUrl(apiUrl, sessionId) {
-  return `${apiUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}/file-leases`;
+  return `${apiUrl}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/file-leases`;
 }
 
-function leaseMemberUrl(apiUrl, sessionId, leaseId, action) {
-  return `${leaseCollectionUrl(apiUrl, sessionId)}/${encodeURIComponent(leaseId)}/${action}`;
+/** One lease's URL: the raw lease id is encoded here; `route` is a fixed route ("/renew"). */
+function leaseMemberUrl(apiUrl, sessionId, leaseId, route) {
+  return `${leaseCollectionUrl(apiUrl, sessionId)}/${urlPathSegment(leaseId, { label: "leaseId" })}${route}`;
 }
 
 async function listRemoteLeases(
@@ -794,7 +796,7 @@ export async function lockFile(
     let compensated = false;
     try {
       const release = await checkedTransport(requestMutation)(
-        leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "release"),
+        leaseMemberUrl(apiUrl, normalizedSessionId, lease.leaseId, "/release"),
         {
           method: "POST",
           operationName: "session-file-lease-acquire-compensation",
@@ -850,7 +852,7 @@ async function releaseCapabilityClaim(
   let response;
   try {
     response = await checkedTransport(requestMutation)(
-      leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "release"),
+      leaseMemberUrl(apiUrl, sessionId, claim.leaseId, "/release"),
       {
         method: "POST",
         operationName: "session-file-lease-release",
@@ -1010,7 +1012,7 @@ export async function renewFileLease(
 
   const { apiUrl, credential } = await resolveLeaseApi({ targetPath, resolveAuthSession });
   const response = await checkedTransport(requestMutation)(
-    leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "renew"),
+    leaseMemberUrl(apiUrl, normalizedSessionId, claim.leaseId, "/renew"),
     {
       method: "POST",
       operationName: "session-file-lease-renew",
