@@ -134,7 +134,10 @@ test("each bin script loads only the runtime check before the rest of the CLI", 
   assert.deepEqual(BINS, binFiles, "every bin script is a package.json bin entry, and every entry is checked");
   for (const bin of BINS) {
     const source = fs.readFileSync(path.join(ROOT, bin), "utf8");
-    assert.ok(source.startsWith("#!/usr/bin/env node\n"), `${bin} keeps its shebang line`);
+    // A Windows checkout may have CRLF line endings; .gitattributes keeps the committed files LF.
+    assert.equal(source.split("\n", 1)[0].replace(/\r$/, ""), "#!/usr/bin/env node", `${bin} keeps its shebang line`);
+    const eol = spawnSync("git", ["check-attr", "eol", "--", bin], { cwd: ROOT, encoding: "utf8" });
+    assert.equal(eol.stdout.trim(), `${bin}: eol: lf`, `${bin} is checked out and packed with LF line endings`);
     assert.deepEqual(staticImports(bin), ["../src/cli-bootstrap.js"], `${bin} imports only the bootstrap statically`);
     assert.deepEqual(
       staticGraph(bin),
@@ -168,6 +171,15 @@ for (const bin of BINS) {
     }
   });
 }
+
+test("src/legacy-cli.js is a module only: run directly, it starts no command", async (t) => {
+  const nodeArgs = restrictProgramLookupToPath({ env: {} }).ok ? [] : ["--import", await libuvPreload(t, "1.48.0")];
+  const cwd = await tempDir(t, "sl-bootstrap-cwd-");
+  const home = await tempDir(t, "sl-bootstrap-home-");
+  const result = runBin("src/legacy-cli.js", ["--version"], { nodeArgs, cwd, home });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "", "no command ran");
+});
 
 test("each bin script runs --version once the runtime check passes", async (t) => {
   // Under Node.js 20 on Windows no real runtime passes; report the floor libuv so the check passes.
