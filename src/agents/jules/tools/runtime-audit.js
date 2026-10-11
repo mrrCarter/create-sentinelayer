@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { credentialedRequest, isAuthenticated } from "../../../auth/credential-destinations.js";
+import { urlPathSegment } from "../../../net/url-path.js";
 import { assertPermittedAuditTarget } from "./url-policy.js";
 import { buildScrubbedEnv } from "../../shared-tools/shell.js";
 
@@ -495,7 +496,7 @@ async function callScannerApi(url) {
   }
 
   // Poll for completion (max 90s)
-  const pollUrl = apiUrl + "/api/v1/scan/url/" + scanId;
+  const pollUrl = `${apiUrl}/api/v1/scan/url/${urlPathSegment(scanId, { label: "scanId" })}`;
   for (let attempt = 0; attempt < 30; attempt++) {
     await new Promise(r => setTimeout(r, 3000));
     try {

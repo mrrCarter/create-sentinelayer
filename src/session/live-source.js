@@ -27,6 +27,7 @@ import {
   sessionEventIdentityKeys,
   sessionEventUpgradesExisting,
 } from "./event-identity.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 const DEFAULT_RECONNECT_BACKOFF_MS = 2_000;
 const MAX_RECONNECT_BACKOFF_MS = 30_000;
@@ -162,9 +163,7 @@ export async function* watchRemoteStream({
   reconnectBackoffMs = DEFAULT_RECONNECT_BACKOFF_MS,
 } = {}) {
   if (!apiBaseUrl || !sessionId || !credential) return;
-  const endpoint = `${apiBaseUrl.replace(/\/+$/, "")}/api/v1/sessions/${encodeURIComponent(
-    sessionId,
-  )}/stream`;
+  const endpoint = `${apiBaseUrl.replace(/\/+$/, "")}/api/v1/sessions/${urlPathSegment(sessionId, { label: "sessionId" })}/stream`;
   let backoff = reconnectBackoffMs;
   // Highest server sequence actually DELIVERED to the consumer. SSE is a live push with no
   // backlog: reconnecting without it silently drops everything published while we were away,

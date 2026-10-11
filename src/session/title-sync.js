@@ -4,6 +4,7 @@ import { checkedTransport, credentialFor, isAuthenticated } from "../auth/creden
 import { SentinelayerApiError, requestJsonMutation } from "../auth/http.js";
 import { resolveActiveAuthSession } from "../auth/service.js";
 import { recordSessionRemoteTitleSync } from "./store.js";
+import { urlPathSegment } from "../net/url-path.js";
 
 const DEFAULT_TITLE_SYNC_TIMEOUT_MS = 2_000;
 const DEFAULT_TITLE_SYNC_RETRY_DELAY_MS = 200;
@@ -78,7 +79,7 @@ export async function pushSessionTitleToApi(
     }
     const apiUrl = String(session.apiUrl).replace(/\/+$/, "");
     const result = await checkedTransport(requestMutation)(
-      `${apiUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/title`,
+      `${apiUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/title`,
       {
         method: "POST",
         operationName: "session.set_title",

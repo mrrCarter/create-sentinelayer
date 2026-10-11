@@ -11,6 +11,7 @@ import { isSessionControlEvent } from "./control-events.js";
 import { createSessionMutationHeaders } from "./invitations.js";
 import { messageRevision } from "./message-edits.js";
 import { installTestEgressGuard } from "../net/test-egress-guard.js";
+import { isUrlPathSegment, urlPathSegment } from "../net/url-path.js";
 
 // No-op outside tests; inside a test process (or a child it spawned) every fetch
 // to a non-loopback host is refused before a socket opens.
@@ -1023,7 +1024,7 @@ export async function syncSessionEventToApi(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/events`;
   const requestBody = JSON.stringify({
     event,
     source: "cli",
@@ -1221,7 +1222,7 @@ async function syncSessionAuxPayload(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}${pathSuffix}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}${pathSuffix}`;
   try {
     const { response } = await fetchJsonWithFullTimeout(
       endpoint,
@@ -1351,7 +1352,7 @@ export async function pollHumanMessages(
     query.set("since", normalizedSince);
   }
   query.set("limit", String(Math.max(1, Math.min(HUMAN_MESSAGE_FETCH_LIMIT, normalizePositiveInteger(limit, HUMAN_MESSAGE_FETCH_LIMIT)))));
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/human-messages?${query.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/human-messages?${query.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -1526,7 +1527,7 @@ export async function pollSessionEvents(
     "limit",
     String(Math.max(1, Math.min(SESSION_EVENT_FETCH_LIMIT, normalizePositiveInteger(limit, SESSION_EVENT_FETCH_LIMIT))))
   );
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events?${query.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/events?${query.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -1681,7 +1682,7 @@ export async function fetchSessionPresence(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/presence`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/presence`;
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
       endpoint,
@@ -1832,7 +1833,7 @@ export async function renewSessionPresence(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/presence`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/presence`;
   const body = {
     agentId: normalizedAgentId,
     state: normalizeString(state).toLowerCase() || "idle",
@@ -1955,7 +1956,7 @@ export async function requestSessionListenerStop(
   const normalizedIdempotencyKey =
     normalizeString(idempotencyKey) || `sl-listener-stop-${randomUUID()}`;
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/listener-controls/stop`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/listener-controls/stop`;
   const body = normalizedTargetAgentId
     ? { targetAgentId: normalizedTargetAgentId }
     : { broadcast: true };
@@ -2080,7 +2081,7 @@ export async function updateSessionReadCursor(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/read-cursor`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/read-cursor`;
   const body = {
     targetSequenceId:
       Number.isFinite(normalizedTargetSequence) && normalizedTargetSequence > 0
@@ -2225,7 +2226,7 @@ export async function streamSessionEvents(
     query.set("after", normalizedSince);
   }
   const suffix = query.toString() ? `?${query.toString()}` : "";
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/stream${suffix}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/stream${suffix}`;
   const controller = new AbortController();
   const normalizedTimeoutMs = normalizePositiveInteger(timeoutMs, DEFAULT_SYNC_TIMEOUT_MS);
   const normalizedIdleTimeoutMs = normalizePositiveInteger(idleTimeoutMs, 0);
@@ -2450,7 +2451,7 @@ export async function pollSessionEventsBefore(
     "limit",
     String(Math.max(1, Math.min(SESSION_EVENT_FETCH_LIMIT, normalizePositiveInteger(limit, 50))))
   );
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/before?${query.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/events/before?${query.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -2571,7 +2572,7 @@ export async function listSessionMessageActions(
     "limit",
     String(Math.max(1, Math.min(SESSION_ACTION_FETCH_LIMIT, normalizePositiveInteger(limit, 200))))
   );
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/actions?${query.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/actions?${query.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -2668,7 +2669,7 @@ export async function fetchSessionUsageLedger(
     "limit",
     String(Math.max(1, Math.min(500, normalizePositiveInteger(limit, 500))))
   );
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/usage?${query.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/usage?${query.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -2847,7 +2848,10 @@ export async function editSessionMessage(sessionId, {
   let revision = expectedRevision === null || expectedRevision === undefined ? null : Number(expectedRevision);
   const validSequence = Number.isSafeInteger(sequence) && sequence > 0;
   const mutationKey = normalizeString(idempotencyKey) || `sl-message-edit-${randomUUID()}`;
-  if (!sid || typeof text !== "string" || !text.trim() || (!replyId && !messageId && !validSequence) ||
+  // Every id is checked here, before the request try below: an id that is not one URL path
+  // segment sends nothing and is never counted against the outbound breaker.
+  const idsAreSegments = isUrlPathSegment(sid) && [replyId, messageId].every((id) => !id || isUrlPathSegment(id));
+  if (!idsAreSegments || typeof text !== "string" || !text.trim() || (!replyId && !messageId && !validSequence) ||
       (revision !== null && (!Number.isSafeInteger(revision) || revision <= 0)) || mutationKey.length > 128) {
     return { ok: false, reason: "invalid_input" };
   }
@@ -2858,7 +2862,11 @@ export async function editSessionMessage(sessionId, {
   try { auth = await resolveAuthSession({ cwd: targetPath, env: process.env, autoRotate: false }); }
   catch { return { ok: false, reason: "no_session" }; }
   if (!isAuthenticated(auth)) return { ok: false, reason: "not_authenticated" };
-  const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${encodeURIComponent(sid)}`;
+  const base = `${resolveApiBaseUrl(auth)}/api/v1/sessions/${urlPathSegment(sid, { label: "sessionId" })}`;
+  // The edit target: a reply by its id, or a message by its id (checked above, or from the lookup).
+  const targetUrl = (id) => (replyId
+    ? `${base}/replies/${urlPathSegment(replyId, { label: "replyId" })}`
+    : `${base}/messages/${urlPathSegment(id, { label: "messageId" })}`);
   const credential = await credentialFor(auth);
   const failure = (response, payload) => {
     const code = normalizeString(payload?.detail?.code || payload?.error?.code || payload?.code);
@@ -2869,21 +2877,23 @@ export async function editSessionMessage(sessionId, {
   try {
     // Sequence resolution and omitted-revision lookup are one authenticated GET.
     if ((!replyId && !messageId) || revision === null) {
-      const resource = replyId ? `replies/${encodeURIComponent(replyId)}` : messageId
-        ? `messages/${encodeURIComponent(messageId)}` : `messages/by-sequence/${sequence}`;
+      const lookupUrl = replyId || messageId
+        ? targetUrl(messageId)
+        : `${base}/messages/by-sequence/${urlPathSegment(sequence, { label: "targetSequenceId" })}`;
       const authorQuery = normalizeString(agentId) ? `?agentId=${encodeURIComponent(normalizeString(agentId))}` : "";
-      const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}${authorQuery}`, { method: "GET", credential, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
+      const { response, payload } = await fetchJsonWithFullTimeout(`${lookupUrl}${authorQuery}`, { method: "GET", credential, signal }, timeoutMs, fetchImpl, { readErrorBody: true });
       if (!response?.ok || payload?.ok === false) return failure(response, payload);
       const current = replyId ? payload?.reply : payload?.event;
       const fetchedRevision = Number(current?.messageRevision ?? 1);
-      if (!current?.id || (replyId && current.id !== replyId) || !Number.isSafeInteger(fetchedRevision) || fetchedRevision <= 0) return { ok: false, reason: "invalid_edit_target" };
+      // A message id from the lookup is held to the same rule before it is used in a URL.
+      if (!current?.id || (replyId ? current.id !== replyId : !isUrlPathSegment(current.id)) ||
+          !Number.isSafeInteger(fetchedRevision) || fetchedRevision <= 0) return { ok: false, reason: "invalid_edit_target" };
       if (current.canEdit === false) return { ok: false, reason: "MESSAGE_EDIT_FORBIDDEN", status: 403 };
       if (!replyId) messageId = current.id;
       if (revision === null) revision = fetchedRevision;
     }
-    const resource = replyId ? `replies/${encodeURIComponent(replyId)}` : `messages/${encodeURIComponent(messageId)}`;
     const body = { text, expectedRevision: revision, ...(normalizeString(agentId) ? { agentId: normalizeString(agentId) } : {}) };
-    const { response, payload } = await fetchJsonWithFullTimeout(`${base}/${resource}`, {
+    const { response, payload } = await fetchJsonWithFullTimeout(targetUrl(messageId), {
       method: "PATCH",
       headers: {
         ...createSessionMutationHeaders({ credential, sessionId: sid, routeId: replyId
@@ -2985,7 +2995,7 @@ export async function createSessionMessageAction(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/actions`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/actions`;
   const body = {
     actionType: normalizedActionType,
     metadata: metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : {},
@@ -3143,7 +3153,7 @@ export async function searchSessionEvents(
     "limit",
     String(Math.max(1, Math.min(SESSION_SEARCH_FETCH_LIMIT, normalizePositiveInteger(limit, 20))))
   );
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}/events/search?${queryParams.toString()}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/events/search?${queryParams.toString()}`;
 
   try {
     const { response, payload } = await fetchJsonWithFullTimeout(
@@ -3389,7 +3399,7 @@ export async function fetchSessionFromApi(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(normalizedSessionId)}`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}`;
 
   let response;
   let body;
@@ -3468,9 +3478,7 @@ export async function probeSessionAccess(
   }
 
   const apiBaseUrl = resolveApiBaseUrl(session);
-  const endpoint = `${apiBaseUrl}/api/v1/sessions/${encodeURIComponent(
-    normalizedSessionId,
-  )}/events?limit=1`;
+  const endpoint = `${apiBaseUrl}/api/v1/sessions/${urlPathSegment(normalizedSessionId, { label: "sessionId" })}/events?limit=1`;
 
   let response;
   try {
